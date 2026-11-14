@@ -11,6 +11,8 @@
 pub mod css;
 mod host;
 mod palette;
+pub mod registry;
 
 pub use host::ThemeHost;
-pub use palette::{CursorPalette, Palette, PanelPalette, SystemColors};
+pub use palette::{CursorPalette, Palette, PanelPalette, SystemColors, luminance, mix, over};
+pub use registry::ThemeState;
