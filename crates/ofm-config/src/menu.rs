@@ -33,7 +33,7 @@ pub struct MenuItem {
 
 impl UserMenu {
     /// Load one menu file; missing file = empty menu; invalid = empty + warning.
-    pub fn load(_file: &Path) -> (UserMenu, Vec<Warning>) {
-        todo!("M8")
+    pub fn load(file: &Path) -> (UserMenu, Vec<Warning>) {
+        crate::io::load_toml(file)
     }
 }
