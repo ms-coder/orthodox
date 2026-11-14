@@ -89,10 +89,7 @@ fn lists_switches_and_moves() {
     assert_eq!(ctx.execute(cmd::FILE_COPY), ExecResult::NotImplemented);
 }
 
-#[test]
-#[ignore = "T2.1: FileList column layout / mouse"]
-fn file_list_brief_mode_columns() {}
-
-#[test]
-#[ignore = "T2.3: navigation commands (go up, enter, tabs, history)"]
-fn navigation_commands() {}
+// The former placeholders `file_list_brief_mode_columns` (T2.1) and `navigation_commands` (T2.3) were
+// removed: brief/full/custom layout is covered by `src/widgets/file_list/tests.rs`
+// (`list_widget_end_to_end`, `commands_drive_sort_view_and_hidden`) and the navigation commands by
+// `tests/navigation_commands.rs`. Real key events: `tests/real_binary.rs`.
