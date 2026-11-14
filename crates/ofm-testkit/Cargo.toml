@@ -9,3 +9,7 @@ publish = false
 workspace = true
 
 [dependencies]
+tracing = { workspace = true }
+# xattr read/write for fixture trees and tree comparison; std's xattr API is
+# still unstable. Dev-only crate (ofm-testkit is a dev-dependency everywhere).
+xattr = "1"
