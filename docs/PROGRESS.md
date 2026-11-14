@@ -40,6 +40,17 @@ Status values: `not started` · `in progress` · `review` · `waiting for Igor` 
 
 (The lead adds a row when a task starts.)
 
+## Deferred review findings (M1 review)
+
+| Item | Where to handle |
+|---|---|
+| Pending cursor after `begin_load` on large dirs; stale `cursor_name` jumps back (model.rs) | M2 (ui-engineer / T2.x panel wiring) |
+| `Key::Char('+')` unparseable: GDK mapping must produce `Gray+`; validate `Session.active_panel/active_tab` on load | M2 T2.0/UI |
+| `FsFile::try_clone_from/copy_range_from` need raw fd / as_any so FaultyFs can wrap | M3 T3.0 (architect) |
+| Keymap duplicate-chord "last wins" is key-sorted; unknown top-level sections silently ignored | M8 polish |
+| Missing `themes/` dir never watched; `atomic_write` follows symlinks | M9 hardening |
+| Ext sort 100k = ~55 ms on busy dev box (target 50) | re-measure in M9 |
+
 ## Gate feedback log
 
 | Gate | Date | Igor's feedback | Resulting tasks |
