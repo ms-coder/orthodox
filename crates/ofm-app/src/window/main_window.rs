@@ -4,10 +4,15 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 
+use gtk::glib;
+
+use super::layout;
 use super::panel_view::PanelView;
+use super::session::{self, SessionState};
 use crate::context::AppContext;
 use crate::dispatch::{self, WindowKind};
 use crate::panel::{LEFT, RIGHT};
+use crate::theme;
 
 /// The main window and handles to its regions. All fields are public so hook functions can fill
 /// the slots; do not remove fields (T2.2 may add more).
@@ -95,5 +100,35 @@ impl MainWindow {
     }
 }
 
-/// Window-level UI after construction (T2.2: split ratio, size restore).
-pub fn install_ui(_ctx: &Rc<AppContext>, _win: &MainWindow) {}
+/// Window-level UI after construction: restored size, split ratio, one-panel mode, live theme
+/// colours and the save-on-close handler.
+pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
+    if let Some(state) = ctx.ext.get::<SessionState>() {
+        let w = &state.loaded.window;
+        if w.width > 0 && w.height > 0 {
+            win.window.set_default_size(w.width, w.height);
+        }
+        if w.maximized {
+            win.window.set_maximized(true);
+        }
+    }
+    layout::install_ui(ctx, win);
+    theme::registry::install_ui(ctx, win.window.upcast_ref());
+
+    // Close request: save the session on a worker, then destroy the window (never block the UI).
+    let weak = Rc::downgrade(ctx);
+    win.window.connect_close_request(move |w| {
+        let Some(ctx) = weak.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
+        let Some(state) = ctx.ext.get::<SessionState>() else {
+            return glib::Propagation::Proceed;
+        };
+        if state.closing.replace(true) {
+            return glib::Propagation::Stop; // a save is already running
+        }
+        let w = w.clone();
+        session::save_async(&ctx, move || w.destroy());
+        glib::Propagation::Stop
+    });
+}

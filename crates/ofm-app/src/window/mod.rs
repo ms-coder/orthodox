@@ -20,8 +20,11 @@
 //! ```
 
 mod commands;
+pub mod layout;
 mod main_window;
+pub mod modal_keys;
 mod panel_view;
+pub mod session;
 
 pub use commands::{install_commands, install_state};
 pub use main_window::{MainWindow, install_ui};

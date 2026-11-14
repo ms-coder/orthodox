@@ -48,6 +48,119 @@ impl SystemColors {
     }
 }
 
+impl SystemColors {
+    /// The stock libadwaita light/dark colours (`window`, `view`, `headerbar`, accent, status).
+    /// Used when no widget is available to ask for the live values.
+    pub fn adwaita(dark: bool) -> Self {
+        let rgb = |r: u8, g: u8, b: u8| {
+            RGBA::new(
+                f32::from(r) / 255.0,
+                f32::from(g) / 255.0,
+                f32::from(b) / 255.0,
+                1.0,
+            )
+        };
+        if dark {
+            SystemColors {
+                view_bg: rgb(0x1e, 0x1e, 0x1e),
+                view_fg: rgb(0xff, 0xff, 0xff),
+                header_bg: rgb(0x30, 0x30, 0x30),
+                header_fg: rgb(0xff, 0xff, 0xff),
+                accent: rgb(0x35, 0x84, 0xe4),
+                dim: rgb(0x9a, 0x99, 0x96),
+                error: rgb(0xff, 0x7b, 0x63),
+                success: rgb(0x8f, 0xf0, 0xa4),
+                warning: rgb(0xf8, 0xe4, 0x5c),
+            }
+        } else {
+            SystemColors {
+                view_bg: rgb(0xff, 0xff, 0xff),
+                view_fg: rgb(0x33, 0x33, 0x33),
+                header_bg: rgb(0xeb, 0xeb, 0xeb),
+                header_fg: rgb(0x33, 0x33, 0x33),
+                accent: rgb(0x35, 0x84, 0xe4),
+                dim: rgb(0x77, 0x76, 0x7b),
+                error: rgb(0xc0, 0x1c, 0x28),
+                success: rgb(0x26, 0xa2, 0x69),
+                warning: rgb(0xae, 0x7b, 0x03),
+            }
+        }
+    }
+
+    /// System colours following the GNOME light/dark preference (`adw::StyleManager`).
+    pub fn from_style_manager(sm: &adw::StyleManager) -> Self {
+        Self::adwaita(sm.is_dark())
+    }
+
+    /// Replace the colours with the live libadwaita named colours as seen by `widget` (this picks
+    /// up the real stylesheet, including user overrides); roles the stylesheet does not define
+    /// keep their current value. libadwaita 1.5 has no accent-colour API, so `accent_bg_color`
+    /// is what the stylesheet says.
+    #[allow(deprecated)] // StyleContext::lookup_color is the only way to read named colours in 4.14
+    pub fn refined_from_widget(mut self, widget: &impl gtk::prelude::IsA<gtk::Widget>) -> Self {
+        use gtk::prelude::*;
+        let ctx = widget.style_context();
+        let get = |name: &str| ctx.lookup_color(name);
+        if let Some(c) = get("view_bg_color") {
+            self.view_bg = opaque(c, self.view_bg);
+        }
+        if let Some(c) = get("view_fg_color") {
+            self.view_fg = over(c, self.view_bg);
+        }
+        if let Some(c) = get("headerbar_bg_color") {
+            self.header_bg = opaque(c, self.view_bg);
+        }
+        if let Some(c) = get("headerbar_fg_color") {
+            self.header_fg = over(c, self.header_bg);
+        }
+        if let Some(c) = get("accent_bg_color") {
+            self.accent = opaque(c, self.accent);
+        }
+        if let Some(c) = get("error_color") {
+            self.error = opaque(c, self.error);
+        }
+        if let Some(c) = get("success_color") {
+            self.success = opaque(c, self.success);
+        }
+        if let Some(c) = get("warning_color") {
+            self.warning = opaque(c, self.warning);
+        }
+        // "dim": the view text at ~55% over the view background.
+        self.dim = mix(self.view_fg, self.view_bg, 0.55);
+        self
+    }
+}
+
+/// `c` composited over `bg` (alpha flattened).
+pub fn over(c: RGBA, bg: RGBA) -> RGBA {
+    let a = c.alpha();
+    RGBA::new(
+        c.red() * a + bg.red() * (1.0 - a),
+        c.green() * a + bg.green() * (1.0 - a),
+        c.blue() * a + bg.blue() * (1.0 - a),
+        1.0,
+    )
+}
+
+fn opaque(c: RGBA, fallback_bg: RGBA) -> RGBA {
+    over(c, fallback_bg)
+}
+
+/// Linear mix: `t` of `a`, the rest of `b`.
+pub fn mix(a: RGBA, b: RGBA, t: f32) -> RGBA {
+    RGBA::new(
+        a.red() * t + b.red() * (1.0 - t),
+        a.green() * t + b.green() * (1.0 - t),
+        a.blue() * t + b.blue() * (1.0 - t),
+        1.0,
+    )
+}
+
+/// Relative luminance (sRGB, simple Rec. 709 weights): 0 black .. 1 white.
+pub fn luminance(c: RGBA) -> f32 {
+    0.2126 * c.red() + 0.7152 * c.green() + 0.0722 * c.blue()
+}
+
 /// Panel body colours.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelPalette {
@@ -187,6 +300,20 @@ mod tests {
             assert_ne!(p.panel.fg, MAGENTA, "{id}: panel.fg");
             assert_ne!(p.cursor.active_bg, MAGENTA, "{id}: cursor.active_bg");
         }
+    }
+
+    #[test]
+    fn adwaita_system_colours_follow_dark() {
+        let l = SystemColors::adwaita(false);
+        let d = SystemColors::adwaita(true);
+        assert!(luminance(l.view_bg) > 0.9 && luminance(d.view_bg) < 0.2);
+        assert_ne!(l.view_fg, d.view_fg);
+    }
+
+    #[test]
+    fn over_flattens_alpha() {
+        let c = over(RGBA::new(0.0, 0.0, 0.0, 0.5), RGBA::new(1.0, 1.0, 1.0, 1.0));
+        assert!((c.red() - 0.5).abs() < 1e-6 && (c.alpha() - 1.0).abs() < 1e-6);
     }
 
     #[test]

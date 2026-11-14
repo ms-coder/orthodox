@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 use gtk::gdk;
 use ofm_config::Theme;
+use ofm_config::theme::Base;
 
 use super::{Palette, SystemColors, css};
 use crate::signal::Signal;
@@ -56,7 +57,28 @@ impl ThemeHost {
         let palette = Rc::new(Palette::from_theme(Rc::new(theme), *self.system.borrow()));
         *self.palette.borrow_mut() = Rc::clone(&palette);
         self.apply_css();
+        self.apply_color_scheme(&palette);
         self.changed.emit(&palette);
+    }
+
+    /// Make standard widgets (dialogs, scrollbars, popovers) light or dark to match the theme:
+    /// fixed themes force the scheme by the panel background, `base = "adwaita"` themes follow the
+    /// GNOME preference. A no-op without a display.
+    fn apply_color_scheme(&self, palette: &Palette) {
+        if gdk::Display::default().is_none() {
+            return;
+        }
+        let scheme = if palette.theme.base == Base::Adwaita {
+            adw::ColorScheme::Default
+        } else if css::is_dark(palette) {
+            adw::ColorScheme::ForceDark
+        } else {
+            adw::ColorScheme::ForceLight
+        };
+        let sm = adw::StyleManager::default();
+        if sm.color_scheme() != scheme {
+            sm.set_color_scheme(scheme);
+        }
     }
 
     /// Regenerate the CSS and (first time) attach the provider to the default display; a no-op
