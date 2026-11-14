@@ -1039,8 +1039,13 @@ name = "ofm-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "gtk4",
  "libadwaita",
+ "ofm-config",
+ "ofm-core",
+ "ofm-testkit",
+ "ofm-vfs",
  "tracing",
  "tracing-subscriber",
 ]

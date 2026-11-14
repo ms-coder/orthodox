@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+name = "ofm_app"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ofm"
 path = "src/main.rs"
@@ -15,6 +19,13 @@ workspace = true
 [dependencies]
 adw = { version = "0.9.2", package = "libadwaita", features = ["v1_5"] }
 anyhow.workspace = true
+async-channel.workspace = true
 gtk = { version = "0.11.5", package = "gtk4", features = ["v4_14"] }
+ofm-config = { path = "../ofm-config" }
+ofm-core = { path = "../ofm-core" }
+ofm-vfs = { path = "../ofm-vfs" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+ofm-testkit = { path = "../ofm-testkit" }

@@ -1,0 +1,253 @@
+//! Command dispatch (CLAUDE.md invariant 5: every action is a command).
+//!
+//! Flow: `EventControllerKey` (capture phase on a toplevel) -> [`keys::chord_from_event`] ->
+//! `Keymap` lookup in the right context (ADR-0005) -> [`CommandDispatcher::execute`]. Menus, the
+//! F-key bar, mouse actions and tests call `AppContext::execute(cmd)` directly.
+//!
+//! Handlers are registered by each module's `install_commands` hook (see `hooks.rs`); no module
+//! edits this file. A command without a handler returns [`ExecResult::NotImplemented`] (and is
+//! logged at debug level), so keymap presets can bind everything from day one.
+
+use std::collections::HashMap;
+use std::rc::{Rc, Weak};
+
+use gtk::glib;
+use gtk::prelude::*;
+use ofm_core::{CommandId, KeyChord, KeyContext};
+
+use crate::context::AppContext;
+use crate::keys;
+
+/// A command implementation. Runs on the GTK main thread; must not block or do file I/O
+/// (start jobs / listings through `PanelController` or `wiring` instead).
+pub type Handler = Rc<dyn Fn(&Rc<AppContext>)>;
+
+/// Result of [`CommandDispatcher::execute`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecResult {
+    /// A handler ran.
+    Handled,
+    /// The command exists but nobody implemented it yet.
+    NotImplemented,
+}
+
+/// Command id -> handler table, filled by the `install_commands` hooks.
+#[derive(Default)]
+pub struct CommandRegistry {
+    handlers: HashMap<CommandId, Handler>,
+    duplicates: Vec<CommandId>,
+}
+
+impl CommandRegistry {
+    /// Empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register the implementation of `id`. A second registration of the same id replaces the
+    /// first, is logged as an error and is reported by [`duplicates`](Self::duplicates)
+    /// (a test asserts there are none): two tasks must never own one command.
+    pub fn register(&mut self, id: CommandId, handler: impl Fn(&Rc<AppContext>) + 'static) {
+        if self.handlers.insert(id, Rc::new(handler)).is_some() {
+            tracing::error!(command = %id, "command registered twice");
+            self.duplicates.push(id);
+        }
+    }
+
+    /// Whether `id` has a handler.
+    pub fn has(&self, id: CommandId) -> bool {
+        self.handlers.contains_key(&id)
+    }
+
+    /// Number of registered commands.
+    pub fn len(&self) -> usize {
+        self.handlers.len()
+    }
+
+    /// True when nothing is registered.
+    pub fn is_empty(&self) -> bool {
+        self.handlers.is_empty()
+    }
+
+    /// Ids registered more than once.
+    pub fn duplicates(&self) -> &[CommandId] {
+        &self.duplicates
+    }
+
+    /// Ids without a handler, from the command registry in `ofm-core` (progress overview).
+    pub fn unimplemented(&self) -> Vec<CommandId> {
+        ofm_core::commands::ALL
+            .iter()
+            .map(|c| c.id)
+            .filter(|id| !self.has(*id))
+            .collect()
+    }
+}
+
+/// Executes commands from a frozen [`CommandRegistry`].
+pub struct CommandDispatcher {
+    registry: CommandRegistry,
+}
+
+impl CommandDispatcher {
+    /// Freeze `registry` into a dispatcher.
+    pub fn new(registry: CommandRegistry) -> Rc<Self> {
+        Rc::new(CommandDispatcher { registry })
+    }
+
+    /// The registry (read-only), e.g. to grey out unimplemented menu items.
+    pub fn registry(&self) -> &CommandRegistry {
+        &self.registry
+    }
+
+    /// Run `cmd` for `ctx`. The handler is cloned out first, so it may call `execute` itself.
+    pub fn execute(&self, ctx: &Rc<AppContext>, cmd: CommandId) -> ExecResult {
+        match self.registry.handlers.get(&cmd).cloned() {
+            Some(h) => {
+                tracing::debug!(command = %cmd, "execute");
+                h(ctx);
+                ExecResult::Handled
+            }
+            None => {
+                tracing::debug!(command = %cmd, "command not implemented");
+                ExecResult::NotImplemented
+            }
+        }
+    }
+}
+
+/// Which window the key controller is attached to; decides the keymap context (ADR-0005).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowKind {
+    /// The main window: `Dialog` while a modal is open, else `CmdLine` (if text) / `Panels` / `Global`.
+    Main,
+    /// A viewer window: `Viewer` then `Global`.
+    Viewer,
+    /// A standalone dialog window: `Dialog` then `Global`.
+    Dialog,
+}
+
+/// Resolve `chord` to a command for a window of `kind`.
+pub fn resolve(ctx: &AppContext, kind: WindowKind, chord: KeyChord) -> Option<CommandId> {
+    let keymap = ctx.keymap.borrow();
+    match kind {
+        WindowKind::Main if ctx.modal_open() => keymap.resolve_in(KeyContext::Dialog, chord),
+        WindowKind::Main => keymap.resolve_main(chord, ctx.cmdline_has_text()),
+        WindowKind::Viewer => keymap.resolve_in(KeyContext::Viewer, chord),
+        WindowKind::Dialog => keymap.resolve_in(KeyContext::Dialog, chord),
+    }
+}
+
+/// Text-entry exception (invariant 5): when an editable widget has focus, plain typing and
+/// editing keys belong to it and are never looked up. Everything else (F-keys, Esc, Enter,
+/// Alt/Ctrl combinations other than the clipboard/select-all set) still reaches the keymap.
+pub fn entry_wants_key(chord: &KeyChord) -> bool {
+    use ofm_core::Key;
+    let m = chord.mods;
+    if m.alt || m.super_ {
+        return false;
+    }
+    if m.ctrl {
+        return matches!(chord.key, Key::Char('A' | 'C' | 'V' | 'X' | 'Z' | 'Y'))
+            || matches!(
+                chord.key,
+                Key::Left | Key::Right | Key::Backspace | Key::Delete
+            );
+    }
+    matches!(
+        chord.key,
+        Key::Char(_)
+            | Key::Space
+            | Key::Backspace
+            | Key::Delete
+            | Key::Left
+            | Key::Right
+            | Key::Home
+            | Key::End
+            | Key::Insert
+            | Key::Keypad(_)
+            | Key::GrayPlus
+            | Key::GrayMinus
+            | Key::GrayStar
+            | Key::GraySlash
+    )
+}
+
+/// Attach the capture-phase key controller to `window`. This is the *only* place key events are
+/// turned into commands; widgets must not handle keys themselves (except text entries).
+pub fn install_key_controller(
+    window: &impl IsA<gtk::Widget>,
+    ctx: &Rc<AppContext>,
+    kind: WindowKind,
+) {
+    let weak: Weak<AppContext> = Rc::downgrade(ctx);
+    let controller = gtk::EventControllerKey::new();
+    controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let widget = window.as_ref().clone();
+    controller.connect_key_pressed(move |_c, keyval, keycode, state| {
+        let Some(ctx) = weak.upgrade() else {
+            return glib::Propagation::Proceed;
+        };
+        let Some(chord) = keys::chord_from_event(keyval, keycode, state) else {
+            return glib::Propagation::Proceed;
+        };
+        let focus_is_text = widget
+            .root()
+            .and_then(|r| r.focus())
+            .is_some_and(|f| f.is::<gtk::Editable>() || f.is::<gtk::TextView>());
+        if focus_is_text && entry_wants_key(&chord) {
+            return glib::Propagation::Proceed;
+        }
+        match resolve(&ctx, kind, chord) {
+            Some(cmd) => {
+                ctx.execute(cmd);
+                glib::Propagation::Stop
+            }
+            None => glib::Propagation::Proceed,
+        }
+    });
+    window.as_ref().add_controller(controller);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ofm_core::{Key, Mods};
+
+    fn chord(key: Key) -> KeyChord {
+        KeyChord {
+            key,
+            mods: Mods::default(),
+        }
+    }
+
+    #[test]
+    fn registry_detects_duplicates() {
+        let mut r = CommandRegistry::new();
+        r.register(ofm_core::cmd::PANEL_SWITCH, |_| {});
+        assert!(r.has(ofm_core::cmd::PANEL_SWITCH));
+        assert!(r.duplicates().is_empty());
+        r.register(ofm_core::cmd::PANEL_SWITCH, |_| {});
+        assert_eq!(r.duplicates(), &[ofm_core::cmd::PANEL_SWITCH]);
+        assert_eq!(r.len(), 1);
+        assert!(r.unimplemented().len() > 100);
+    }
+
+    #[test]
+    fn text_entry_policy() {
+        assert!(entry_wants_key(&chord(Key::Char('A'))));
+        assert!(entry_wants_key(&chord(Key::Backspace)));
+        assert!(!entry_wants_key(&chord(Key::F(5))));
+        assert!(!entry_wants_key(&chord(Key::Enter)));
+        assert!(!entry_wants_key(&chord(Key::Escape)));
+        assert!(!entry_wants_key(&chord(Key::Tab)));
+        let alt_a = KeyChord {
+            key: Key::Char('A'),
+            mods: Mods {
+                alt: true,
+                ..Mods::default()
+            },
+        };
+        assert!(!entry_wants_key(&alt_a));
+    }
+}
