@@ -10,3 +10,15 @@ workspace = true
 
 [dependencies]
 thiserror.workspace = true
+
+[dev-dependencies]
+proptest = "1"
+# Slim build: no plotters/rayon, just what `cargo bench` needs.
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+# Bench sources live inside the T1.1-owned `src/panel/` directory (PLAN task ownership),
+# so point the target there explicitly.
+[[bench]]
+name = "panel_sort"
+path = "src/panel/bench_sort.rs"
+harness = false

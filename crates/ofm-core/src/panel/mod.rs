@@ -6,6 +6,10 @@ mod change;
 mod cursor;
 mod model;
 mod sort;
+mod sort_ids;
+
+#[cfg(test)]
+mod proptests;
 
 pub use change::ModelChange;
 pub use cursor::{CursorMove, Direction};
