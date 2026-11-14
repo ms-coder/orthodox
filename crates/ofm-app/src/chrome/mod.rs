@@ -23,6 +23,7 @@ use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
 use crate::signal::Signal;
 use crate::theme::{self, ThemeState};
+use crate::widgets::file_list;
 use crate::window::MainWindow;
 use crate::wiring;
 
@@ -76,6 +77,7 @@ pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
     };
     let menubar = MenuBar::new(ctx);
     win.menubar_slot.append(&menubar.root);
+    menubar::follow_keys(&win.window, &menubar);
     let fkeys = FKeyBar::new(ctx);
     win.fkeybar_slot.append(&fkeys.root);
     fkeybar::follow_modifiers(&win.window, &fkeys);
@@ -83,12 +85,6 @@ pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
     {
         let fkeys = Rc::clone(&fkeys);
         state.keymap_changed.connect(move |()| fkeys.refresh());
-    }
-    if std::env::var_os("OFM_TMP_MENU").is_some() {
-        let m = Rc::clone(&menubar);
-        gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
-            m.open(2)
-        });
     }
     *state.menubar.borrow_mut() = Some(menubar);
     *state.fkeybar.borrow_mut() = Some(fkeys);
@@ -136,6 +132,7 @@ fn apply_reloaded(ctx: &Rc<AppContext>, r: Reloaded) {
         tracing::warn!(file = ?w.file, "{}", w.message);
     }
     let theme_name = r.config.theme.name.clone();
+    file_list::configure(&r.config.panels);
     *ctx.config.borrow_mut() = r.config;
     ctx.keymap.replace(Rc::new(r.keymap));
     theme::registry::apply_discovered(ctx, r.themes);
@@ -149,6 +146,10 @@ fn apply_reloaded(ctx: &Rc<AppContext>, r: Reloaded) {
     }
     if let Some(state) = ctx.ext.get::<ChromeState>() {
         state.keymap_changed.emit(&());
+    }
+    if let Some(win) = ctx.window() {
+        win.left.list.queue_draw();
+        win.right.list.queue_draw();
     }
     tracing::info!("configuration reloaded");
 }

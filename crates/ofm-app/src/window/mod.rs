@@ -22,7 +22,6 @@
 mod commands;
 pub mod layout;
 mod main_window;
-pub mod modal_keys;
 mod panel_view;
 pub mod session;
 

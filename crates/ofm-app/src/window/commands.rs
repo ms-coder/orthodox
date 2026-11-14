@@ -1,15 +1,16 @@
 //! Window-level commands (T2.2 owns this file): `app.quit`, `window.fullscreen`, `panel.switch`,
-//! `panel.toggle_other`, and the `dialog.ok` / `dialog.cancel` routing for modal surfaces.
+//! `panel.toggle_other`. (`panel.swap` and `dialog.ok`/`dialog.cancel` belong to navigation.)
 
 use std::rc::Rc;
 
 use gtk::prelude::*;
 use ofm_core::cmd;
 
-use super::{layout, modal_keys, session};
+use super::{layout, session};
 use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
 use crate::theme;
+use crate::widgets::file_list;
 
 /// Register the window commands.
 pub fn install_commands(reg: &mut CommandRegistry) {
@@ -28,12 +29,11 @@ pub fn install_commands(reg: &mut CommandRegistry) {
             w.window.set_fullscreened(!w.window.is_fullscreen());
         }
     });
-    modal_keys::install_commands(reg);
 }
 
-/// Create window state: modal-key stack, session (restores the panels), layout, theme list.
+/// Create window state: session (restores the panels), layout, theme list.
 pub fn install_state(ctx: &Rc<AppContext>) {
-    modal_keys::install_state(ctx);
+    file_list::configure(&ctx.config.borrow().panels);
     session::install_state(ctx);
     theme::registry::install_state(ctx);
 }

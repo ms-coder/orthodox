@@ -54,6 +54,12 @@ impl PanelView {
         path_label.add_css_class("ofm-path");
         let list = FileList::new();
         list.set_palette(ctx.theme.palette());
+        list.install_mouse(ctx, side);
+        list.set_accessible_label(if side == crate::panel::LEFT {
+            tr("Left panel")
+        } else {
+            tr("Right panel")
+        });
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&list));
         overlay.set_vexpand(true);
@@ -263,18 +269,6 @@ impl PanelViewHandles {
     }
 }
 
-/// Hook: decorate a freshly built panel view: clicking anywhere in a panel makes it the active
-/// one (the click itself still reaches the list).
-pub fn install_panel_view(ctx: &Rc<AppContext>, view: &PanelView) {
-    let gesture = gtk::GestureClick::new();
-    gesture.set_button(0);
-    gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
-    let weak = Rc::downgrade(ctx);
-    let side = view.side;
-    gesture.connect_pressed(move |_, _, _, _| {
-        if let Some(ctx) = weak.upgrade() {
-            ctx.set_active_side(side);
-        }
-    });
-    view.root.add_controller(gesture);
-}
+/// Hook: decorate a freshly built panel view. Mouse handling (click activates the panel,
+/// double-click opens, right-click context menu) is installed by `FileList::install_mouse`.
+pub fn install_panel_view(_ctx: &Rc<AppContext>, _view: &PanelView) {}

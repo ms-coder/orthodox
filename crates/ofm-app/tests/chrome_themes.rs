@@ -14,6 +14,7 @@ use ofm_app::context::{AppContext, AppInit};
 use ofm_app::dispatch::ExecResult;
 use ofm_app::panel::{LEFT, LoadState, RIGHT};
 use ofm_app::theme::ThemeState;
+use ofm_app::widgets::file_list::{self, ViewMode};
 use ofm_app::window::MainWindow;
 use ofm_app::window::layout::LayoutState;
 use ofm_app::window::session;
@@ -114,8 +115,27 @@ fn chrome_themes_and_session() {
         left: Location::Local(t.path().to_owned()),
         right: Location::Local(t.path().to_owned()),
     });
-    // `install_state` skips the stored paths when the test binary got CLI arguments; restore
-    // explicitly in that case so the assertions below are independent of how we were started.
+    // ---- window ------------------------------------------------------------------------------
+    let app = adw::Application::builder()
+        .application_id("io.github.mscoder.OfmTestChrome")
+        .build();
+    app.register(gtk::gio::Cancellable::NONE).unwrap();
+    let win: Rc<MainWindow> = MainWindow::new(&app, &ctx);
+    ctx.start_loading();
+    win.present();
+    pump_until("window mapped", || win.window.is_mapped());
+    pump_until("listings", || {
+        ctx.panels
+            .iter()
+            .all(|h| h.active().state() == LoadState::Idle)
+    });
+    assert_eq!(
+        win.window.default_size(),
+        (900, 600),
+        "window size restored"
+    );
+    // The window restores the stored paths itself unless the test binary got CLI arguments;
+    // restore explicitly in that case so the assertions are independent of how we were started.
     if ctx.host(LEFT).tab_count() == 1 {
         let mut s = stored.clone();
         session::sanitize(&mut s);
@@ -137,29 +157,15 @@ fn chrome_themes_and_session() {
     assert!(tabs[0].model().sort_spec().reverse);
     assert!(tabs[1].locked());
     assert_eq!(
+        file_list::view_mode(&tabs[0]),
+        ViewMode::Full,
+        "view mode restored"
+    );
+    assert_eq!(
         ctx.host(RIGHT).active().location(),
         Location::Local(dir("c"))
     );
 
-    // ---- window ------------------------------------------------------------------------------
-    let app = adw::Application::builder()
-        .application_id("io.github.mscoder.OfmTestChrome")
-        .build();
-    app.register(gtk::gio::Cancellable::NONE).unwrap();
-    let win: Rc<MainWindow> = MainWindow::new(&app, &ctx);
-    ctx.start_loading();
-    win.present();
-    pump_until("window mapped", || win.window.is_mapped());
-    pump_until("listings", || {
-        ctx.panels
-            .iter()
-            .all(|h| h.active().state() == LoadState::Idle)
-    });
-    assert_eq!(
-        win.window.default_size(),
-        (900, 600),
-        "window size restored"
-    );
     let layout = ctx.ext.get::<LayoutState>().unwrap();
     assert!((layout.ratio() - 0.3).abs() < 1e-6);
     assert!(win.panels.position() > 0 && win.panels.position() < 450);
@@ -229,14 +235,26 @@ fn chrome_themes_and_session() {
     let menubar = chrome.menubar.borrow().clone().unwrap();
     assert!(menubar.menu_count() >= 5);
     assert!(menubar.row_commands(0).contains(&cmd::FILE_COPY));
+    assert!(
+        !menubar.handle_key(gtk::gdk::Key::Down),
+        "closed menu ignores keys"
+    );
     assert_eq!(ctx.execute(cmd::APP_MENU), ExecResult::Handled);
     pump_until("menu opens", || menubar.is_open());
-    // The open menu puts keys into the dialog context.
-    pump_until("menu is modal", || ctx.modal_open());
     assert_eq!(menubar.row_accel(0, cmd::FILE_COPY).as_deref(), Some("F5"));
-    assert_eq!(ctx.execute(cmd::DIALOG_CANCEL), ExecResult::Handled);
+    assert_eq!(menubar.row_accel(0, cmd::APP_QUIT).as_deref(), Some("F10"));
+    pump_for(100); // first row gets the focus
+    // While open, keys are consumed by the menu (navigation, switch, close).
+    assert!(menubar.handle_key(gtk::gdk::Key::Down));
+    assert!(menubar.handle_key(gtk::gdk::Key::Right));
+    pump_until("next menu", || menubar.is_open());
+    assert!(menubar.handle_key(gtk::gdk::Key::Escape));
     pump_until("menu closes", || !menubar.is_open());
-    pump_until("modal released", || !ctx.modal_open());
+    // F9 toggles.
+    ctx.execute(cmd::APP_MENU);
+    pump_until("menu opens again", || menubar.is_open());
+    assert!(menubar.handle_key(gtk::gdk::Key::F9));
+    pump_until("menu closes by F9", || !menubar.is_open());
 
     // ---- theme choice is persisted (worker thread) --------------------------------------------
     pump_until("config saved", || {
@@ -264,6 +282,7 @@ fn chrome_themes_and_session() {
     assert!(saved.panels[0].tabs[0].sort_reverse);
     assert!(saved.panels[0].tabs[0].show_hidden);
     assert!(saved.panels[0].tabs[1].locked);
+    assert_eq!(saved.panels[0].tabs[0].view, "full");
     assert_eq!(saved.panels[1].tabs[0].path_buf().unwrap(), dir("c"));
     assert!(
         (saved.split_ratio - 0.3).abs() < 0.02,

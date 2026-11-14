@@ -11,13 +11,14 @@ use std::rc::Rc;
 
 use gtk::prelude::*;
 use ofm_config::session::Session;
-use ofm_config::session::{PanelSession, TabSession, WindowState};
+use ofm_config::session::WindowState;
 use ofm_core::Location;
-use ofm_core::panel::{SortKey, SortSpec};
 
 use super::layout::LayoutState;
 use crate::context::AppContext;
+use crate::navigation;
 use crate::panel::{LoadOpts, LoadState, PanelController};
+use crate::widgets::file_list::{self, ViewMode};
 use crate::wiring;
 
 /// Smallest window size a session may restore (a corrupt file must not give an unusable window).
@@ -39,17 +40,6 @@ pub struct SessionState {
 pub type ViewModeGetter = Box<dyn Fn(&PanelController) -> Option<String>>;
 /// Applies a view mode to a tab.
 pub type ViewModeSetter = Box<dyn Fn(&PanelController, &str)>;
-
-/// Where the (not yet existing) view-mode state of a tab lives is decided by the file list
-/// (T2.1); the session stores it through this bridge so neither side depends on the other.
-/// Whoever owns the view mode registers one in `ctx.ext`; without it tabs round-trip the
-/// configured default view.
-pub struct ViewModeAccess {
-    /// Current view mode of `ctrl` as `brief | full | custom`.
-    pub get: ViewModeGetter,
-    /// Apply a stored view mode to `ctrl`.
-    pub set: ViewModeSetter,
-}
 
 /// Validate a freshly loaded session (deferred M1 finding): `active_panel` is clamped to 0/1, tabs
 /// without a path are dropped, `active_tab` is clamped to the tab count, at most two panels are
@@ -86,27 +76,6 @@ pub fn sanitize(s: &mut Session) {
     }
 }
 
-/// Sort key <-> session string.
-pub fn sort_key_name(k: SortKey) -> &'static str {
-    match k {
-        SortKey::Name => "name",
-        SortKey::Ext => "ext",
-        SortKey::Size => "size",
-        SortKey::Mtime => "mtime",
-    }
-}
-
-/// Inverse of [`sort_key_name`]; unknown text gives `None`.
-pub fn parse_sort_key(s: &str) -> Option<SortKey> {
-    match s {
-        "name" => Some(SortKey::Name),
-        "ext" => Some(SortKey::Ext),
-        "size" => Some(SortKey::Size),
-        "mtime" => Some(SortKey::Mtime),
-        _ => None,
-    }
-}
-
 /// True when the command line names directories explicitly (`ofm LEFT RIGHT`): then the stored
 /// paths must not override them (window size and layout are still restored). Reading `argv` is no
 /// file I/O.
@@ -114,89 +83,51 @@ fn cli_overrides_paths() -> bool {
     std::env::args_os().nth(1).is_some()
 }
 
-/// Startup: load and validate the session, restore panels/tabs, remember it in `ctx.ext`.
+/// Startup: load and validate the session and remember it in `ctx.ext`. The panels are restored
+/// later, once the window exists ([`restore_on_start`]).
 pub fn install_state(ctx: &Rc<AppContext>) {
     let (mut session, warnings) = Session::load(&ctx.paths);
     for w in &warnings {
         tracing::warn!(file = ?w.file, "{}", w.message);
     }
     sanitize(&mut session);
-    if !cli_overrides_paths() {
-        restore_panels(ctx, &session);
-    }
+    ctx.ext.insert(Rc::new(LayoutState::from_session(&session)));
     ctx.ext.insert(Rc::new(SessionState {
-        loaded: session.clone(),
+        loaded: session,
         closing: Cell::new(false),
     }));
-    ctx.ext.insert(Rc::new(LayoutState::from_session(&session)));
 }
 
-/// Recreate the tabs of both panels from `session` (must be sanitized). The existing first tab of
-/// a side becomes the first stored tab; the others are added right of it in order.
+/// Window exists: restore the panels of the loaded session (unless the command line named the
+/// directories).
+pub fn restore_on_start(ctx: &Rc<AppContext>) {
+    let Some(state) = ctx.ext.get::<SessionState>() else {
+        return;
+    };
+    if !cli_overrides_paths() {
+        restore_panels(ctx, &state.loaded);
+    }
+}
+
+/// Recreate the tabs of both panels from `session` (must be sanitized) with
+/// `navigation::session::restore` (sort, hidden, lock, cursor), then the view modes, and make the
+/// stored panel active. A restored directory that is gone falls back to its nearest ancestor.
 pub fn restore_panels(ctx: &Rc<AppContext>, session: &Session) {
     for (side, panel) in session.panels.iter().enumerate() {
-        let Some(first) = panel.tabs.first() else {
+        if panel.tabs.is_empty() {
             continue;
-        };
-        let host = ctx.host(side);
-        let Some(first_path) = first.path_buf() else {
-            continue;
-        };
-        let ctrl = host.active();
-        apply_tab_settings(ctx, &ctrl, first);
-        ctrl.load(
-            Location::Local(first_path),
-            LoadOpts {
-                cursor_name: first.cursor_name_os(),
-                ..LoadOpts::default()
-            },
-        );
-        guard_missing_dir(&ctrl);
-        for tab in &panel.tabs[1..] {
-            let Some(path) = tab.path_buf() else {
-                continue;
-            };
-            let loc = Location::Local(path);
-            let ctrl = host.add_tab(loc.clone(), true);
-            apply_tab_settings(ctx, &ctrl, tab);
-            if let Some(name) = tab.cursor_name_os() {
-                ctrl.load(
-                    loc,
-                    LoadOpts {
-                        cursor_name: Some(name),
-                        skip_history: true,
-                        ..LoadOpts::default()
-                    },
-                );
-            }
-            guard_missing_dir(&ctrl);
         }
-        host.set_active(panel.active_tab);
+        let host = ctx.host(side);
+        let base = host.active_index();
+        navigation::session::restore(host, panel);
+        for (ctrl, tab) in host.tabs().iter().skip(base).zip(&panel.tabs) {
+            if let Some(mode) = ViewMode::parse(&tab.view) {
+                file_list::set_view_mode(ctrl, mode);
+            }
+            guard_missing_dir(ctrl);
+        }
     }
     ctx.set_active_side(usize::from(session.active_panel));
-}
-
-fn apply_tab_settings(ctx: &Rc<AppContext>, ctrl: &Rc<PanelController>, tab: &TabSession) {
-    let defaults = SortSpec::default();
-    // A tab that never stored a sort (hand-written file) keeps the defaults.
-    let spec = match parse_sort_key(&tab.sort) {
-        Some(key) => SortSpec {
-            key,
-            reverse: tab.sort_reverse,
-            dirs_first: tab.dirs_first,
-        },
-        None => defaults,
-    };
-    ctrl.mutate(|m| {
-        m.set_sort(spec);
-        m.set_show_hidden(tab.show_hidden);
-    });
-    ctrl.set_locked(tab.locked);
-    if !tab.view.is_empty()
-        && let Some(access) = ctx.ext.get::<ViewModeAccess>()
-    {
-        (access.set)(ctrl, &tab.view);
-    }
 }
 
 /// A restored directory may have disappeared: fall back to the nearest existing ancestor (the
@@ -241,42 +172,6 @@ fn guard_missing_dir(ctrl: &Rc<PanelController>) {
     id.set(Some(sid));
 }
 
-/// One tab as stored; `None` for tabs that cannot be restored (panelized lists).
-pub fn tab_session(ctx: &AppContext, ctrl: &PanelController) -> Option<TabSession> {
-    let path = match ctrl.location() {
-        Location::Local(p) => p,
-        // An archive tab is stored as the directory holding the archive.
-        Location::Archive { archive, .. } => archive.parent().map(PathBuf::from).unwrap_or(archive),
-        Location::List { .. } => return None,
-    };
-    let mut tab = TabSession::default();
-    tab.set_path(&path);
-    let (spec, hidden, cursor) = {
-        let m = ctrl.model();
-        (
-            m.sort_spec(),
-            m.show_hidden(),
-            m.cursor_entry().map(|e| e.name.clone()),
-        )
-    };
-    tab.sort = sort_key_name(spec.key).to_owned();
-    tab.sort_reverse = spec.reverse;
-    tab.dirs_first = spec.dirs_first;
-    tab.show_hidden = hidden;
-    tab.locked = ctrl.locked();
-    tab.view = ctx
-        .ext
-        .get::<ViewModeAccess>()
-        .and_then(|a| (a.get)(ctrl))
-        .unwrap_or_else(|| ctx.config.borrow().panels.default_view.clone());
-    if let Some(name) = cursor
-        && name != ".."
-    {
-        tab.set_cursor_name(&name);
-    }
-    Some(tab)
-}
-
 /// Capture the current state (main thread, memory only).
 pub fn snapshot(ctx: &AppContext) -> Session {
     let previous = ctx
@@ -287,18 +182,17 @@ pub fn snapshot(ctx: &AppContext) -> Session {
     let mut panels = Vec::new();
     for side in 0..2 {
         let host = ctx.host(side);
-        let active = host.active_index();
-        let mut tabs = Vec::new();
-        let mut active_tab = 0;
-        for (i, ctrl) in host.tabs().iter().enumerate() {
-            if let Some(t) = tab_session(ctx, ctrl) {
-                if i <= active {
-                    active_tab = tabs.len();
-                }
-                tabs.push(t);
-            }
+        let mut ps = navigation::session::capture(host);
+        // `capture` skips panelized lists; the view modes (owned by the list widget) follow the
+        // same order.
+        let local = host
+            .tabs()
+            .into_iter()
+            .filter(|c| !matches!(c.location(), Location::List { .. }));
+        for (tab, ctrl) in ps.tabs.iter_mut().zip(local) {
+            tab.view = file_list::view_mode(&ctrl).as_str().to_owned();
         }
-        panels.push(PanelSession { active_tab, tabs });
+        panels.push(ps);
     }
     let (split_ratio, one_panel) = ctx
         .ext
@@ -361,6 +255,8 @@ pub fn save_async(ctx: &Rc<AppContext>, done: impl FnOnce() + 'static) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use ofm_config::session::{PanelSession, TabSession};
+
     use super::*;
 
     fn tab(path: &str) -> TabSession {
@@ -448,13 +344,5 @@ mod tests {
         };
         sanitize(&mut ok);
         assert_eq!((ok.window.width, ok.window.height), (1000, 700));
-    }
-
-    #[test]
-    fn sort_names_round_trip() {
-        for k in [SortKey::Name, SortKey::Ext, SortKey::Size, SortKey::Mtime] {
-            assert_eq!(parse_sort_key(sort_key_name(k)), Some(k));
-        }
-        assert_eq!(parse_sort_key("bogus"), None);
     }
 }

@@ -1,11 +1,12 @@
 //! The F9 menu bar (F32): drop-downs built from the command registry and the active keymap, so
 //! every item is a `CommandId` run through `AppContext::execute` and shows its current binding.
 //!
-//! While a drop-down is open the app is in modal mode (keys resolve in the `dialog` section) and
-//! Enter / Esc arrive as `dialog.ok` / `dialog.cancel`, routed here through `window::modal_keys`.
-//! Up/Down move the focus natively; Left/Right switch to the neighbouring menu.
+//! Keys while a drop-down is open: a window-level capture controller ([`follow_keys`]), added
+//! after the dispatcher's so it runs first, handles Up/Down/Home/End (focus), Left/Right (switch
+//! menu), Enter (run the focused item), Esc and F9 (close) and swallows everything else, so no
+//! panel command fires behind the menu. Without it the dispatcher would resolve those keys in the
+//! `panels` section. (Mouse use needs none of this.)
 
-use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use gtk::gdk;
@@ -16,7 +17,6 @@ use ofm_core::{CommandId, KeyContext};
 use super::menus::{Item, MENUS, MenuDef};
 use crate::context::AppContext;
 use crate::i18n::tr;
-use crate::window::modal_keys::{self, ModalHandler, ModalKeysGuard};
 
 struct Row {
     cmd: CommandId,
@@ -28,7 +28,6 @@ struct Menu {
     button: gtk::MenuButton,
     popover: gtk::Popover,
     rows: Vec<Row>,
-    guard: RefCell<Option<ModalKeysGuard>>,
 }
 
 /// The menu bar widget.
@@ -87,6 +86,7 @@ impl MenuBar {
     pub fn open(&self, i: usize) {
         self.close();
         if let Some(m) = self.menus.get(i) {
+            self.refresh_accels(i);
             m.button.popup();
         }
     }
@@ -127,33 +127,25 @@ impl MenuBar {
             .map(|r| r.accel.text().to_string())
     }
 
-    fn on_show(self: &Rc<Self>, i: usize) {
+    /// Re-read the key hints of menu `i` from the current keymap.
+    fn refresh_accels(&self, i: usize) {
         let (Some(menu), Some(ctx)) = (self.menus.get(i), self.ctx.upgrade()) else {
             return;
         };
         for r in &menu.rows {
             r.accel.set_text(&accel_text(&ctx, r.cmd));
-            eprintln!("DBG {} -> {:?}", r.cmd, r.accel.text());
         }
-        let ok = Rc::downgrade(self);
-        let cancel = Rc::downgrade(self);
-        let guard = modal_keys::push(
-            &ctx,
-            ModalHandler {
-                ok: Box::new(move || {
-                    if let Some(bar) = ok.upgrade() {
-                        bar.activate_focused(i);
-                    }
-                }),
-                cancel: Box::new(move || {
-                    if let Some(bar) = cancel.upgrade() {
-                        bar.close();
-                    }
-                }),
-            },
-        );
-        *menu.guard.borrow_mut() = Some(guard);
-        let first = menu.rows.first().map(|r| r.button.clone());
+    }
+
+    /// A drop-down became visible (also when opened by a mouse click): fresh hints, focus on the
+    /// first row.
+    fn on_shown(&self, i: usize) {
+        self.refresh_accels(i);
+        let first = self
+            .menus
+            .get(i)
+            .and_then(|m| m.rows.first())
+            .map(|r| r.button.clone());
         glib::idle_add_local_once(move || {
             if let Some(b) = first {
                 b.grab_focus();
@@ -161,10 +153,56 @@ impl MenuBar {
         });
     }
 
-    fn on_closed(&self, i: usize) {
-        if let Some(menu) = self.menus.get(i) {
-            menu.guard.borrow_mut().take();
+    fn open_index(&self) -> Option<usize> {
+        self.menus.iter().position(|m| m.popover.is_visible())
+    }
+
+    /// Move the focus by `delta` rows in the open menu (wraps; `to_end` jumps to the ends).
+    fn move_focus(&self, i: usize, delta: isize, to_end: bool) {
+        let Some(menu) = self.menus.get(i) else {
+            return;
+        };
+        let n = menu.rows.len();
+        if n == 0 {
+            return;
         }
+        let cur = menu.rows.iter().position(|r| r.button.has_focus());
+        let target = match (cur, to_end) {
+            (_, true) if delta < 0 => 0,
+            (_, true) => n - 1,
+            (Some(c), false) => (c + n).wrapping_add_signed(delta) % n,
+            (None, false) if delta < 0 => n - 1,
+            (None, false) => 0,
+        };
+        menu.rows[target].button.grab_focus();
+    }
+
+    /// Handle a key press while a drop-down is open. Returns true when the key was consumed (all
+    /// keys are, except bare modifiers).
+    pub fn handle_key(&self, key: gdk::Key) -> bool {
+        let Some(i) = self.open_index() else {
+            return false;
+        };
+        match key {
+            gdk::Key::Escape | gdk::Key::F9 => self.close(),
+            gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter => self.activate_focused(i),
+            gdk::Key::Up => self.move_focus(i, -1, false),
+            gdk::Key::Down => self.move_focus(i, 1, false),
+            gdk::Key::Home => self.move_focus(i, -1, true),
+            gdk::Key::End => self.move_focus(i, 1, true),
+            gdk::Key::Left => self.step(i, -1),
+            gdk::Key::Right => self.step(i, 1),
+            gdk::Key::Shift_L
+            | gdk::Key::Shift_R
+            | gdk::Key::Control_L
+            | gdk::Key::Control_R
+            | gdk::Key::Alt_L
+            | gdk::Key::Alt_R
+            | gdk::Key::Super_L
+            | gdk::Key::Super_R => return false,
+            _ => {}
+        }
+        true
     }
 
     fn activate_focused(&self, i: usize) {
@@ -223,44 +261,19 @@ fn build_menu(ctx: &Rc<AppContext>, bar: &Weak<MenuBar>, index: usize, def: &Men
 
     {
         let bar = bar.clone();
-        popover.connect_map(move |_| {
-            if let Some(bar) = bar.upgrade() {
-                bar.on_show(index);
+        popover.connect_visible_notify(move |p| {
+            if p.is_visible()
+                && let Some(bar) = bar.upgrade()
+            {
+                bar.on_shown(index);
             }
         });
-    }
-    {
-        let bar = bar.clone();
-        popover.connect_closed(move |_| {
-            if let Some(bar) = bar.upgrade() {
-                bar.on_closed(index);
-            }
-        });
-    }
-    // Left/Right switch menus (captured before the popover's own focus movement).
-    {
-        let bar = bar.clone();
-        let keys = gtk::EventControllerKey::new();
-        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-        keys.connect_key_pressed(move |_, key, _, _| {
-            let delta = match key {
-                gdk::Key::Left => -1,
-                gdk::Key::Right => 1,
-                _ => return glib::Propagation::Proceed,
-            };
-            if let Some(bar) = bar.upgrade() {
-                bar.step(index, delta);
-            }
-            glib::Propagation::Stop
-        });
-        popover.add_controller(keys);
     }
 
     Menu {
         button,
         popover,
         rows,
-        guard: RefCell::new(None),
     }
 }
 
@@ -296,4 +309,17 @@ fn build_row(ctx: &Rc<AppContext>, popover: &gtk::Popover, cmd: CommandId) -> Ro
         });
     }
     Row { cmd, button, accel }
+}
+
+/// Install the window-level key handler described in the module docs. Call it after the
+/// dispatcher's controller exists (i.e. from `install_ui`).
+pub fn follow_keys(window: &impl IsA<gtk::Window>, bar: &Rc<MenuBar>) {
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let weak = Rc::downgrade(bar);
+    keys.connect_key_pressed(move |_, key, _, _| match weak.upgrade() {
+        Some(bar) if bar.handle_key(key) => glib::Propagation::Stop,
+        _ => glib::Propagation::Proceed,
+    });
+    window.as_ref().add_controller(keys);
 }
