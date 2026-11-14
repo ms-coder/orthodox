@@ -1,6 +1,5 @@
 //! `MainWindow`: the `adw::ApplicationWindow` with its layout regions.
 
-use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -14,23 +13,6 @@ use crate::context::AppContext;
 use crate::dispatch::{self, WindowKind};
 use crate::panel::{LEFT, RIGHT};
 use crate::theme;
-
-thread_local! {
-    /// Strong references to the contexts of live windows. Every closure in the UI holds only a
-    /// `Weak<AppContext>`; `app::run` drops its own `Rc` after building the window, so without
-    /// this the context (and with it every command, key binding and menu) would die right after
-    /// start-up. Released when the window is destroyed.
-    static LIVE_CONTEXTS: RefCell<Vec<Rc<AppContext>>> = const { RefCell::new(Vec::new()) };
-}
-
-/// Keep `ctx` alive for as long as `window` exists.
-fn keep_context_alive(ctx: &Rc<AppContext>, window: &adw::ApplicationWindow) {
-    LIVE_CONTEXTS.with(|l| l.borrow_mut().push(Rc::clone(ctx)));
-    let ptr = Rc::as_ptr(ctx);
-    window.connect_destroy(move |_| {
-        LIVE_CONTEXTS.with(|l| l.borrow_mut().retain(|c| Rc::as_ptr(c) != ptr));
-    });
-}
 
 /// The main window and handles to its regions. All fields are public so hook functions can fill
 /// the slots; do not remove fields (T2.2 may add more).
@@ -121,7 +103,6 @@ impl MainWindow {
 /// Window-level UI after construction: restored size, split ratio, one-panel mode, live theme
 /// colours and the save-on-close handler.
 pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
-    keep_context_alive(ctx, &win.window);
     if let Some(state) = ctx.ext.get::<SessionState>() {
         let w = &state.loaded.window;
         if w.width > 0 && w.height > 0 {

@@ -16,6 +16,9 @@ use crate::dispatch::{CommandDispatcher, CommandRegistry};
 use crate::theme::ThemeHost;
 use crate::window::MainWindow;
 
+/// Context and main window, kept alive together for the lifetime of the application.
+type LiveApp = (Rc<AppContext>, Rc<MainWindow>);
+
 /// Reverse-DNS application id (matches the desktop file in M10).
 pub const APP_ID: &str = "io.github.mscoder.Ofm";
 
@@ -99,9 +102,11 @@ pub fn run() -> anyhow::Result<ExitCode> {
     );
 
     let app = adw::Application::builder().application_id(APP_ID).build();
-    let window: Rc<RefCell<Option<Rc<MainWindow>>>> = Rc::default();
+    // The UI closures hold only `Weak<AppContext>`, so this state is the context's owner: it must
+    // live as long as the application (dropping it would kill every command and key binding).
+    let state: Rc<RefCell<Option<LiveApp>>> = Rc::default();
     app.connect_activate(move |app| {
-        if let Some(win) = window.borrow().as_ref() {
+        if let Some((_, win)) = state.borrow().as_ref() {
             win.present();
             return;
         }
@@ -114,7 +119,7 @@ pub fn run() -> anyhow::Result<ExitCode> {
         let win = MainWindow::new(app, &ctx);
         ctx.start_loading();
         win.present();
-        *window.borrow_mut() = Some(win);
+        *state.borrow_mut() = Some((ctx, win));
     });
     // Our own positional arguments must not reach GApplication.
     let argv0 = std::env::args_os()

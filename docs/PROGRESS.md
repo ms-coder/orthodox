@@ -5,7 +5,7 @@ The lead keeps this file current after every task. A fresh session must be able 
 ## Current state
 
 - Milestone: M2 (UI shell, gate G1) — in progress; M1 done (m1-done)
-- T2.0, T2.1, T2.3 merged on main (check.sh green). Waiting for T2.2 (chrome/themes/session; must merge main and wire items from T2.1/T2.3). Then T2.4 (smoke tests; xdotool now installed — add a real key-event test; un-ignore `file_list_brief_mode_columns` and `navigation_commands` placeholders in tests/shell_skeleton.rs). File ownership: crates/ofm-app/OWNERSHIP.md
+- T2.0–T2.3 merged on main (check.sh green). Next: T2.4 (smoke tests; xdotool works under Xvfb when run with GDK_BACKEND=x11, WAYLAND_DISPLAY unset, `xdotool windowfocus <wid>` first — add a real key-event test; un-ignore `file_list_brief_mode_columns` and `navigation_commands` placeholders in tests/shell_skeleton.rs; screenshot set g1-*). Then G1. File ownership: crates/ofm-app/OWNERSHIP.md
 - After 2.A: merge each branch --no-ff, check.sh, then STOP at gate G1 with a "please try this" checklist for Igor
 
 ## Milestones
@@ -32,7 +32,7 @@ Status values: `not started` · `in progress` · `review` · `waiting for Igor` 
 |---|---|---|---|---|---|
 | T2.0 | architect | done | main | see git log | ofm-app skeleton, hooks.rs, OWNERSHIP.md; fixed Gray+ and pending-cursor findings |
 | T2.1 | ui-engineer | done | m2/T2.1-filelist | b9f9618 | merged; 100k entries ~1 ms/frame |
-| T2.2 | ui-engineer | in progress | m2/T2.2-chrome-themes | | wiring: install_mouse, file_list::configure, session capture/restore |
+| T2.2 | ui-engineer | done | m2/T2.2-chrome-themes | 57652db | merged; session/themes/F9 menu/F-key bar |
 | T2.3 | ui-engineer | done | m2/T2.3-navigation | bd3846c | merged; also registered dialog.ok/cancel (navigation/modal.rs) |
 | T1.5 | reviewer | done | m1/review-fixes | 555f57b | findings fixed; rest deferred below |
 | T1.0 | architect | done | main | 9bc5168 | stubs, ADR-0002..0005, COMMANDS.md (128 commands) |
@@ -76,3 +76,6 @@ Status values: `not started` · `in progress` · `review` · `waiting for Igor` 
 - Real key-event test needs xdotool (not installed); T2.4 should add one if available.
 - T2.3: `panel.open` on regular file launches default app via gio (archive detection waits for M6); mask dialog 'Files only' defaults on; filter mode has no persistent indicator after Enter (polish, M8).
 - T2.1: owner/group columns show numeric uid/gid (no passwd lookups on main thread); `PanelController::pending_cursor` is private.
+- Lead fix after T2.2 merge: `app::run` dropped its `Rc<AppContext>` (UI closures hold only Weak) so commands/keys died in the real binary; tests missed it because they hold the Rc. Now `app.rs` owns `(ctx, window)`; the thread_local workaround in main_window.rs was removed. Verified with real xdotool keys (Tab, Down, F9). T2.4 must include a test on the real binary path.
+- T2.2: `app.theme_next` rewrites config.toml (comments in hand-edited config are lost) — M8/M9 polish. `cli_overrides_paths()` checks argv[1]; cleaner as a flag in AppInit.
+- T2.2: F9 menu key handling relies on GTK running later-added controllers first (verified with probe + real F9 open).
