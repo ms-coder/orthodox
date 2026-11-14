@@ -182,6 +182,29 @@ fn cancelled_listing_reports_cancelled() {
 }
 
 #[test]
+fn panicking_sink_still_ends_with_error_event() {
+    let t = tempfile::tempdir().unwrap();
+    std::fs::write(t.path().join("f"), b"").unwrap();
+    let mut calls = 0;
+    let mut events = Vec::new();
+    // The sink panics while handling the first batch (injected fault); the listing must
+    // still deliver one terminal Error instead of dying silently.
+    LocalVfs::new().list(
+        &Location::Local(t.path().into()),
+        &CancelToken::new(),
+        &mut |ev| {
+            calls += 1;
+            if calls == 1 {
+                panic!("injected");
+            }
+            events.push(ev);
+        },
+    );
+    assert_eq!(events.len(), 1);
+    assert!(matches!(&events[0], ListEvent::Error(VfsError::Io { .. })));
+}
+
+#[test]
 fn stat_does_not_follow_symlinks() {
     let t = tempfile::tempdir().unwrap();
     std::fs::create_dir(t.path().join("d")).unwrap();

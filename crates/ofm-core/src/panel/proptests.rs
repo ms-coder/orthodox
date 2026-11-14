@@ -146,7 +146,7 @@ proptest! {
         let mut m = PanelModel::new();
         m.set_sort(spec);
         m.set_show_hidden(show_hidden);
-        m.begin_load(true);
+        m.begin_load(true, false);
         for chunk in entries.chunks(batch_size) {
             m.apply_batch(chunk.to_vec());
         }
@@ -208,6 +208,7 @@ enum Op {
     Invert,
     All(bool),
     Restore,
+    Load(bool),
     Update(Vec<Entry>, Vec<String>),
     Quick(String),
     Step(String, Direction),
@@ -232,6 +233,7 @@ fn arb_op() -> impl Strategy<Value = Op> {
         1 => Just(Op::Invert),
         1 => any::<bool>().prop_map(Op::All),
         1 => Just(Op::Restore),
+        1 => any::<bool>().prop_map(Op::Load),
         2 => (vec(arb_entry(), 0..12), vec(r"[a-zA-Z0-9._]{1,6}", 0..4))
             .prop_map(|(c, r)| Op::Update(c, r)),
         2 => Just(Op::Finish),
@@ -314,14 +316,14 @@ fn check_invariants(m: &PanelModel, shadow: &[String]) {
         "duplicate selection"
     );
     let names = view_names(m);
-    let mut it = names.iter();
-    for s in &sel {
-        assert!(
-            it.any(|n| n == s),
-            "selected name {:?} not in view order after its position",
-            s
-        );
-    }
+    // Visible selected names come first, in view order; the rest (hidden/filtered/pending) follow.
+    let visible_selected: Vec<&OsString> = names.iter().filter(|n| sel.contains(n)).collect();
+    assert!(
+        sel.iter()
+            .take(visible_selected.len())
+            .eq(visible_selected.iter().copied()),
+        "selected names not led by visible ones in view order"
+    );
     for (i, n) in names.iter().enumerate() {
         assert_eq!(
             m.is_selected(i as u32),
@@ -330,7 +332,8 @@ fn check_invariants(m: &PanelModel, shadow: &[String]) {
             i
         );
     }
-    assert!(m.selected_count() >= sel.len());
+    // Count, names and is_selected all describe the same set (filtered/hidden ones included).
+    assert_eq!(m.selected_count(), sel.len());
 }
 
 proptest! {
@@ -341,7 +344,7 @@ proptest! {
         (initial, ops) in (vec(arb_entry(), 0..40), vec(arb_op(), 1..60))
     ) {
         let mut m = PanelModel::new();
-        m.begin_load(true);
+        m.begin_load(true, false);
         m.apply_batch(unique_entries(initial));
         m.finish_load();
         let mut shadow: Vec<String> = view_names(&m)
@@ -393,6 +396,19 @@ proptest! {
                     m.restore_selection();
                     ModelChange::None
                 }
+                Op::Load(keep) => {
+                    let before = m.selected_count();
+                    let change = m.begin_load(true, *keep);
+                    if *keep {
+                        prop_assert_eq!(m.selected_count(), before);
+                    } else {
+                        prop_assert_eq!(m.selected_count(), 0);
+                        // Navigation must also drop the snapshot: nothing to restore.
+                        m.restore_selection();
+                        prop_assert_eq!(m.selected_count(), 0);
+                    }
+                    change
+                }
                 Op::Quick(q) => {
                     let _ = m.quick_search(q);
                     ModelChange::None
@@ -413,7 +429,7 @@ proptest! {
     ) {
         let entries = unique_entries(entries);
         let mut m = PanelModel::new();
-        m.begin_load(false);
+        m.begin_load(false, false);
         m.apply_batch(entries.clone());
         m.apply_batch(unique_entries(extra));
         m.select_all(true);
