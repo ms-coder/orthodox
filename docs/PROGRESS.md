@@ -4,9 +4,27 @@ The lead keeps this file current after every task. A fresh session must be able 
 
 ## Current state
 
-- Milestone: M2 (UI shell, gate G1) — in progress; M1 done (m1-done)
-- T2.0–T2.3 merged on main (check.sh green). Next: T2.4 (smoke tests; xdotool works under Xvfb when run with GDK_BACKEND=x11, WAYLAND_DISPLAY unset, `xdotool windowfocus <wid>` first — add a real key-event test; un-ignore `file_list_brief_mode_columns` and `navigation_commands` placeholders in tests/shell_skeleton.rs; screenshot set g1-*). Then G1. File ownership: crates/ofm-app/OWNERSHIP.md
-- After 2.A: merge each branch --no-ff, check.sh, then STOP at gate G1 with a "please try this" checklist for Igor
+- Milestone: M2 (UI shell) — **waiting for Igor at gate G1**. All of T2.0–T2.4 merged, check.sh green (~77 s).
+- Next step: read Igor's G1 feedback into the "Gate feedback log", create fix tasks if needed, tag m2-done, then M3 (T3.0 architect stubs for the copy engine; fileops-engineer; Opus review of M3 at G2 only by explicit decision).
+
+### G1: please try this
+
+Run `cargo run -p ofm-app` (or `cargo run -p ofm-app -- DIR_LEFT DIR_RIGHT`). Nothing modifies files yet (file operations come in M3), so it is safe to browse anywhere.
+
+1. **Navigation:** Tab switches panels; arrows, PgUp/PgDn, Home/End move; Enter enters a dir; Backspace goes up and puts the cursor on the dir you left; Alt+F12 history list; Ctrl+D hotlist; Alt+F1/F2 drive menu.
+2. **Views and sorting:** Ctrl+1/2/3 = Brief/Full/Custom; Ctrl+F3..F6 sort; click a column header to sort (click twice reverses); Ctrl+H toggles hidden files. Try a directory with 100k+ files (e.g. generate one in /tmp) and scroll hard.
+3. **Mouse:** click, double-click, Ctrl/Shift-click, wheel, right-click (a context-menu signal only, no menu yet).
+4. **Selection and search:** Insert/Space mark, `+`/`-`/`*` (numpad) mask dialog, quick search (far: Alt+letters; tc: plain letters), Esc clears.
+5. **Tabs:** Ctrl+T new, Ctrl+W close, lock a tab; quit and restart: tabs, sort, view, window size and split ratio should come back.
+6. **Chrome and themes:** F9 menu bar (menu items for commands not implemented yet do nothing), F-key bar with Shift/Ctrl/Alt variants, `app.theme_next` cycles far-blue / commander-light / adwaita instantly. Screenshots: `./scripts/screenshot.sh g1` writes `target/screenshots/g1-*.png`.
+7. **Layouts you care about:** try your usual keyboard layout (and a non-Latin one): letter shortcuts on non-Latin layouts are unverified.
+
+Known issues to judge (tell me if any is a blocker):
+- Commander Light: white text on the bright orange active path bar is low contrast; Adwaita brief mode is hard to scan with the same orange accent.
+- Brief mode draws a header (with sort arrow) for every column, even empty ones.
+- Menu entries and F-keys for copy/move/delete/mkdir/view/edit do nothing until M3/M5.
+- No live directory refresh (no watcher wired into the panels yet): use refresh (Ctrl+R).
+- Real-key testing note: stock xdotool sends F5/F9/F10 as Alt+F5/F9/F10 under Xvfb; `tests/real_binary.rs` uses an XTest helper for that. My earlier remark that F9 opened the menu in a manual xdotool run is therefore unverified; the test suite does cover it.
 
 ## Milestones
 
@@ -14,7 +32,7 @@ The lead keeps this file current after every task. A fresh session must be able 
 |---|---|---|---|---|
 | M0 | Bootstrap | done | m0-done | |
 | M1 | Core foundations | done | m1-done | |
-| M2 | UI shell (G1) | in progress | | |
+| M2 | UI shell (G1) | waiting for Igor | | |
 | M3 | File operations (G2) | not started | | |
 | M4 | Command line & terminal | not started | | |
 | M5 | Viewer & quick view | not started | | |
@@ -34,6 +52,7 @@ Status values: `not started` · `in progress` · `review` · `waiting for Igor` 
 | T2.1 | ui-engineer | done | m2/T2.1-filelist | b9f9618 | merged; 100k entries ~1 ms/frame |
 | T2.2 | ui-engineer | done | m2/T2.2-chrome-themes | 57652db | merged; session/themes/F9 menu/F-key bar |
 | T2.3 | ui-engineer | done | m2/T2.3-navigation | bd3846c | merged; also registered dialog.ok/cancel (navigation/modal.rs) |
+| T2.4 | test-engineer | done | m2/T2.4-smoke-tests | ac1e85b | merged; real-binary tests (tests/real_binary.rs), g1 screenshot set via scripts/screenshot.sh g1 |
 | T1.5 | reviewer | done | m1/review-fixes | 555f57b | findings fixed; rest deferred below |
 | T1.0 | architect | done | main | 9bc5168 | stubs, ADR-0002..0005, COMMANDS.md (128 commands) |
 | T1.1 | glm | done | m1/T1.1-panel-model | a6f322a | |
@@ -79,3 +98,4 @@ Status values: `not started` · `in progress` · `review` · `waiting for Igor` 
 - Lead fix after T2.2 merge: `app::run` dropped its `Rc<AppContext>` (UI closures hold only Weak) so commands/keys died in the real binary; tests missed it because they hold the Rc. Now `app.rs` owns `(ctx, window)`; the thread_local workaround in main_window.rs was removed. Verified with real xdotool keys (Tab, Down, F9). T2.4 must include a test on the real binary path.
 - T2.2: `app.theme_next` rewrites config.toml (comments in hand-edited config are lost) — M8/M9 polish. `cli_overrides_paths()` checks argv[1]; cleaner as a flag in AppInit.
 - T2.2: F9 menu key handling relies on GTK running later-added controllers first (verified with probe + real F9 open).
+- T2.4: tests launching `ofm` must set DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent (GApplication single-instance on the session bus) and use temp XDG dirs; select the window with `xdotool search --class ofm`. Open question: add `screenshot.sh g1` (+30 s) to check.sh? (default: no).
