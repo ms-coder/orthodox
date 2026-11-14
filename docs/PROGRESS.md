@@ -4,15 +4,15 @@ The lead keeps this file current after every task. A fresh session must be able 
 
 ## Current state
 
-- Milestone: M0 — in progress
-- Waiting for: Igor to restart Claude Code so `.claude/agents/*` are registered (they were added mid-session)
-- Next step: T0.2 agents dry run (test-engineer), then tag `m0-done`
+- Milestone: M0 — done (tag m0-done)
+- Waiting for: nothing
+- Next step: M1 — T1.0 Core interfaces & ADRs (architect)
 
 ## Milestones
 
 | M | Name | Status | Tag | Notes |
 |---|---|---|---|---|
-| M0 | Bootstrap | in progress | | |
+| M0 | Bootstrap | done | m0-done | |
 | M1 | Core foundations | not started | | |
 | M2 | UI shell (G1) | not started | | |
 | M3 | File operations (G2) | not started | | |
@@ -30,6 +30,7 @@ Status values: `not started` · `in progress` · `review` · `waiting for Igor` 
 
 | Task | Agent | Status | Branch | Commit | Notes |
 |---|---|---|---|---|---|
+| T0.2 | glm | done | m0/T0.2-dry-run | merged+reverted | Dry run done via scripts/glm.sh (GLM works, ~1 min). Claude agents not dry-run to save quota |
 | T0.1 | lead | done | main | see git log | check.sh green; screenshot m0 OK; app ID io.github.mscoder.Ofm; gtk4 0.11 / libadwaita 0.9 |
 
 (The lead adds a row when a task starts.)
