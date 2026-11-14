@@ -31,7 +31,8 @@ fn parent_name() -> &'static OsStr {
 /// - The filter and quick search compare ASCII-case-insensitively; non-ASCII bytes match exactly.
 /// - Selection-mutating operations snapshot the previous selection first whenever they can
 ///   *remove* names, so [`PanelModel::restore_selection`] undoes the last deselect-like operation
-///   (clear, mask-deselect, invert, toggle-off, and `begin_load`).
+///   (clear, mask-deselect, invert, toggle-off, and a same-directory `begin_load`). Navigating to
+///   another directory (`begin_load(_, false)`) drops both the selection and the snapshot.
 #[derive(Debug, Default)]
 pub struct PanelModel {
     entries: Vec<Entry>,
@@ -39,7 +40,7 @@ pub struct PanelModel {
     index: HashMap<OsString, u32>,
     /// Sorted, filtered view: indices into `entries`, or [`PARENT`] pinned first.
     visible: Vec<u32>,
-    /// The synthetic `..` row, present between `begin_load(true)` and the next `begin_load`.
+    /// The synthetic `..` row, present between `begin_load(true, false)` and the next `begin_load`.
     parent_entry: Option<Entry>,
     sort: SortSpec,
     show_hidden: bool,
@@ -59,10 +60,23 @@ impl PanelModel {
     }
 
     // ---- loading -------------------------------------------------------------------------------
-    /// Start loading a new directory: clears entries, keeps sort/hidden/filter settings, remembers
-    /// the previous selection for `restore_selection`. `has_parent` adds the synthetic `..` row.
-    pub fn begin_load(&mut self, has_parent: bool) -> ModelChange {
-        self.last_selection = Some(self.selection.clone());
+    /// Start loading a directory: clears entries, keeps sort/hidden/filter settings.
+    /// `has_parent` adds the synthetic `..` row.
+    ///
+    /// `keep_selection` must be `true` only when *reloading the same directory*: the selection is
+    /// kept by name (and a non-empty one is snapshotted for `restore_selection`). When navigating to
+    /// a different directory pass `false`: the selection and the restore snapshot are discarded, so
+    /// same-named files in the new directory are never selected by accident.
+    pub fn begin_load(&mut self, has_parent: bool, keep_selection: bool) -> ModelChange {
+        if keep_selection {
+            // An empty selection must not overwrite an earlier snapshot.
+            if !self.selection.is_empty() {
+                self.snapshot_selection();
+            }
+        } else {
+            self.selection.clear();
+            self.last_selection = None;
+        }
         self.entries.clear();
         self.index.clear();
         // The parent row is visible from the start, even before the first batch arrives.
@@ -403,13 +417,15 @@ impl PanelModel {
         }
     }
 
-    /// Number of selected entries (including ones currently filtered out; names that have not
-    /// streamed in yet count too until `finish_load` prunes them).
+    /// Number of selected entries; covers all selected names exactly like [`Self::selected_names`]
+    /// (including filtered-out/hidden ones and names that have not streamed in yet, until
+    /// `finish_load` prunes them).
     pub fn selected_count(&self) -> usize {
         self.selection.len()
     }
 
-    /// Sum of sizes of selected files (directories count 0 unless a size is known).
+    /// Sum of sizes of all selected entries known so far (same set as [`Self::selected_names`];
+    /// directories count 0 unless a size is known).
     pub fn selected_size(&self) -> u64 {
         self.selection
             .iter()
@@ -418,14 +434,34 @@ impl PanelModel {
             .sum()
     }
 
-    /// Selected names in view order; if none are selected callers use the cursor entry.
+    /// All selected names (so `len() == selected_count()`), regardless of filter or hidden state,
+    /// because an operation must touch exactly what its dialog announced. Order: visible rows in
+    /// view order, then selected-but-not-visible entries in load order, then names that have not
+    /// streamed in yet (sorted). If none are selected callers use the cursor entry.
     pub fn selected_names(&self) -> Vec<OsString> {
-        self.visible
+        let mut out: Vec<OsString> = Vec::with_capacity(self.selection.len());
+        let mut seen: HashSet<&OsStr> = HashSet::new();
+        for e in self.visible.iter().filter_map(|&vi| self.row_entry(vi)) {
+            if self.selection.contains(&e.name) {
+                seen.insert(&e.name);
+                out.push(e.name.clone());
+            }
+        }
+        for e in &self.entries {
+            if self.selection.contains(&e.name) && !seen.contains(e.name.as_os_str()) {
+                seen.insert(&e.name);
+                out.push(e.name.clone());
+            }
+        }
+        let mut pending: Vec<OsString> = self
+            .selection
             .iter()
-            .filter_map(|&vi| self.row_entry(vi))
-            .filter(|e| self.selection.contains(&e.name))
-            .map(|e| e.name.clone())
-            .collect()
+            .filter(|n| !self.index.contains_key(*n))
+            .cloned()
+            .collect();
+        pending.sort();
+        out.extend(pending);
+        out
     }
 
     // ---- quick search --------------------------------------------------------------------------
@@ -685,7 +721,7 @@ mod tests {
     fn streams_sorts_and_splices() {
         let mut m = PanelModel::new();
         let mut shadow = Vec::new();
-        let reset = m.begin_load(true);
+        let reset = m.begin_load(true, false);
         apply_change(&m, &mut shadow, reset);
         assert_view_matches_shadow(&m, &shadow);
         // Stream in a deliberately nasty order: unsorted, hidden files, dirs.
@@ -716,7 +752,7 @@ mod tests {
     #[test]
     fn splice_is_minimal() {
         let mut m = PanelModel::new();
-        m.begin_load(false);
+        m.begin_load(false, false);
         m.apply_batch(vec![file("c", 0), file("d", 0)]); // view: c, d
         // Insert before everything: c and d keep their ids and form the common suffix.
         assert_eq!(
@@ -754,7 +790,7 @@ mod tests {
     #[test]
     fn hidden_and_filter() {
         let mut m = PanelModel::new();
-        m.begin_load(true);
+        m.begin_load(true, false);
         m.apply_batch(vec![
             file(".dot", 1),
             file("plain", 2),
@@ -786,7 +822,7 @@ mod tests {
         assert_eq!(m.cursor(), None);
         assert_eq!(m.move_cursor(CursorMove::End), None); // empty view stays None
 
-        m.begin_load(true);
+        m.begin_load(true, false);
         for name in ["e", "d", "c", "b", "a"] {
             let _ = m.apply_batch(vec![file(name, 0)]);
         }
@@ -834,7 +870,7 @@ mod tests {
     #[test]
     fn selection_semantics() {
         let mut m = PanelModel::new();
-        m.begin_load(true);
+        m.begin_load(true, false);
         m.apply_batch(vec![
             file("a", 10),
             file("b", 20),
@@ -891,16 +927,69 @@ mod tests {
     }
 
     #[test]
+    fn navigation_clears_selection_and_snapshot() {
+        let mut m = PanelModel::new();
+        m.begin_load(true, false);
+        m.apply_batch(vec![file("a", 1), file("b", 2)]);
+        m.finish_load();
+        m.select_all(true);
+        m.select_all(false); // leaves a snapshot
+        m.select_all(true);
+        let _ = m.begin_load(true, false); // navigate elsewhere
+        m.apply_batch(vec![file("a", 5), file("b", 6), file("c", 7)]);
+        m.finish_load();
+        assert_eq!(m.selected_count(), 0);
+        assert!(m.selected_names().is_empty());
+        m.restore_selection(); // must not resurrect the old directory's selection
+        assert_eq!(m.selected_count(), 0);
+    }
+
+    #[test]
+    fn reload_snapshots_only_non_empty_selection() {
+        let mut m = PanelModel::new();
+        m.begin_load(true, false);
+        m.apply_batch(vec![file("a", 1), file("b", 2), file("c", 3)]);
+        m.finish_load();
+        m.toggle_select(1);
+        m.toggle_select(2);
+        m.select_all(false);
+        assert_eq!(m.selected_count(), 0);
+        let _ = m.begin_load(true, true); // empty selection: must keep the older snapshot
+        m.apply_batch(vec![file("a", 1), file("b", 2), file("c", 3)]);
+        m.finish_load();
+        m.restore_selection();
+        assert_eq!(m.selected_names(), os(&["a", "b"]));
+    }
+
+    #[test]
+    fn selection_queries_cover_hidden_and_filtered() {
+        let mut m = PanelModel::new();
+        m.begin_load(false, false);
+        m.apply_batch(vec![file(".dot", 4), file("a", 1), file("b", 2)]);
+        m.finish_load();
+        m.set_show_hidden(true);
+        m.select_all(true);
+        assert_eq!(m.selected_count(), 3);
+        m.set_show_hidden(false);
+        m.set_filter(Some("a"));
+        assert_eq!(m.visible_len(), 1);
+        assert_eq!(m.selected_count(), 3);
+        assert_eq!(m.selected_names().len(), 3);
+        assert_eq!(m.selected_size(), 7);
+        assert_eq!(m.selected_names()[0], OsString::from("a")); // visible first
+    }
+
+    #[test]
     fn selection_survives_reload_and_updates() {
         let mut m = PanelModel::new();
-        m.begin_load(true);
+        m.begin_load(true, false);
         m.apply_batch(vec![file("keep", 1), file("drop", 2), file("gone", 3)]);
         m.finish_load();
         m.select_all(true);
         assert_eq!(m.selected_count(), 3);
 
         // Reload the same directory: selection by name survives.
-        let _ = m.begin_load(true);
+        let _ = m.begin_load(true, true);
         assert_eq!(m.selected_count(), 3); // kept by name until finish_load
         m.apply_batch(vec![file("keep", 1), file("drop", 2)]);
         m.finish_load();
@@ -912,7 +1001,7 @@ mod tests {
         assert_eq!(m.selected_size(), 9);
 
         // Reload again: still selected by name; clear + restore brings it back.
-        let _ = m.begin_load(true);
+        let _ = m.begin_load(true, true);
         m.apply_batch(vec![file("keep", 9), file("new", 0)]);
         m.finish_load();
         assert_eq!(m.selected_names(), os(&["keep"]));
@@ -925,7 +1014,7 @@ mod tests {
     #[test]
     fn quick_search_prefix_then_substring_with_wrap() {
         let mut m = PanelModel::new();
-        m.begin_load(false);
+        m.begin_load(false, false);
         m.apply_batch(vec![
             file("beta", 0),
             file("abba", 0),
@@ -956,7 +1045,7 @@ mod tests {
     #[test]
     fn natural_order_in_view() {
         let mut m = PanelModel::new();
-        m.begin_load(false);
+        m.begin_load(false, false);
         m.apply_batch(vec![
             file("file10", 0),
             file("file1", 0),
@@ -970,7 +1059,7 @@ mod tests {
     #[test]
     fn update_reinserts_and_repositions() {
         let mut m = PanelModel::new();
-        m.begin_load(true);
+        m.begin_load(true, false);
         m.apply_batch(vec![file("b", 0), file("c", 0)]);
         let mut shadow = Vec::new();
         apply_change(&m, &mut shadow, ModelChange::Reset);
@@ -985,7 +1074,7 @@ mod tests {
     #[test]
     fn update_removal_and_in_place_change_are_reported_exactly() {
         let mut m = PanelModel::new();
-        m.begin_load(true);
+        m.begin_load(true, false);
         m.apply_batch(vec![file("a", 1), file("b", 1), file("c", 1), file("d", 1)]);
         let mut shadow = Vec::new();
         apply_change(&m, &mut shadow, ModelChange::Reset);
@@ -1023,7 +1112,7 @@ mod tests {
             },
         );
         let mut m = PanelModel::new();
-        m.begin_load(false);
+        m.begin_load(false, false);
         m.apply_batch(vec![file("aaa", 0), link]);
         m.finish_load();
         assert_eq!(names(&m), vec!["zlink", "aaa"]); // dirs_first default

@@ -46,7 +46,7 @@ fn make_entries(n: usize) -> Vec<Entry> {
 /// key; each iteration alternates between two specs so every call really re-sorts.
 fn bench_resort_100k(c: &mut Criterion) {
     let mut m = PanelModel::new();
-    m.begin_load(false);
+    m.begin_load(false, false);
     m.apply_batch(make_entries(100_000));
     m.finish_load();
     for (label, key) in [
@@ -103,7 +103,7 @@ fn bench_stream_100k(c: &mut Criterion) {
             || entries.clone(),
             |entries| {
                 let mut m = PanelModel::new();
-                m.begin_load(false);
+                m.begin_load(false, false);
                 for chunk in entries.chunks(512) {
                     m.apply_batch(chunk.to_vec());
                 }

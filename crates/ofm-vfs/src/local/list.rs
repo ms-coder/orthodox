@@ -1,5 +1,6 @@
 //! Streaming directory listing.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -24,11 +25,28 @@ pub(super) fn map_errno(path: &Path, e: Errno) -> VfsError {
     }
 }
 
-/// Stream `dir` into `sink`; always ends with exactly one `Done` or `Error` event.
+/// Stream `dir` into `sink`; always ends with exactly one `Done` or `Error` event, even when the
+/// listing (or the sink while handling a batch) panics: the panic is caught and reported as an
+/// `Error`, so a panel never waits forever for a terminal event.
 pub fn list_dir(dir: &Path, cancel: &CancelToken, sink: &mut dyn FnMut(ListEvent)) {
-    match run(dir, cancel, sink) {
+    let result = catch_unwind(AssertUnwindSafe(|| run(dir, cancel, &mut *sink)))
+        .unwrap_or_else(|payload| Err(panic_error(dir, payload.as_ref())));
+    match result {
         Ok(total) => sink(ListEvent::Done { total }),
         Err(e) => sink(ListEvent::Error(e)),
+    }
+}
+
+fn panic_error(dir: &Path, payload: &(dyn std::any::Any + Send)) -> VfsError {
+    let msg = payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".to_owned());
+    tracing::error!(dir = %dir.display(), panic = %msg, "directory listing panicked");
+    VfsError::Io {
+        path: dir.to_path_buf(),
+        source: std::io::Error::other(format!("listing panicked: {msg}")),
     }
 }
 
