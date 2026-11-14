@@ -1,7 +1,10 @@
 //! Theme schema (ADR-0005); examples in `defaults/themes/`.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
+use crate::defaults;
 use crate::error::{ConfigError, Warning};
 use crate::paths::ConfigPaths;
 
@@ -15,9 +18,29 @@ pub struct Color(pub String);
 impl Color {
     /// Parse `#RRGGBB[AA]` to RGBA bytes; `None` for unset or `@role` colours.
     pub fn parse_rgba(&self) -> Option<[u8; 4]> {
-        todo!("T1.3")
+        let hex = self.0.strip_prefix('#')?;
+        if !hex.is_ascii() || !(hex.len() == 6 || hex.len() == 8) {
+            return None;
+        }
+        let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+        let a = if hex.len() == 8 { byte(6)? } else { 255 };
+        Some([byte(0)?, byte(2)?, byte(4)?, a])
+    }
+
+    /// The system-palette role of an `@role` colour (`accent`, `dim`, ...), if it is one.
+    pub fn role(&self) -> Option<&str> {
+        let r = self.0.strip_prefix('@')?;
+        ROLES.contains(&r).then_some(r)
+    }
+
+    /// True for unset, valid `#hex` or valid `@role` colours.
+    pub fn is_valid(&self) -> bool {
+        self.0.is_empty() || self.parse_rgba().is_some() || self.role().is_some()
     }
 }
+
+/// Valid `@role` names.
+const ROLES: &[&str] = &["accent", "dim", "error", "success", "warning"];
 
 /// Where the theme gets its colours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -264,15 +287,218 @@ pub const BUILTIN_THEMES: &[&str] = &["far-blue", "commander-light", "adwaita"];
 
 impl Theme {
     /// Parse a theme file.
-    pub fn from_toml(_text: &str, _origin: &str) -> Result<Theme, ConfigError> {
-        todo!("T1.3")
+    pub fn from_toml(text: &str, origin: &str) -> Result<Theme, ConfigError> {
+        toml::from_str(text).map_err(|e| ConfigError::Parse {
+            path: PathBuf::from(origin),
+            message: e.to_string(),
+        })
     }
     /// Built-in theme by id (always valid; a test enforces it).
-    pub fn builtin(_id: &str) -> Option<Theme> {
-        todo!("T1.3")
+    pub fn builtin(id: &str) -> Option<Theme> {
+        let (origin, text) = match id {
+            "far-blue" => ("<builtin far-blue.toml>", defaults::THEME_FAR_BLUE),
+            "commander-light" => (
+                "<builtin commander-light.toml>",
+                defaults::THEME_COMMANDER_LIGHT,
+            ),
+            "adwaita" => ("<builtin adwaita.toml>", defaults::THEME_ADWAITA),
+            _ => return None,
+        };
+        Theme::from_toml(text, origin).ok()
+    }
+    /// Colour fields (`colors.*`, highlight `fg`/`bg`) that are neither unset, `#RRGGBB[AA]` nor
+    /// a known `@role`, as `path = value` strings. Invalid colours behave as unset.
+    pub fn invalid_colors(&self) -> Vec<String> {
+        let Ok(value) = toml::Value::try_from(self) else {
+            return Vec::new();
+        };
+        let mut bad = Vec::new();
+        fn walk(prefix: &str, v: &toml::Value, bad: &mut Vec<String>) {
+            match v {
+                toml::Value::String(s) => {
+                    if !Color(s.clone()).is_valid() {
+                        bad.push(format!("{prefix} = {s:?}"));
+                    }
+                }
+                toml::Value::Table(t) => {
+                    for (k, v) in t {
+                        walk(&format!("{prefix}.{k}"), v, bad);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(c) = value.get("colors") {
+            walk("colors", c, &mut bad);
+        }
+        if let Some(toml::Value::Array(rules)) = value.get("highlight") {
+            for (i, r) in rules.iter().enumerate() {
+                for key in ["fg", "bg"] {
+                    if let Some(v) = r.get(key) {
+                        walk(&format!("highlight[{i}].{key}"), v, &mut bad);
+                    }
+                }
+            }
+        }
+        bad
     }
     /// Built-in + user themes found in `paths.themes_dir()`; broken files become warnings.
-    pub fn discover(_paths: &ConfigPaths) -> (Vec<Theme>, Vec<Warning>) {
-        todo!("T1.3")
+    ///
+    /// Built-ins come first in [`BUILTIN_THEMES`] order. A user theme with the same id replaces the
+    /// built-in in place; other user themes follow, sorted by file name. The id is the `id` key of
+    /// the file, or the file stem when absent.
+    pub fn discover(paths: &ConfigPaths) -> (Vec<Theme>, Vec<Warning>) {
+        let mut themes: Vec<Theme> = BUILTIN_THEMES
+            .iter()
+            .filter_map(|id| Theme::builtin(id))
+            .collect();
+        let mut warnings = Vec::new();
+        let dir = paths.themes_dir();
+        let mut files: Vec<PathBuf> = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+                .collect(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => {
+                warnings.push(Warning {
+                    file: Some(dir.clone()),
+                    message: format!("cannot read themes directory: {e}"),
+                });
+                Vec::new()
+            }
+        };
+        files.sort();
+        for file in files {
+            let text = match crate::io::read_optional(&file) {
+                Ok(Some(t)) => t,
+                Ok(None) => continue,
+                Err(e) => {
+                    warnings.push(Warning {
+                        file: Some(file),
+                        message: e.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let mut theme = match Theme::from_toml(&text, &file.to_string_lossy()) {
+                Ok(t) => t,
+                Err(e) => {
+                    warnings.push(Warning {
+                        file: Some(file),
+                        message: format!("{e}; theme skipped"),
+                    });
+                    continue;
+                }
+            };
+            if theme.id.is_empty() {
+                theme.id = file
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+            }
+            if theme.id.is_empty() {
+                continue;
+            }
+            if theme.name.is_empty() {
+                theme.name = theme.id.clone();
+            }
+            for bad in theme.invalid_colors() {
+                warnings.push(Warning {
+                    file: Some(file.clone()),
+                    message: format!("invalid colour {bad}"),
+                });
+            }
+            match themes.iter_mut().find(|t| t.id == theme.id) {
+                Some(slot) => *slot = theme,
+                None => themes.push(theme),
+            }
+        }
+        (themes, warnings)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_parsing() {
+        let c = |s: &str| Color(s.to_owned());
+        assert_eq!(c("#102030").parse_rgba(), Some([0x10, 0x20, 0x30, 255]));
+        assert_eq!(c("#10203040").parse_rgba(), Some([0x10, 0x20, 0x30, 0x40]));
+        assert_eq!(c("#abcdef").parse_rgba(), Some([0xab, 0xcd, 0xef, 255]));
+        for bad in [
+            "",
+            "102030",
+            "#12345",
+            "#gggggg",
+            "@accent",
+            "#\u{e4}\u{e4}\u{e4}",
+        ] {
+            assert_eq!(c(bad).parse_rgba(), None, "{bad}");
+        }
+        assert_eq!(c("@dim").role(), Some("dim"));
+        assert!(c("").is_valid() && c("@accent").is_valid() && c("#000000").is_valid());
+        assert!(!c("@nope").is_valid() && !c("red").is_valid());
+    }
+
+    #[test]
+    fn builtins_are_valid_and_clean() {
+        for id in BUILTIN_THEMES {
+            let t = Theme::builtin(id).unwrap_or_else(|| panic!("{id}"));
+            assert_eq!(t.id, *id);
+            assert!(
+                t.invalid_colors().is_empty(),
+                "{id}: {:?}",
+                t.invalid_colors()
+            );
+        }
+        assert!(Theme::builtin("nope").is_none());
+        let far = Theme::builtin("far-blue").unwrap();
+        assert!(!far.highlight.is_empty());
+        assert_eq!(far.base, Base::Fixed);
+        assert_eq!(Theme::builtin("adwaita").unwrap().base, Base::Adwaita);
+    }
+
+    #[test]
+    fn theme_round_trips_through_toml() {
+        for id in BUILTIN_THEMES {
+            let t = Theme::builtin(id).unwrap();
+            let text = toml::to_string_pretty(&t).unwrap();
+            assert_eq!(Theme::from_toml(&text, "rt").unwrap(), t, "{id}");
+        }
+    }
+
+    #[test]
+    fn discover_overrides_adds_and_warns() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths::with_dirs(d.path().join("c"), d.path().join("s"));
+        let (themes, w) = Theme::discover(&paths);
+        assert_eq!(themes.len(), 3);
+        assert!(w.is_empty());
+
+        let dir = paths.themes_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("far-blue.toml"),
+            "id = \"far-blue\"\nname = \"Mine\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("solar.toml"),
+            "[colors.panel]\nbg = \"#002b36\"\nfg = \"nonsense\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("broken.toml"), "id = [").unwrap();
+        std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
+        let (themes, w) = Theme::discover(&paths);
+        let ids: Vec<_> = themes.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["far-blue", "commander-light", "adwaita", "solar"]);
+        assert_eq!(themes[0].name, "Mine");
+        assert_eq!(themes[3].name, "solar");
+        assert_eq!(w.len(), 2, "{w:?}"); // broken file + invalid colour
     }
 }
