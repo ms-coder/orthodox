@@ -4,9 +4,10 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 
-use super::cursor::{CursorMove, Direction};
-use super::sort::{cmp_entries, SortSpec};
 use super::ModelChange;
+use super::cursor::{CursorMove, Direction};
+use super::sort::{SortSpec, cmp_entries};
+use super::sort_ids::sort_ids;
 use crate::entry::{Entry, EntryKind};
 use crate::mask::Mask;
 
@@ -92,7 +93,7 @@ impl PanelModel {
             self.visible = old;
             return ModelChange::None;
         }
-        fresh.sort_unstable_by(|&a, &b| cmp_entries(&self.sort, &self.entries[a as usize], &self.entries[b as usize]));
+        sort_ids(&self.sort, &self.entries, &mut fresh);
         // Merge the sorted batch into the sorted view (streaming must not re-sort everything).
         let has_parent = self.parent_entry.is_some();
         let old_real = real_slice(&old, has_parent);
@@ -103,8 +104,11 @@ impl PanelModel {
         let (mut a, mut b) = (0usize, 0usize);
         while a < old_real.len() && b < fresh.len() {
             // `Equal` is impossible: fresh ids are all larger than any id in `old`.
-            if cmp_entries(&self.sort, &self.entries[old_real[a] as usize], &self.entries[fresh[b] as usize])
-                != Ordering::Greater
+            if cmp_entries(
+                &self.sort,
+                &self.entries[old_real[a] as usize],
+                &self.entries[fresh[b] as usize],
+            ) != Ordering::Greater
             {
                 merged.push(old_real[a]);
                 a += 1;
@@ -117,7 +121,7 @@ impl PanelModel {
         merged.extend_from_slice(&fresh[b..]);
         self.visible = merged;
         self.fix_cursor();
-        splice_diff(&old, &self.visible)
+        splice_diff(&old, &self.visible, |a, b| a == b)
     }
 
     /// Listing finished: drop selection names that no longer exist.
@@ -132,7 +136,13 @@ impl PanelModel {
         if changed.is_empty() && removed.is_empty() {
             return ModelChange::None;
         }
-        let old = std::mem::take(&mut self.visible);
+        // Entry ids are reshuffled by removals, so diff by name, not by id.
+        let old: Vec<OsString> = self
+            .visible
+            .iter()
+            .map(|&vi| self.name_at(vi).to_owned())
+            .collect();
+        let changed_names: HashSet<OsString> = changed.iter().map(|e| e.name.clone()).collect();
         if !removed.is_empty() {
             let removed_set: HashSet<&OsString> = removed.iter().collect();
             let mut touched = false;
@@ -164,7 +174,13 @@ impl PanelModel {
         }
         self.rebuild_visible();
         self.fix_cursor();
-        splice_diff(&old, &self.visible)
+        let new: Vec<OsString> = self
+            .visible
+            .iter()
+            .map(|&vi| self.name_at(vi).to_owned())
+            .collect();
+        // A row whose entry was replaced in place (size/mtime changed) must be re-read too.
+        splice_diff(&old, &new, |a, b| a == b && !changed_names.contains(a))
     }
 
     // ---- view ----------------------------------------------------------------------------------
@@ -259,9 +275,10 @@ impl PanelModel {
         let target = match mv {
             CursorMove::By(n) => cur + i64::from(n),
             CursorMove::Page { rows, pages } => cur + i64::from(pages) * i64::from(rows.max(1)),
-            CursorMove::Column { rows_per_column, columns } => {
-                cur + i64::from(columns) * i64::from(rows_per_column.max(1))
-            }
+            CursorMove::Column {
+                rows_per_column,
+                columns,
+            } => cur + i64::from(columns) * i64::from(rows_per_column.max(1)),
             CursorMove::Home => 0,
             CursorMove::End => i64::from(len) - 1,
         };
@@ -272,10 +289,7 @@ impl PanelModel {
 
     /// Put the cursor on `name` (e.g. the dir we came from); false if not visible.
     pub fn set_cursor_name(&mut self, name: &OsStr) -> bool {
-        let found = self
-            .visible
-            .iter()
-            .position(|&vi| self.name_at(vi) == name);
+        let found = self.visible.iter().position(|&vi| self.name_at(vi) == name);
         match found {
             Some(pos) => {
                 self.cursor = Some(pos as u32);
@@ -498,9 +512,7 @@ impl PanelModel {
         let mut ids: Vec<u32> = (0..self.entries.len() as u32)
             .filter(|&i| self.passes_view(&self.entries[i as usize]))
             .collect();
-        ids.sort_unstable_by(|&a, &b| {
-            cmp_entries(&self.sort, &self.entries[a as usize], &self.entries[b as usize])
-        });
+        sort_ids(&self.sort, &self.entries, &mut ids);
         self.visible.extend_from_slice(&ids);
     }
 
@@ -524,13 +536,7 @@ impl PanelModel {
 
     /// Find the first match for `query` starting at `start` (inclusive or exclusive) in `dir`,
     /// wrapping around: a prefix match anywhere in the scan order beats every substring match.
-    fn quick_find(
-        &self,
-        query: &str,
-        start: u32,
-        dir: Direction,
-        inclusive: bool,
-    ) -> Option<u32> {
+    fn quick_find(&self, query: &str, start: u32, dir: Direction, inclusive: bool) -> Option<u32> {
         let needle = query.as_bytes();
         if needle.is_empty() {
             return None;
@@ -549,8 +555,8 @@ impl PanelModel {
                 Direction::Backward => {
                     // k-th candidate: (start - !inclusive - k) mod len.
                     let skip = u64::from(!inclusive);
-                    ((u64::from(start) + 2 * u64::from(len) - skip - u64::from(k))
-                        % u64::from(len)) as u32
+                    ((u64::from(start) + 2 * u64::from(len) - skip - u64::from(k)) % u64::from(len))
+                        as u32
                 }
             };
             let name = self.name_at(self.visible[i as usize]).as_encoded_bytes();
@@ -575,15 +581,15 @@ fn real_slice(visible: &[u32], has_parent: bool) -> &[u32] {
 }
 
 /// Smallest single splice turning `old` into `new` (common prefix and suffix kept).
-fn splice_diff(old: &[u32], new: &[u32]) -> ModelChange {
+fn splice_diff<T>(old: &[T], new: &[T], same: impl Fn(&T, &T) -> bool) -> ModelChange {
     let mut prefix = 0usize;
-    while prefix < old.len() && prefix < new.len() && old[prefix] == new[prefix] {
+    while prefix < old.len() && prefix < new.len() && same(&old[prefix], &new[prefix]) {
         prefix += 1;
     }
     let mut suffix = 0usize;
     while suffix < old.len() - prefix
         && suffix < new.len() - prefix
-        && old[old.len() - 1 - suffix] == new[new.len() - 1 - suffix]
+        && same(&old[old.len() - 1 - suffix], &new[new.len() - 1 - suffix])
     {
         suffix += 1;
     }
@@ -606,7 +612,7 @@ fn fold_starts_with(haystack: &[u8], needle: &[u8]) -> bool {
         && haystack
             .iter()
             .zip(needle)
-            .all(|(h, n)| h.to_ascii_lowercase() == n.to_ascii_lowercase())
+            .all(|(h, n)| h.eq_ignore_ascii_case(n))
 }
 
 /// ASCII-case-insensitive substring test on raw bytes.
@@ -654,7 +660,11 @@ mod tests {
         match change {
             ModelChange::None => {}
             ModelChange::Reset => *shadow = names(m),
-            ModelChange::Spliced { pos, removed, added } => {
+            ModelChange::Spliced {
+                pos,
+                removed,
+                added,
+            } => {
                 let fresh: Vec<String> = (pos..pos + added)
                     .filter_map(|i| m.visible(i).map(|e| e.name.to_string_lossy().into_owned()))
                     .collect();
@@ -711,17 +721,29 @@ mod tests {
         // Insert before everything: c and d keep their ids and form the common suffix.
         assert_eq!(
             m.apply_batch(vec![file("a", 0)]),
-            ModelChange::Spliced { pos: 0, removed: 0, added: 1 }
+            ModelChange::Spliced {
+                pos: 0,
+                removed: 0,
+                added: 1
+            }
         );
         // Insert between "c" and "d": pure insertion at pos 2.
         assert_eq!(
             m.apply_batch(vec![file("cc", 0)]),
-            ModelChange::Spliced { pos: 2, removed: 0, added: 1 }
+            ModelChange::Spliced {
+                pos: 2,
+                removed: 0,
+                added: 1
+            }
         );
         // Append: pure insertion at the end.
         assert_eq!(
             m.apply_batch(vec![file("z", 0)]),
-            ModelChange::Spliced { pos: 4, removed: 0, added: 1 }
+            ModelChange::Spliced {
+                pos: 4,
+                removed: 0,
+                added: 1
+            }
         );
         // Duplicate names are ignored.
         assert_eq!(m.apply_batch(vec![file("z", 5)]), ModelChange::None);
@@ -784,7 +806,10 @@ mod tests {
         ); // rows >= 1
         assert_eq!(m.move_cursor(CursorMove::End), Some(5));
         assert_eq!(
-            m.move_cursor(CursorMove::Column { rows_per_column: 2, columns: -1 }),
+            m.move_cursor(CursorMove::Column {
+                rows_per_column: 2,
+                columns: -1
+            }),
             Some(3)
         );
         assert_eq!(m.move_cursor(CursorMove::Home), Some(0));
@@ -958,8 +983,45 @@ mod tests {
     }
 
     #[test]
+    fn update_removal_and_in_place_change_are_reported_exactly() {
+        let mut m = PanelModel::new();
+        m.begin_load(true);
+        m.apply_batch(vec![file("a", 1), file("b", 1), file("c", 1), file("d", 1)]);
+        let mut shadow = Vec::new();
+        apply_change(&m, &mut shadow, ModelChange::Reset);
+        // Removing an early entry must splice at its row, not at the tail.
+        let change = m.apply_update(vec![], &[OsString::from("a")]);
+        assert_eq!(
+            change,
+            ModelChange::Spliced {
+                pos: 1,
+                removed: 1,
+                added: 0
+            }
+        );
+        apply_change(&m, &mut shadow, change);
+        assert_view_matches_shadow(&m, &shadow);
+        // Same name, new metadata: the row stays but must be refreshed.
+        let change = m.apply_update(vec![file("c", 99)], &[]);
+        assert_eq!(
+            change,
+            ModelChange::Spliced {
+                pos: 2,
+                removed: 1,
+                added: 1
+            }
+        );
+        assert_eq!(m.visible(2).map(|e| e.size), Some(99));
+    }
+
+    #[test]
     fn symlink_to_dir_sorts_with_dirs() {
-        let link = Entry::new("zlink", EntryKind::Symlink { target: Some(TargetKind::Dir) });
+        let link = Entry::new(
+            "zlink",
+            EntryKind::Symlink {
+                target: Some(TargetKind::Dir),
+            },
+        );
         let mut m = PanelModel::new();
         m.begin_load(false);
         m.apply_batch(vec![file("aaa", 0), link]);

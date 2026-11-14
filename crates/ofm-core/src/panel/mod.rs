@@ -6,6 +6,7 @@ mod change;
 mod cursor;
 mod model;
 mod sort;
+mod sort_ids;
 
 #[cfg(test)]
 mod proptests;

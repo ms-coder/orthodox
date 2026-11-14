@@ -8,10 +8,10 @@ use std::ffi::{OsStr, OsString};
 use proptest::collection::vec;
 use proptest::prelude::*;
 
-use super::cursor::{CursorMove, Direction};
-use super::sort::{natural_cmp, SortKey, SortSpec};
 use super::ModelChange;
 use super::PanelModel;
+use super::cursor::{CursorMove, Direction};
+use super::sort::{SortKey, SortSpec, natural_cmp};
 use crate::entry::{Entry, EntryKind, TargetKind};
 use crate::mask::{Mask, MaskOpts};
 
@@ -114,17 +114,16 @@ fn ref_order(entries: &mut [&Entry], spec: &SortSpec) {
             SortKey::Name => natural_cmp(&a.name, &b.name),
             SortKey::Ext => natural_cmp_bytes(ref_ext(&a.name), ref_ext(&b.name))
                 .then_with(|| natural_cmp(&a.name, &b.name)),
-            SortKey::Size => a.size.cmp(&b.size).then_with(|| natural_cmp(&a.name, &b.name)),
+            SortKey::Size => a
+                .size
+                .cmp(&b.size)
+                .then_with(|| natural_cmp(&a.name, &b.name)),
             SortKey::Mtime => a
                 .mtime_ns
                 .cmp(&b.mtime_ns)
                 .then_with(|| natural_cmp(&a.name, &b.name)),
         };
-        if spec.reverse {
-            ord.reverse()
-        } else {
-            ord
-        }
+        if spec.reverse { ord.reverse() } else { ord }
     });
 }
 
@@ -251,7 +250,11 @@ fn apply_change(m: &PanelModel, shadow: &mut Vec<String>, change: ModelChange) {
                 .map(|n| n.to_string_lossy().into_owned())
                 .collect()
         }
-        ModelChange::Spliced { pos, removed, added } => {
+        ModelChange::Spliced {
+            pos,
+            removed,
+            added,
+        } => {
             let fresh: Vec<String> = (pos..pos + added)
                 .map(|i| vis(m, i).name.to_string_lossy().into_owned())
                 .collect();
@@ -485,7 +488,7 @@ proptest! {
     ) {
         let group = format!("{{{}}}", alts.join(","));
         let mask = parse_or_panic(&group, MaskOpts::default());
-        let expect = alts.iter().any(|a| name == *a);
+        let expect = alts.contains(&name);
         prop_assert_eq!(mask.is_match(OsStr::new(name.as_str())), expect);
     }
 

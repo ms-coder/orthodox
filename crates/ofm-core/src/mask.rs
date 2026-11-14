@@ -373,7 +373,10 @@ impl RenameMask {
         if target.is_empty() {
             return Err(invalid(target, "empty rename mask"));
         }
-        if target.bytes().any(|c| matches!(c, b'{' | b'}' | b'[' | b']')) {
+        if target
+            .bytes()
+            .any(|c| matches!(c, b'{' | b'}' | b'[' | b']'))
+        {
             return Err(invalid(
                 target,
                 "braces and classes are not supported in rename masks",
@@ -435,9 +438,12 @@ mod tests {
         unwrap_mask(Mask::parse(mask, MaskOpts::default()))
     }
     fn mci(mask: &str) -> Mask {
-        unwrap_mask(Mask::parse(mask, MaskOpts {
-            case_insensitive: true,
-        }))
+        unwrap_mask(Mask::parse(
+            mask,
+            MaskOpts {
+                case_insensitive: true,
+            },
+        ))
     }
     fn matches(mask: &str, name: &str) -> bool {
         m(mask).is_match(OsStr::new(name))

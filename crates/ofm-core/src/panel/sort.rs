@@ -50,7 +50,7 @@ pub fn natural_cmp(a: &OsStr, b: &OsStr) -> Ordering {
 
 /// `natural_cmp` on raw byte slices (extensions are compared without rebuilding an `OsStr`).
 /// Visible to sibling modules in `panel` (the model's arena comparator uses it).
-pub(super) fn natural_cmp_bytes(a: &[u8], b: &[u8]) -> Ordering {
+///
 /// Each string is treated as a stream of independent tokens — single ASCII-lowercased bytes, or
 /// whole digit runs compared numerically (leading zeros ignored). Tokenization must not depend on
 /// the *other* string: a joint walk (consume a digit run only when both sides are on digits) breaks
@@ -58,7 +58,7 @@ pub(super) fn natural_cmp_bytes(a: &[u8], b: &[u8]) -> Ordering {
 /// non-digit byte by its first digit byte; since the digit range `0x30..=0x39` contains no other
 /// class member, that is class-consistent and matches ASCII order. Equal token streams fall back to
 /// raw byte order (case, digit padding), so distinct names never compare `Equal`.
-fn natural_cmp_bytes(a: &[u8], b: &[u8]) -> Ordering {
+pub(super) fn natural_cmp_bytes(a: &[u8], b: &[u8]) -> Ordering {
     // Fast path: skip the common prefix (memcmp speed), then back up so the token logic starts
     // on a digit-run boundary for both strings (a run may straddle the divergence point).
     let mut i = a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count();
@@ -93,7 +93,7 @@ fn natural_cmp_bytes(a: &[u8], b: &[u8]) -> Ordering {
         }
     }
     match (i < a.len(), j < b.len()) {
-        (true, _) => Ordering::Greater, // b is a token-prefix of a
+        (true, _) => Ordering::Greater,  // b is a token-prefix of a
         (false, true) => Ordering::Less, // a is a token-prefix of b
         (false, false) => a.cmp(b),      // equal up to case / digit padding
     }
@@ -152,17 +152,16 @@ pub fn cmp_entries(spec: &SortSpec, a: &Entry, b: &Entry) -> Ordering {
     let key = match spec.key {
         SortKey::Name => natural_cmp(&a.name, &b.name),
         SortKey::Ext => name_ext_cmp(&a.name, &b.name).then_with(|| natural_cmp(&a.name, &b.name)),
-        SortKey::Size => a.size.cmp(&b.size).then_with(|| natural_cmp(&a.name, &b.name)),
+        SortKey::Size => a
+            .size
+            .cmp(&b.size)
+            .then_with(|| natural_cmp(&a.name, &b.name)),
         SortKey::Mtime => a
             .mtime_ns
             .cmp(&b.mtime_ns)
             .then_with(|| natural_cmp(&a.name, &b.name)),
     };
-    if spec.reverse {
-        key.reverse()
-    } else {
-        key
-    }
+    if spec.reverse { key.reverse() } else { key }
 }
 
 fn name_ext_cmp(a: &OsStr, b: &OsStr) -> Ordering {
@@ -212,7 +211,9 @@ mod tests {
 
     #[test]
     fn natural_is_antisymmetric() {
-        let names = ["", "a", "A", "ab", "aB", "a2", "a10", "a02", "a", "z", "Z", "0", "00"];
+        let names = [
+            "", "a", "A", "ab", "aB", "a2", "a10", "a02", "a", "z", "Z", "0", "00",
+        ];
         for x in names {
             for y in names {
                 assert_eq!(
@@ -310,7 +311,14 @@ mod tests {
     fn cmp_entries_dirs_first_beats_reverse() {
         let dir = e("zzz", EntryKind::Dir, 0, 0);
         let file = e("aaa", EntryKind::File, 0, 0);
-        let link_dir = e("mmm", EntryKind::Symlink { target: Some(crate::entry::TargetKind::Dir) }, 0, 0);
+        let link_dir = e(
+            "mmm",
+            EntryKind::Symlink {
+                target: Some(crate::entry::TargetKind::Dir),
+            },
+            0,
+            0,
+        );
         for reverse in [false, true] {
             let spec = SortSpec {
                 key: SortKey::Name,

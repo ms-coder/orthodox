@@ -27,8 +27,9 @@ fn make_entries(n: usize) -> Vec<Entry> {
                 3 => "md",
                 _ => "tar.gz",
             };
-            let name = format!("file_{i:06}.{ext}");
-            let kind = if r % 10 == 0 {
+            // Bijective scramble of 0..n: arrival order is not the sorted order (like readdir order).
+            let name = format!("file_{:06}.{ext}", (i * 37_139) % n);
+            let kind = if r.is_multiple_of(10) {
                 EntryKind::Dir
             } else {
                 EntryKind::File
@@ -41,28 +42,55 @@ fn make_entries(n: usize) -> Vec<Entry> {
         .collect()
 }
 
-/// Full re-sort of 100k entries (what `set_sort` does): the T1.1 budget case.
+/// Full re-sort of 100k entries (what `set_sort` does): the T1.1 budget case. One benchmark per
+/// key; each iteration alternates between two specs so every call really re-sorts.
 fn bench_resort_100k(c: &mut Criterion) {
     let mut m = PanelModel::new();
     m.begin_load(false);
     m.apply_batch(make_entries(100_000));
     m.finish_load();
-    let mut specs = Vec::new();
-    for key in [SortKey::Name, SortKey::Ext, SortKey::Size, SortKey::Mtime] {
-        for reverse in [false, true] {
-            specs.push(SortSpec {
+    for (label, key) in [
+        ("name", SortKey::Name),
+        ("ext", SortKey::Ext),
+        ("size", SortKey::Size),
+        ("mtime", SortKey::Mtime),
+    ] {
+        let specs = [
+            SortSpec {
                 key,
-                reverse,
+                reverse: false,
                 dirs_first: true,
-            });
-        }
+            },
+            SortSpec {
+                key,
+                reverse: true,
+                dirs_first: true,
+            },
+        ];
+        // Start from a different key so the first iteration also re-sorts.
+        let mut i = 0usize;
+        c.bench_function(&format!("panel_resort_100k_{label}"), |b| {
+            b.iter(|| {
+                i = (i + 1) % specs.len();
+                m.set_sort(black_box(specs[i]))
+            })
+        });
     }
-    let mut i = 0usize;
-    c.bench_function("panel_resort_100k", |b| {
-        b.iter(|| {
-            i = (i + 1) % specs.len();
-            m.set_sort(black_box(specs[i]))
-        })
+}
+
+/// Calibration: sorting 100k random `u64` on this machine (lower bound for any 100k sort here).
+fn bench_baseline_u64(c: &mut Criterion) {
+    let mut state = 1u64;
+    let data: Vec<u64> = (0..100_000).map(|_| lcg(&mut state)).collect();
+    c.bench_function("baseline_sort_100k_u64", |b| {
+        b.iter_batched(
+            || data.clone(),
+            |mut v| {
+                v.sort_unstable();
+                v
+            },
+            BatchSize::LargeInput,
+        )
     });
 }
 
@@ -86,5 +114,10 @@ fn bench_stream_100k(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_resort_100k, bench_stream_100k);
+criterion_group!(
+    benches,
+    bench_baseline_u64,
+    bench_resort_100k,
+    bench_stream_100k
+);
 criterion_main!(benches);
