@@ -7,6 +7,9 @@ mod cursor;
 mod model;
 mod sort;
 
+#[cfg(test)]
+mod proptests;
+
 pub use change::ModelChange;
 pub use cursor::{CursorMove, Direction};
 pub use model::PanelModel;
