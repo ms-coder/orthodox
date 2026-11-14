@@ -1,0 +1,115 @@
+# Theme: Commander Light (white/orange). Format: see far-blue.toml and ADR-0005.
+version = 1
+id = "commander-light"
+name = "Commander Light"
+base = "fixed"
+
+[font]
+family = "system"
+size = 0.0
+
+[retro]
+monospace_grid = false
+frames = "hairline"
+rounded_corners = false
+animations = false
+
+[colors.panel]
+bg = "#FFFFFF"
+bg_alt = "#F7F7F7"
+fg = "#1E1E1E"
+dir_fg = "#000000"
+dir_bold = true
+frame = "#E5E5E5"
+header_bg = "#F2F2F2"
+header_fg = "#1E1E1E"
+sort_indicator = "#F28C28"
+
+[colors.cursor]
+active_bg = "#F28C28"
+active_fg = "#FFFFFF"
+inactive_bg = ""
+inactive_fg = ""
+inactive_outline = "#F28C28"
+
+[colors.marked]
+fg = "#C2410C"
+bold = true
+
+[colors.status]
+bg = "#F2F2F2"
+fg = "#1E1E1E"
+
+[colors.cmdline]
+bg = "#FAFAFA"
+fg = "#000000"
+
+[colors.fkey]
+digit_fg = "#6B6B6B"
+label_fg = "#000000"
+label_bg = "#F2F2F2"
+hover_bg = "#F28C28"
+
+[colors.viewer]
+bg = "#FFFFFF"
+fg = "#1E1E1E"
+selection_bg = "#F9C89B"
+selection_fg = "#000000"
+hex_offset_fg = "#6B6B6B"
+match_bg = "#FFE08A"
+match_fg = "#000000"
+
+[colors.dialog]
+bg = "#FAFAFA"
+fg = "#1E1E1E"
+border = "#E5E5E5"
+button_bg = "#F2F2F2"
+button_fg = "#1E1E1E"
+button_focus_bg = "#F28C28"
+button_focus_fg = "#FFFFFF"
+
+[colors.progress]
+bar = "#F28C28"
+trough = "#E5E5E5"
+
+[colors.error]
+fg = "#B91C1C"
+bg = "#FEE2E2"
+
+[[highlight]]
+attr = "dir"
+icon = "folder"
+fg = "#000000"
+bold = true
+
+[[highlight]]
+attr = "broken_symlink"
+fg = "#B91C1C"
+icon = "emblem-unreadable"
+
+[[highlight]]
+attr = "hidden"
+fg = "#8A8A8A"
+
+[[highlight]]
+attr = "symlink"
+fg = "#7C3AED"
+icon = "emblem-symbolic-link"
+
+[[highlight]]
+attr = "executable"
+fg = "#15803D"
+icon = "application-x-executable"
+
+[[highlight]]
+attr = "archive"
+mask = "*.zip;*.7z;*.tar;*.tar.*;*.tgz;*.gz;*.bz2;*.xz;*.zst"
+icon = "package-x-generic"
+
+[[highlight]]
+attr = "image"
+icon = "image-x-generic"
+
+[[highlight]]
+attr = "source"
+icon = "text-x-script"

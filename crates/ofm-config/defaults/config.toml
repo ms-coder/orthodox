@@ -1,0 +1,50 @@
+# OFM configuration (ADR-0005). Location: $XDG_CONFIG_HOME/ofm/config.toml
+# Every key is optional; missing keys use the built-in default shown here.
+version = 1
+
+[general]
+confirm_quit_with_jobs = true
+confirm_delete = true
+confirm_overwrite = true
+one_panel_mode = false          # F01; remembered across restarts via session.toml
+
+[keymap]
+preset = "far"                  # far | tc | mc ; user overrides live in keymap.toml
+typing = ""                     # "" = preset default | "command_line" | "quick_search"
+
+[theme]
+name = "far-blue"               # far-blue | commander-light | adwaita | <file stem in themes/>
+live_reload = true
+
+[panels]
+default_view = "brief"          # brief | full | custom
+dirs_first = true
+show_hidden = false
+sort = "name"                   # name | ext | mtime | size
+custom_columns = ["name", "size", "mtime", "mode"]   # view = "custom"
+size_format = "binary"          # binary (KiB) | si (kB) | bytes
+time_format = "%Y-%m-%d %H:%M"
+filter_as_you_type = false      # F06 optional mode
+
+[jobs]
+default_run_mode = "queued"     # queued | parallel
+fsync_after_copy = false        # always on for cross-device move regardless of this setting
+follow_symlinks = false         # copy symlinks as links by default (F17)
+trash = true                    # F14: F8 moves to Trash
+
+[editor]
+# F23: command template; %f = file. Empty = $VISUAL, then $EDITOR, then GNOME Text Editor.
+command = ""
+terminal_editors = ["vim", "nvim", "nano", "mcedit", "emacs", "micro", "hx"]  # run in the embedded terminal
+[[editor.rule]]                 # first matching mask wins
+mask = "*.md;*.txt"
+command = ""
+
+[terminal]
+shell = ""                      # empty = $SHELL
+font = ""                       # empty = theme font
+scrollback = 10000
+
+[viewer]
+default_encoding = "auto"       # auto | utf-8 | utf-16le | utf-16be | windows-1251 | ibm866 | koi8-r | iso-8859-1
+wrap = false

@@ -1,0 +1,39 @@
+# Theme: Adwaita (follows GNOME light/dark preference and accent colour). Roles left out are derived
+# at runtime from adw::StyleManager; list only what you want to pin. Format: far-blue.toml / ADR-0005.
+version = 1
+id = "adwaita"
+name = "Adwaita"
+base = "adwaita"
+
+[font]
+family = "system"
+size = 0.0
+
+[retro]
+monospace_grid = false
+frames = "none"
+rounded_corners = true
+animations = true
+
+# No [colors.*] tables: all roles come from the system palette + accent colour.
+
+[[highlight]]
+attr = "dir"
+icon = "folder"
+bold = true
+
+[[highlight]]
+attr = "broken_symlink"
+icon = "emblem-unreadable"
+
+[[highlight]]
+attr = "hidden"
+fg = "@dim"                     # "@dim" / "@accent" / "@error" / "@success" / "@warning": system palette references
+
+[[highlight]]
+attr = "executable"
+fg = "@success"
+
+[[highlight]]
+attr = "symlink"
+icon = "emblem-symbolic-link"

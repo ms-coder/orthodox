@@ -9,3 +9,6 @@ publish = false
 workspace = true
 
 [dependencies]
+ofm-core = { path = "../ofm-core" }
+async-channel.workspace = true
+thiserror.workspace = true

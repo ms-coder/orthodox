@@ -1,0 +1,18 @@
+# User menu (F28). Global: $XDG_CONFIG_HOME/ofm/menu.toml ; per directory: ./.ofm-menu.toml
+# (per-directory entries are listed first). Placeholders: %f file under cursor, %s selected names
+# (quoted, space separated), %d this dir, %D other dir, %F file in other panel, %n name without
+# extension, %{input:Prompt} ask the user. Everything substituted is shell-quoted.
+version = 1
+
+[[item]]
+key = "T"                       # hotkey inside the menu
+title = "Tar selected files here"
+command = "tar -czf %{input:Archive name}.tar.gz %s"
+mask = ""                       # optional: only show when the cursor file matches
+terminal = true                 # run in the embedded terminal (false = background, output hidden)
+
+[[item]]
+key = "D"
+title = "Disk usage of selection"
+command = "du -sh %s"
+terminal = true

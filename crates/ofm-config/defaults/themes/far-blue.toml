@@ -1,0 +1,110 @@
+# Theme: Far Blue (ADR-0005). Colours are "#RRGGBB" or "#RRGGBBAA". Roles are semantic; the app
+# turns them into a render palette (custom widgets) and generated CSS (standard widgets).
+version = 1
+id = "far-blue"
+name = "Far Blue"
+base = "fixed"                  # fixed | adwaita (adwaita: unspecified roles follow GNOME light/dark + accent)
+
+[font]
+family = "monospace"            # "system" = GNOME UI font
+size = 0.0                      # points; 0 = system default, scaled by GNOME text scaling
+
+[retro]
+monospace_grid = true           # panel rows/columns snap to the character grid
+frames = "double"               # none | hairline | single | double (box-drawing)
+rounded_corners = false
+animations = false
+
+[colors.panel]
+bg = "#000080"
+bg_alt = ""                     # alternate row colour; empty = none
+fg = "#00FFFF"
+dir_fg = "#FFFFFF"
+dir_bold = true
+frame = "#00FFFF"
+header_bg = "#008080"
+header_fg = "#000000"
+sort_indicator = "#FFFF00"
+
+[colors.cursor]
+active_bg = "#008080"
+active_fg = "#000000"
+inactive_bg = ""                # empty = not filled
+inactive_fg = ""
+inactive_outline = "#008080"
+
+[colors.marked]
+fg = "#FFFF00"
+bold = false
+
+[colors.status]
+bg = "#000080"
+fg = "#00FFFF"
+
+[colors.cmdline]
+bg = "#000000"
+fg = "#C0C0C0"
+
+[colors.fkey]
+digit_fg = "#FFFFFF"
+label_fg = "#000000"
+label_bg = "#008080"
+hover_bg = "#00AAAA"
+
+[colors.viewer]
+bg = "#000080"
+fg = "#C0C0C0"
+selection_bg = "#008080"
+selection_fg = "#FFFFFF"
+hex_offset_fg = "#00FFFF"
+match_bg = "#FFFF00"
+match_fg = "#000000"
+
+[colors.dialog]
+bg = "#C0C0C0"
+fg = "#000000"
+border = "#FFFFFF"
+button_bg = "#008080"
+button_fg = "#FFFFFF"
+button_focus_bg = "#FFFF00"
+button_focus_fg = "#000000"
+
+[colors.progress]
+bar = "#00FFFF"
+trough = "#000080"
+
+[colors.error]
+fg = "#FF5555"
+bg = "#800000"
+
+# Highlight rules: evaluated in order, first match wins. A rule has either `attr` or `mask`
+# (glob list separated by ';'). Unset colours keep the panel defaults. `icon` is an icon name
+# (used by themes that draw icons, e.g. Commander Light).
+[[highlight]]
+attr = "broken_symlink"
+fg = "#FF5555"
+
+[[highlight]]
+attr = "hidden"
+fg = "#008080"
+
+[[highlight]]
+attr = "symlink"
+fg = "#FF55FF"
+
+[[highlight]]
+attr = "executable"
+fg = "#55FF55"
+
+[[highlight]]
+attr = "archive"
+mask = "*.zip;*.7z;*.tar;*.tar.*;*.tgz;*.gz;*.bz2;*.xz;*.zst"
+fg = "#FF55FF"
+
+[[highlight]]
+attr = "image"
+fg = "#FFFF55"
+
+[[highlight]]
+attr = "source"
+fg = "#FFFFFF"
