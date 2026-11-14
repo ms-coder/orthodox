@@ -72,6 +72,6 @@ To change an agent's model or effort, edit the `model:` / `effort:` line in `.cl
 
 ## Naming
 
-The working name is **OFM** (crates `ofm-*`, binary `ofm`, app ID `io.github.CHANGE_ME.Ofm`).
+The working name is **OFM** (crates `ofm-*`, binary `ofm`, app ID `io.github.mscoder.Ofm`).
 To pick your own name, edit the two lines in `KICKOFF.md` before you paste it; the lead renames
 everything in milestone M0.

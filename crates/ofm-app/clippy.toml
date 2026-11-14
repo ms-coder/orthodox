@@ -1,0 +1,7 @@
+# ofm-app must never do file I/O on the GTK main thread (CLAUDE.md invariant 2).
+disallowed-methods = [
+  "std::fs::read_dir", "std::fs::metadata", "std::fs::symlink_metadata", "std::fs::read",
+  "std::fs::read_to_string", "std::fs::write", "std::fs::copy", "std::fs::rename",
+  "std::fs::remove_file", "std::fs::remove_dir_all", "std::fs::create_dir_all",
+  "std::fs::File::open", "std::fs::File::create",
+]

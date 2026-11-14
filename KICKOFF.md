@@ -6,12 +6,12 @@ Use the same prompt to resume in a new session.
 You are the lead for this repository. Build OFM v1.0 exactly as specified, using subagents.
 
 Project name: OFM
-App ID: io.github.CHANGE_ME.Ofm
+App ID: io.github.mscoder.Ofm
 
 1. Read `CLAUDE.md`, then `docs/PROGRESS.md`, `docs/PLAN.md`, `docs/SPEC.md`, `docs/ARCHITECTURE.md`
    and everything in `docs/adr/`.
 2. If `docs/PROGRESS.md` says no milestone has started: begin with M0. If the project name or app ID
-   above differ from "OFM" / "io.github.CHANGE_ME.Ofm", rename crates, binary, app ID and docs in M0.
+   above differ from "OFM" / "io.github.mscoder.Ofm", rename crates, binary, app ID and docs in M0.
    Otherwise: continue with the first task that is not `done`, respecting dependencies and gates.
    If the last entry says a gate is waiting for feedback and I have not given any yet, show me the
    gate checklist again and stop.
