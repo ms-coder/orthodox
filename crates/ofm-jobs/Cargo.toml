@@ -20,6 +20,8 @@ async-channel.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 rustix = { version = "1.1.6", features = ["fs", "process"] }
+# Local time for `DeletionDate` in .trashinfo (pure-Rust TZif reading, no unsafe/libc).
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 ofm-testkit = { path = "../ofm-testkit", optional = true }
 
 [dev-dependencies]
