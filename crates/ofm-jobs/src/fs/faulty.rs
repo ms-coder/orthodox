@@ -297,6 +297,11 @@ impl Fs for FaultyFs {
         self.inner.set_xattr(path, name, value, follow)
     }
 
+    fn remove_xattr(&self, path: &Path, name: &OsStr, follow: bool) -> io::Result<()> {
+        check(&self.state, FaultOp::RemoveXattr)?;
+        self.inner.remove_xattr(path, name, follow)
+    }
+
     fn trash(&self, path: &Path) -> Result<(), TrashError> {
         check(&self.state, FaultOp::Trash)?;
         self.inner.trash(path)

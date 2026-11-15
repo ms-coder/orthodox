@@ -211,6 +211,16 @@ pub trait Fs: Send + Sync {
     fn get_xattr(&self, path: &Path, name: &OsStr, follow: bool) -> io::Result<Option<Vec<u8>>>;
     /// Set an xattr.
     fn set_xattr(&self, path: &Path, name: &OsStr, value: &[u8], follow: bool) -> io::Result<()>;
+    /// Remove an xattr (`removexattr`/`lremovexattr`). The default reports `Unsupported` for
+    /// implementations without removal (T3.7a, additive; e.g. wrappers over a limited base).
+    /// A vanished xattr fails with `NotFound`, like the raw syscall.
+    fn remove_xattr(&self, path: &Path, name: &OsStr, follow: bool) -> io::Result<()> {
+        let _ = (path, name, follow);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "remove_xattr: not implemented",
+        ))
+    }
     /// Move to the freedesktop trash (`ops::trash`, T3.2). `Unavailable` makes the engine ask.
     fn trash(&self, path: &Path) -> Result<(), TrashError>;
     /// Whether the process runs as root (decides `fchown`/`security.*` xattrs on copy).
