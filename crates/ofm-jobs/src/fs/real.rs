@@ -1,9 +1,11 @@
-//! [`RealFs`]: the production [`Fs`], a thin layer over `rustix` (no `unsafe`, no libc crate).
+//! [`RealFs`]: the production [`Fs`], a thin layer over `rustix` (no libc crate). The only
+//! `unsafe` is the checked `close` behind [`FsFile::close`] (T3.6 M4), which `OwnedFd` cannot
+//! express (its `Drop` ignores the result).
 //! Delivered with T3.0 so the trait design is proven; T3.1 owns it from here (bug fixes, tuning).
 
 use std::ffi::{OsStr, OsString};
 use std::io;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, IntoRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
@@ -12,7 +14,7 @@ use rustix::fs::{
 };
 use rustix::io::Errno;
 
-use super::{Fs, FsFile, FsStat, TrashError};
+use super::{FileType, Fs, FsFile, FsStat, TrashError};
 
 /// Real implementation backed by `rustix`.
 #[derive(Debug, Default, Clone, Copy)]
@@ -100,10 +102,17 @@ impl FsFile for RealFile {
     fn try_clone_from(&mut self, src: &dyn FsFile) -> io::Result<bool> {
         match rustix::fs::ioctl_ficlone(&self.fd, src.as_fd()) {
             Ok(()) => Ok(true),
-            // Different file system, no reflink support, or not a regular file: use the next tier.
-            Err(Errno::XDEV | Errno::OPNOTSUPP | Errno::INVAL | Errno::NOSYS | Errno::NOTTY) => {
-                Ok(false)
-            }
+            // Different file system, no reflink support, not a regular file, refused by a
+            // seccomp filter or for an immutable/swap file (EPERM, ETXTBSY): use the next tier.
+            Err(
+                Errno::XDEV
+                | Errno::OPNOTSUPP
+                | Errno::INVAL
+                | Errno::NOSYS
+                | Errno::NOTTY
+                | Errno::PERM
+                | Errno::TXTBSY,
+            ) => Ok(false),
             Err(e) => Err(e.into()),
         }
     }
@@ -114,7 +123,17 @@ impl FsFile for RealFile {
             match rustix::fs::copy_file_range(src.as_fd(), None, &self.fd, None, len) {
                 Ok(n) => return Ok(Some(n as u64)),
                 Err(Errno::INTR) => {}
-                Err(Errno::XDEV | Errno::NOSYS | Errno::OPNOTSUPP | Errno::INVAL | Errno::BADF) => {
+                // Like coreutils: unsupported here, or refused by seccomp (EPERM) / for a swap
+                // file (ETXTBSY). The read/write tier reports a real error if there is one.
+                Err(
+                    Errno::XDEV
+                    | Errno::NOSYS
+                    | Errno::OPNOTSUPP
+                    | Errno::INVAL
+                    | Errno::BADF
+                    | Errno::PERM
+                    | Errno::TXTBSY,
+                ) => {
                     return Ok(None);
                 }
                 Err(e) => return Err(e.into()),
@@ -165,6 +184,39 @@ impl FsFile for RealFile {
     fn sync(&mut self) -> io::Result<()> {
         Ok(rustix::fs::fsync(&self.fd)?)
     }
+
+    fn close(self: Box<Self>) -> io::Result<()> {
+        let raw = self.fd.into_raw_fd();
+        // SAFETY: `raw` was just released from the `OwnedFd` this handle owned exclusively, so it
+        // is open and nothing else uses or closes it; `try_close` consumes it (also on error).
+        match unsafe { rustix::io::try_close(raw) } {
+            // Linux has released the descriptor; EINTR does not report lost data.
+            Ok(()) | Err(Errno::INTR) => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+/// Open a copy source without blocking: `O_NONBLOCK` makes opening a FIFO (swapped in after the
+/// engine's `lstat`) return at once instead of waiting forever for a writer, where not even
+/// cancel could reach the job. FIFOs, sockets and devices are then refused, and the flag is
+/// cleared again for the normal blocking reads.
+fn open_source(path: &Path, follow: bool) -> io::Result<Box<dyn FsFile>> {
+    let mut flags = OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK | OFlags::NOCTTY;
+    if !follow {
+        flags |= OFlags::NOFOLLOW;
+    }
+    let fd = retry(|| rustix::fs::openat(CWD, path, flags, Mode::empty()))?;
+    let st = convert(&rustix::fs::fstat(&fd)?);
+    if st.file_type() == FileType::Other {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "special file (FIFO, socket or device); not opened for copying",
+        ));
+    }
+    let fl = rustix::fs::fcntl_getfl(&fd)?;
+    rustix::fs::fcntl_setfl(&fd, fl - OFlags::NONBLOCK)?;
+    Ok(Box::new(RealFile { fd }))
 }
 
 /// Run a "fill this buffer" xattr syscall, growing the buffer on `ERANGE`.
@@ -186,15 +238,11 @@ fn xattr_buf(mut f: impl FnMut(&mut [u8]) -> Result<usize, Errno>) -> io::Result
 
 impl Fs for RealFs {
     fn open_read(&self, path: &Path) -> io::Result<Box<dyn FsFile>> {
-        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-        let fd = retry(|| rustix::fs::openat(CWD, path, flags, Mode::empty()))?;
-        Ok(Box::new(RealFile { fd }))
+        open_source(path, false)
     }
 
     fn open_read_follow(&self, path: &Path) -> io::Result<Box<dyn FsFile>> {
-        let flags = OFlags::RDONLY | OFlags::CLOEXEC;
-        let fd = retry(|| rustix::fs::openat(CWD, path, flags, Mode::empty()))?;
-        Ok(Box::new(RealFile { fd }))
+        open_source(path, true)
     }
 
     fn create_excl(&self, path: &Path, mode: u32) -> io::Result<Box<dyn FsFile>> {

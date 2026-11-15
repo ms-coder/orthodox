@@ -145,6 +145,13 @@ pub trait FsFile: Send {
     fn set_owner(&mut self, uid: Option<u32>, gid: Option<u32>) -> io::Result<()>;
     /// `fsync`.
     fn sync(&mut self) -> io::Result<()>;
+    /// Checked `close` (T3.6, additive): NFS and FUSE may report a deferred write error only
+    /// here, so the engine closes every temp file with this before publishing it. The default
+    /// (for wrappers and test doubles without a descriptor of their own) just drops the handle.
+    fn close(self: Box<Self>) -> io::Result<()> {
+        drop(self);
+        Ok(())
+    }
 }
 
 /// File system operations used by the engine. Implementations must be cheap to call from many

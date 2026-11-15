@@ -7,6 +7,8 @@
 //! to make a copy fail "at the N-th data write" you may need faults on `FileWrite` AND
 //! `CopyRangeFrom`, depending on which tier the engine picks on that file system. A
 //! `ShortWrite` effect only has a meaning on `FileWrite`; on any other op it is ignored.
+//! `FileClose` faults the checked close of a handle (`FsFile::close`); the descriptor is still
+//! released, as with close(2).
 //!
 //! ```ignore
 //! let plan = FaultPlan::new().fail_nth(FaultOp::FileWrite, 3, FaultErrno::NoSpace);
@@ -166,6 +168,14 @@ impl FsFile for FaultyFile {
     fn sync(&mut self) -> io::Result<()> {
         check(&self.state, FaultOp::FileSync)?;
         self.inner.sync()
+    }
+
+    fn close(self: Box<Self>) -> io::Result<()> {
+        // The descriptor is released either way (like close(2)); an injected error is reported
+        // as a deferred write error would be.
+        let injected = check(&self.state, FaultOp::FileClose);
+        let real = self.inner.close();
+        injected.and(real)
     }
 }
 
