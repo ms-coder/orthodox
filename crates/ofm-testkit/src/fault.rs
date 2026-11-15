@@ -81,6 +81,8 @@ pub enum FaultOp {
     GetXattr,
     /// `Fs::set_xattr`.
     SetXattr,
+    /// `Fs::remove_xattr`.
+    RemoveXattr,
     /// `Fs::trash`.
     Trash,
     /// `FsFile::stat`.

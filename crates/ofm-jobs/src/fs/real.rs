@@ -389,6 +389,15 @@ impl Fs for RealFs {
         Ok(res?)
     }
 
+    fn remove_xattr(&self, path: &Path, name: &OsStr, follow: bool) -> io::Result<()> {
+        let res = if follow {
+            rustix::fs::removexattr(path, name)
+        } else {
+            rustix::fs::lremovexattr(path, name)
+        };
+        Ok(res?)
+    }
+
     fn trash(&self, path: &Path) -> Result<(), TrashError> {
         crate::ops::trash::trash_path(path)
     }

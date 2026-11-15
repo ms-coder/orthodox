@@ -16,6 +16,12 @@
 //! NOT preserved (file system without ACLs, not the owner of the copy, ...), the group/other
 //! bits are rebuilt from the ACL's own `group::`/`other::` entries instead of the mask: a file
 //! with mode 0600 plus an entry `u:nobody:rw` (stat 0660) never becomes plain `group::rw-`.
+//!
+//! Inheritance is one-way too (review N1): a copy made inside a directory with a DEFAULT ACL —
+//! the copy of a source directory that carries one, or a pre-existing destination — inherits
+//! access-ACL entries (and, for subdirectories, a default ACL) its source never had, and `chmod`
+//! cannot undo them (it only narrows the mask). Such inherited ACLs are removed again; when the
+//! copy's ACL does not end up byte-equal to the source's, the never-widen fallback applies.
 
 use std::ffi::{OsStr, OsString};
 use std::io;
@@ -29,6 +35,8 @@ use super::{Copier, Frame};
 
 /// `EOPNOTSUPP`/`ENOTSUP` (same value on Linux).
 const EOPNOTSUPP: i32 = 95;
+/// `ENODATA` (the xattr to remove is not there).
+const ENODATA: i32 = 61;
 
 /// Set-user-ID and set-group-ID bits.
 const SET_ID_BITS: u32 = 0o6000;
@@ -46,6 +54,8 @@ const ACL_DEFAULT: &str = "system.posix_acl_default";
 // `0xffffffff` for the qualifier-less entries (u::, g::, m::, o::) and a uid/gid otherwise.
 /// The only version the kernel accepts.
 const ACL_VERSION: u32 = 0x0002;
+/// Tag of the owning user's entry (`user::`).
+const ACL_USER_OBJ: u16 = 0x01;
 /// Tag of the owning group's own entry (`group::`).
 const ACL_GROUP_OBJ: u16 = 0x04;
 /// Tag of the `other::` entry.
@@ -96,6 +106,29 @@ fn perm_without_mask(perm: u32, group_other: Option<(u32, u32)>) -> u32 {
         Some((g, o)) => (perm & !GROUP_OTHER_BITS) | (g << 3) | o,
         None => perm & !GROUP_OTHER_BITS,
     }
+}
+
+/// The minimal ACL xattr value of `perm`: just `u::`/`g::`/`o::`, no mask, no named entries.
+/// The kernel drops the xattr again when an ACL carries nothing beyond the mode, so writing
+/// this removes an ACL (see [`Copier::drop_inherited_acl`](Self::drop_inherited_acl)) where
+/// `removexattr` is unavailable.
+fn minimal_acl(perm: u32) -> Vec<u8> {
+    fn entry(tag: u16, perm: u16) -> [u8; 8] {
+        let mut e = [0u8; 8];
+        e[..2].copy_from_slice(&tag.to_le_bytes());
+        e[2..4].copy_from_slice(&perm.to_le_bytes());
+        e[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        e
+    }
+    let mut v = ACL_VERSION.to_le_bytes().to_vec();
+    for (tag, bits) in [
+        (ACL_USER_OBJ, perm >> 6 & 7),
+        (ACL_GROUP_OBJ, perm >> 3 & 7),
+        (ACL_OTHER, perm & 7),
+    ] {
+        v.extend_from_slice(&entry(tag, bits as u16));
+    }
+    v
 }
 
 impl Copier {
@@ -174,6 +207,11 @@ impl Copier {
     /// They are set BEFORE the mode (see the module doc): installing an access ACL writes the
     /// mask into the group-class bits, and the `chmod` that follows maps the source's group bits
     /// back into the mask, leaving mode, mask and entries exactly like the source's.
+    ///
+    /// The reverse direction matters as much (review N1): when the source has no such ACL but
+    /// `dst` inherited one from the destination directory's default ACL (a temp file created
+    /// there, or a fresh subdirectory), that inherited ACL is removed again — otherwise the
+    /// copy would carry permissions (e.g. `user:nobody:rwx`) its source never had.
     fn copy_acls(
         &mut self,
         ctx: &mut JobCtx,
@@ -185,36 +223,115 @@ impl Copier {
         let follow = self.follow;
         for raw in [ACL_ACCESS, ACL_DEFAULT] {
             let name = OsStr::new(raw);
-            if !names.iter().any(|n| n == name) {
-                continue;
-            }
-            let what = if raw == ACL_ACCESS {
-                "access control list not preserved"
+            let value = if names.iter().any(|n| n == name) {
+                match fs.get_xattr(src, name, follow) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.meta_warn(ctx, src, "access control list not read", &e);
+                        continue;
+                    }
+                }
             } else {
-                "default access control list not preserved"
+                None
             };
-            match fs.get_xattr(src, name, follow) {
-                Ok(Some(value)) => {
+            match value {
+                Some(value) => {
+                    let what = if raw == ACL_ACCESS {
+                        "access control list not preserved"
+                    } else {
+                        "default access control list not preserved"
+                    };
                     if let Err(e) = fs.set_xattr(dst, name, &value, false) {
                         self.meta_warn(ctx, dst, what, &e);
                     }
                 }
-                Ok(None) => {}
-                Err(e) => self.meta_warn(ctx, src, "access control list not read", &e),
+                None => self.drop_inherited_acl(ctx, fs, src, dst, name),
             }
         }
+    }
+
+    /// Remove an ACL xattr from `dst` that the source does not have (inherited from the
+    /// destination directory's default ACL, review N1). Runs before children of a copied
+    /// directory are created, so nothing inherits from an inherited default ACL either. An
+    /// access ACL that cannot be removed is overwritten with the minimal ACL of the source's
+    /// mode — the kernel drops an xattr that carries nothing beyond the mode — so the copy ends
+    /// with exactly the source's permissions; a default ACL has no such fallback (it exists to
+    /// be inherited, not to grant anything itself) and only warns.
+    fn drop_inherited_acl(
+        &mut self,
+        ctx: &mut JobCtx,
+        fs: &dyn Fs,
+        src: &Path,
+        dst: &Path,
+        name: &OsStr,
+    ) {
+        if !matches!(fs.get_xattr(dst, name, false), Ok(Some(_))) {
+            // Nothing was inherited (the common case), or ACLs are not supported here.
+            return;
+        }
+        let err = match fs.remove_xattr(dst, name, false) {
+            Ok(()) => return,
+            // Raced with another remover: gone is gone (`ENODATA` is what removexattr says).
+            Err(e) if e.kind() == io::ErrorKind::NotFound || e.raw_os_error() == Some(ENODATA) => {
+                return;
+            }
+            Err(e) => e,
+        };
+        let access = name == OsStr::new(ACL_ACCESS);
+        let err = if access {
+            match self.replace_with_minimal_acl(fs, src, dst) {
+                Ok(()) => {
+                    tracing::debug!(
+                        dst = %dst.display(),
+                        error = %err,
+                        "inherited ACL replaced by the minimal ACL of the source mode"
+                    );
+                    return;
+                }
+                Err(set_err) => set_err,
+            }
+        } else {
+            err
+        };
+        let what = if access {
+            "inherited access control list not removed"
+        } else {
+            "inherited default access control list not removed"
+        };
+        self.meta_warn(ctx, dst, what, &err);
+    }
+
+    /// Overwrite the access ACL of `dst` with the minimal ACL of `src`'s mode (last resort of
+    /// [`drop_inherited_acl`](Self::drop_inherited_acl) when removal is refused). `Err` if the
+    /// source mode cannot be read or the xattr cannot be written.
+    fn replace_with_minimal_acl(&self, fs: &dyn Fs, src: &Path, dst: &Path) -> io::Result<()> {
+        let stat = if self.follow {
+            fs.stat(src)
+        } else {
+            fs.lstat(src)
+        }?;
+        fs.set_xattr(
+            dst,
+            OsStr::new(ACL_ACCESS),
+            &minimal_acl(stat.perm()),
+            false,
+        )
     }
 
     /// The permission bits to give a copy of `src` (at `dst`): while the source has no access ACL,
     /// `perm` (its own mode) is the truth. With an access ACL the group-class bits of `st_mode`
     /// hold the ACL MASK, not the owning group's own permissions, so:
     ///
-    /// * ACL preserved on `dst` — `perm` passes through; the `chmod` after the ACL writes the
-    ///   group bits into the mask, which reproduces the source exactly.
-    /// * ACL not preserved — copying the mask as plain group bits could grant the owning group
-    ///   access the source never gave it (mode 0600 + `u:nobody:rw` stats as 0660). The
-    ///   group/other bits are rebuilt from the ACL's `group::`/`other::` entries, or cleared
-    ///   when the ACL cannot be read or parsed: access is never widened (SPEC F17, review M1).
+    /// * ACL on `dst` byte-equal to the source's — `perm` passes through; the `chmod` after the
+    ///   ACL writes the group bits into the mask, which reproduces the source exactly. Merely
+    ///   *existing* is not enough (review N1): an inherited ACL of the destination directory
+    ///   that [`drop_inherited_acl`](Self::drop_inherited_acl) could not remove is not the
+    ///   source's, and a `set_xattr` that failed may have left a different one behind.
+    /// * ACL not (or not exactly) preserved — copying the mask as plain group bits could grant
+    ///   the owning group access the source never gave it (mode 0600 + `u:nobody:rw` stats as
+    ///   0660). The group/other bits are rebuilt from the ACL's `group::`/`other::` entries, or
+    ///   cleared when the ACL cannot be read or parsed: access is never widened (SPEC F17,
+    ///   review M1).
     fn acl_safe_perm(
         &mut self,
         ctx: &mut JobCtx,
@@ -223,25 +340,33 @@ impl Copier {
         dst: &Path,
         perm: u32,
     ) -> u32 {
-        let acl = match fs.get_xattr(src, OsStr::new(ACL_ACCESS), self.follow) {
-            Ok(Some(acl)) => Some(acl),
-            // No access ACL, or a file system without ACL support (`EOPNOTSUPP`): the plain
-            // permission bits are the real permissions.
-            Ok(None) => return perm,
-            Err(e) if unsupported(&e) => return perm,
-            // There may be an ACL that cannot be read: conservative fallback below.
-            Err(_) => None,
+        // The source's access ACL: `Some(bytes)` = present, `None` = absent, `unknown` =
+        // possibly present but unreadable (conservative fallback below).
+        let (src_acl, unknown) = match fs.get_xattr(src, OsStr::new(ACL_ACCESS), self.follow) {
+            Ok(acl) => (acl, false),
+            // A file system without ACL support (`EOPNOTSUPP`): the plain permission bits are
+            // the real permissions.
+            Err(e) if unsupported(&e) => (None, false),
+            Err(_) => (None, true),
         };
-        if matches!(
-            fs.get_xattr(dst, OsStr::new(ACL_ACCESS), false),
-            Ok(Some(_))
-        ) {
-            // The copy carries the ACL (set by `copy_acls` before this mode).
+        let copy_acl = fs
+            .get_xattr(dst, OsStr::new(ACL_ACCESS), false)
+            .ok()
+            .flatten();
+        if !unknown && copy_acl == src_acl {
+            // The copy carries the source's ACL (set by `copy_acls` before this mode) — or
+            // neither has one, and no inherited ACL survived.
             return perm;
         }
-        let entries = acl.as_deref().and_then(acl_group_other);
+        let entries = if unknown {
+            None
+        } else {
+            src_acl.as_deref().and_then(acl_group_other)
+        };
         let what = if entries.is_some() {
             "access control list not preserved: group/other permissions reduced to the source's own group and other entries"
+        } else if src_acl.is_none() && copy_acl.is_some() {
+            "inherited access control list not removed: group/other permissions cleared"
         } else {
             "access control list not preserved: group/other permissions cleared"
         };
@@ -400,5 +525,21 @@ mod tests {
         assert_eq!(perm_without_mask(0o640, Some((0o4, 0o0))), 0o640);
         // Unknown entries: group/other cleared, user and set-id bits kept.
         assert_eq!(perm_without_mask(0o4755, None), 0o4700);
+    }
+
+    #[test]
+    fn minimal_acl_carries_nothing_beyond_the_mode() {
+        // u::rw-, g::r--, o::--- plus the version header: the kernel drops the xattr when such
+        // an ACL is written, which `drop_inherited_acl` uses as its removal fallback (review N1).
+        assert_eq!(
+            minimal_acl(0o640),
+            acl(&[
+                entry(0x01, 0o6, UNDEF),
+                entry(0x04, 0o4, UNDEF),
+                entry(0x20, 0o0, UNDEF),
+            ])
+        );
+        assert_eq!(acl_group_other(&minimal_acl(0o640)), Some((0o4, 0o0)));
+        assert_eq!(minimal_acl(0).len(), 4 + 3 * 8);
     }
 }
