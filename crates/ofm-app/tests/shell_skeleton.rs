@@ -86,7 +86,10 @@ fn lists_switches_and_moves() {
     assert_eq!(ctx.active_side(), LEFT);
 
     // Commands nobody implemented yet are reported, not crashed on.
-    assert_eq!(ctx.execute(cmd::FILE_COPY), ExecResult::NotImplemented);
+    assert_eq!(
+        ctx.execute(cmd::FILE_CLIPBOARD_PASTE),
+        ExecResult::NotImplemented
+    );
 }
 
 // The former placeholders `file_list_brief_mode_columns` (T2.1) and `navigation_commands` (T2.3) were
