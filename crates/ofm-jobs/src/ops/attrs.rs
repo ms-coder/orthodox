@@ -8,18 +8,23 @@
 //! so `u+rwx` opens a locked directory — **unless** the change would take away the owner's own
 //! read or traverse bits (`u-rx` and friends): then it is changed only after its children
 //! (post-order), so the job cannot lock itself out of the subtree it still has to walk. A
-//! directory the owner cannot list is temporarily given `u+rx` for the walk and restored
-//! afterwards (also on error or cancel); if even that fails, the listing goes through
-//! `ctx.attempt` as a per-entry error and is never silently skipped.
+//! directory of ours that we cannot list/traverse is temporarily given `u+rx` for the walk
+//! and restored afterwards — always, also when the listing itself is denied or the job is
+//! aborted or cancelled at that point. Another user's directory is never opened preemptively
+//! (the owner's bits say nothing about *our* access; a chmod would only fail with EPERM): it
+//! is listed as it stands, only a listing denied with EACCES can lead to a temporary open,
+//! and a listing failure is asked through `ctx.attempt` as a per-entry error, never silently
+//! skipped.
 //!
 //! Symlinks are skipped for chmod (Linux cannot chmod a link) and never followed in recursion;
 //! chown uses `lchown` semantics. The owner is changed before the mode (chown clears set-id bits).
 //! An object that already has the requested owner/mode costs no syscall. Failures: `ctx.attempt`.
 
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::ctx::JobCtx;
+use crate::ctx::{ErrorResolution, JobCtx};
 use crate::error::JobError;
 use crate::event::Operation;
 use crate::fs::FsStat;
@@ -126,14 +131,22 @@ fn apply(ctx: &mut JobCtx, path: &Path, change: &Change, top: bool) -> Result<()
     ctx.file_done();
 
     if st.is_dir() && change.recursive {
-        // If the owner cannot list/traverse the directory as it stands now, open it temporarily.
-        let opened = walked_perm & OWNER_RX != OWNER_RX;
-        if opened {
+        // If the job's user cannot list/traverse the directory as it stands now, open it
+        // temporarily. The owner's r/x bits govern our access only on a directory we own
+        // ourselves; another user's directory is listed as it is (the group or other bits may
+        // well allow it — a preemptive chmod there would only fail with EPERM) and is opened
+        // only after the listing was actually denied (EACCES).
+        let mut opened = false;
+        let listed = if opens_before_listing(effective_uid(), &st, walked_perm) {
             let grant = walked_perm | OWNER_RX;
             ctx.attempt(path, Operation::SetAttrs, |fs| fs.set_mode(path, grant))?;
-        }
+            opened = true;
+            ctx.attempt(path, Operation::SetAttrs, |fs| fs.read_dir(path))
+        } else {
+            list_denied_opening(ctx, path, &st, walked_perm, &mut opened)
+        };
         let mut walked = Ok(());
-        if let Some(names) = ctx.attempt(path, Operation::SetAttrs, |fs| fs.read_dir(path))? {
+        if let Ok(Some(names)) = &listed {
             ctx.add_total(names.len() as u64, 0);
             for name in names {
                 if let Err(e) = apply(ctx, &path.join(name), change, false) {
@@ -142,9 +155,12 @@ fn apply(ctx: &mut JobCtx, path: &Path, change: &Change, top: bool) -> Result<()
                 }
             }
         }
+        // Restore the temporarily granted mode BEFORE propagating the listing/walk result, so
+        // an aborted, cancelled or denied listing never leaves it behind (T3.7c).
         if opened {
             restore_mode(ctx, path, walked_perm);
         }
+        listed?;
         walked?;
     }
     if let Some(want) = deferred {
@@ -160,6 +176,61 @@ const OWNER_RX: u32 = 0o500;
 /// `true` if applying `want` before walking would take away an owner r/x bit the directory has.
 fn locks_itself_out(st: &FsStat, want: u32, recursive: bool) -> bool {
     recursive && st.is_dir() && st.perm() & OWNER_RX & !want != 0
+}
+
+/// The effective uid of the process. The `Fs` seam (frozen by T3.0) has no euid query, so this
+/// one place goes to rustix directly — the same escape hatch `fs::real` uses for `is_root`.
+fn effective_uid() -> u32 {
+    rustix::process::geteuid().as_raw()
+}
+
+/// Whether the walk grants itself owner r/x *before* listing: only on a directory the
+/// effective user owns, because only then do the owner's bits govern our own access. On
+/// another user's directory the listing is tried first (the group or other bits may allow it)
+/// and it is opened reactively, if at all (see [`list_denied_opening`]).
+fn opens_before_listing(euid: u32, st: &FsStat, walked_perm: u32) -> bool {
+    st.uid == euid && walked_perm & OWNER_RX != OWNER_RX
+}
+
+/// List `path` for the walk when the owner's r/x bits do not govern our access (another user's
+/// directory, or already walkable): the listing is tried as it stands. Only a listing denied
+/// with EACCES leads to a temporary open — possible only where the effective user may chmod
+/// the directory (their own, or as root); every other failure is asked as the listing error
+/// itself. `Ok(None)` = skipped by the user; `*opened` says whether a grant was applied that
+/// the caller must restore.
+fn list_denied_opening(
+    ctx: &mut JobCtx,
+    path: &Path,
+    st: &FsStat,
+    walked_perm: u32,
+    opened: &mut bool,
+) -> Result<Option<Vec<OsString>>, JobError> {
+    ctx.checkpoint()?;
+    let denied = match ctx.fs().read_dir(path) {
+        Ok(names) => return Ok(Some(names)),
+        Err(e) => e,
+    };
+    let grant = walked_perm | OWNER_RX;
+    if denied.kind() == io::ErrorKind::PermissionDenied
+        && grant != walked_perm
+        && (st.uid == effective_uid() || ctx.fs().is_root())
+    {
+        // Denied, and we may chmod the directory: grant ourselves r/x and list again.
+        if ctx
+            .attempt(path, Operation::SetAttrs, |fs| fs.set_mode(path, grant))?
+            .is_some()
+        {
+            *opened = true;
+            return ctx.attempt(path, Operation::SetAttrs, |fs| fs.read_dir(path));
+        }
+        return Ok(None); // the user skipped the chmod: the listing is skipped with it
+    }
+    // Nothing to open (not our directory, nothing to grant) or a different error:
+    // retry/skip/abort on the listing itself.
+    match ctx.resolve_error(path, Operation::SetAttrs, &denied)? {
+        ErrorResolution::Retry => ctx.attempt(path, Operation::SetAttrs, |fs| fs.read_dir(path)),
+        ErrorResolution::Skip => Ok(None),
+    }
 }
 
 /// Put back the mode a temporarily opened directory had before (best effort: a failure becomes a
