@@ -4,9 +4,13 @@
 //! "X for directories only": when `recursive`, the execute bits (0o111) are masked out of `set`
 //! for a non-directory that has no execute bit yet, so `a+rx` over a tree makes directories
 //! traversable without turning plain files into programs (like `chmod -R a+rX`). `clear` always
-//! applies as given. Directories are changed before their children (like GNU `chmod -R`), and
-//! listed only afterwards, so `u+rwx` can open a locked directory (but `u-x` on a directory makes
-//! its children fail, as with `chmod -R`).
+//! applies as given. Order: a directory is changed before its children (like GNU `chmod -R`) —
+//! so `u+rwx` opens a locked directory — **unless** the change would take away the owner's own
+//! read or traverse bits (`u-rx` and friends): then it is changed only after its children
+//! (post-order), so the job cannot lock itself out of the subtree it still has to walk. A
+//! directory the owner cannot list is temporarily given `u+rx` for the walk and restored
+//! afterwards (also on error or cancel); if even that fails, the listing goes through
+//! `ctx.attempt` as a per-entry error and is never silently skipped.
 //!
 //! Symlinks are skipped for chmod (Linux cannot chmod a link) and never followed in recursion;
 //! chown uses `lchown` semantics. The owner is changed before the mode (chown clears set-id bits).
@@ -99,24 +103,69 @@ fn apply(ctx: &mut JobCtx, path: &Path, change: &Change, top: bool) -> Result<()
             }
         }
     }
+    // The mode the directory has while its children are walked, and its own change if that must
+    // wait until after the walk (post-order, see [`locks_itself_out`]).
+    let mut walked_perm = st.perm();
+    let mut deferred: Option<u32> = None;
     if let Some(m) = change.mode
         && !st.is_symlink()
     {
         let want = new_perm(&st, m, change.recursive);
         if want != st.perm() {
-            ctx.attempt(path, Operation::SetAttrs, |fs| fs.set_mode(path, want))?;
+            if locks_itself_out(&st, want, change.recursive) {
+                // Post-order: the directory keeps its owner r/x until its children are done.
+                deferred = Some(want);
+            } else if ctx
+                .attempt(path, Operation::SetAttrs, |fs| fs.set_mode(path, want))?
+                .is_some()
+            {
+                walked_perm = want;
+            }
         }
     }
     ctx.file_done();
 
     if st.is_dir() && change.recursive {
-        // Listed after the directory's own change, so `u+rwx` can open a locked directory.
+        // If the owner cannot list/traverse the directory as it stands now, open it temporarily.
+        let opened = walked_perm & OWNER_RX != OWNER_RX;
+        if opened {
+            let grant = walked_perm | OWNER_RX;
+            ctx.attempt(path, Operation::SetAttrs, |fs| fs.set_mode(path, grant))?;
+        }
+        let mut walked = Ok(());
         if let Some(names) = ctx.attempt(path, Operation::SetAttrs, |fs| fs.read_dir(path))? {
             ctx.add_total(names.len() as u64, 0);
             for name in names {
-                apply(ctx, &path.join(name), change, false)?;
+                if let Err(e) = apply(ctx, &path.join(name), change, false) {
+                    walked = Err(e);
+                    break;
+                }
             }
         }
+        if opened {
+            restore_mode(ctx, path, walked_perm);
+        }
+        walked?;
+    }
+    if let Some(want) = deferred {
+        ctx.attempt(path, Operation::SetAttrs, |fs| fs.set_mode(path, want))?;
     }
     Ok(())
+}
+
+/// Owner read + traverse: without both, the job itself could not list a directory or reach its
+/// children, so a recursive change that clears either bit on a directory is applied post-order.
+const OWNER_RX: u32 = 0o500;
+
+/// `true` if applying `want` before walking would take away an owner r/x bit the directory has.
+fn locks_itself_out(st: &FsStat, want: u32, recursive: bool) -> bool {
+    recursive && st.is_dir() && st.perm() & OWNER_RX & !want != 0
+}
+
+/// Put back the mode a temporarily opened directory had before (best effort: a failure becomes a
+/// job warning — the walk's result, including a cancel, is reported either way).
+fn restore_mode(ctx: &mut JobCtx, path: &Path, perm: u32) {
+    if let Err(e) = ctx.fs().set_mode(path, perm) {
+        ctx.warn(path, format!("could not restore mode {perm:o}: {e}"));
+    }
 }

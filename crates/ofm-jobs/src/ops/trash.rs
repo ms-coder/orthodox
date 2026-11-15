@@ -15,6 +15,9 @@
 //!   [`TrashError::Unavailable`], so the engine asks before deleting permanently.
 //! - Names are claimed race-free by creating `info/<name>.trashinfo` with `O_EXCL` first, then the
 //!   item is moved with `RENAME_NOREPLACE`. A failed move removes the claimed info file again.
+//! - Names too long for `<name>.trashinfo` (`NAME_MAX`) are stored under a bytewise-truncated name
+//!   (hash of the full name + extension kept); `Path=` in the `.trashinfo` still records the full
+//!   original name, so restoring (GNOME Files & co.) is unaffected.
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -175,9 +178,10 @@ fn try_target(target: &Target, full: &Path, name: &OsStr) -> Result<(), Failure>
     };
     let content = trashinfo(&recorded);
 
-    // Claim a unique name: `name`, `name.2`, `name.3`, ...
+    // Claim a unique name: `name`, `name.2`, `name.3`, ... (shortened when `name` is too long
+    // for `<name>.trashinfo`; `Path=` keeps the full original name either way).
     for n in 1u32..=100_000 {
-        let candidate = unique_name(name, n);
+        let candidate = stored_name(name, n);
         let info_path = info.join(append(&candidate, ".trashinfo"));
         let dest = files.join(&candidate);
         let mut f = match fs::OpenOptions::new()
@@ -218,12 +222,51 @@ fn try_target(target: &Target, full: &Path, name: &OsStr) -> Result<(), Failure>
     Err(Failure::Unusable("no free name in the trash".into()))
 }
 
-fn unique_name(name: &OsStr, n: u32) -> OsString {
-    if n <= 1 {
-        name.to_owned()
+/// The longest name that still fits `NAME_MAX` (255) with a `.trashinfo` suffix appended for the
+/// info file; both `files/<stored>` and `info/<stored>.trashinfo` must stay within it.
+const STORED_MAX: usize = 255 - ".trashinfo".len();
+
+/// The stored name for claim `n` (>= 1): the original name plus `.n` if that already fits. Long
+/// names (which would make `info/<name>.trashinfo` fail with `ENAMETOOLONG`, and thus look like a
+/// missing trash) are truncated bytewise: the extension is kept if it is short, and a hash of the
+/// full original name keeps distinct long names distinct. Restore works regardless, because
+/// `Path=` inside the `.trashinfo` always records the full original name.
+fn stored_name(name: &OsStr, n: u32) -> OsString {
+    let num = if n <= 1 {
+        String::new()
     } else {
-        append(name, &format!(".{n}"))
+        format!(".{n}")
+    };
+    if name.len() + num.len() <= STORED_MAX {
+        return append(name, &num);
     }
+    let bytes = name.as_bytes();
+    // Extension: the part from the last dot (a leading dot is not an extension) if it is short
+    // enough to be worth keeping.
+    let ext: &[u8] = match bytes.iter().rposition(|&b| b == b'.') {
+        Some(pos) if pos > 0 && bytes.len() - pos <= 16 => &bytes[pos..],
+        _ => b"",
+    };
+    let marker = format!("{:08x}", fnv1a(bytes));
+    let stem = STORED_MAX
+        .saturating_sub(marker.len() + ext.len() + num.len())
+        .min(bytes.len() - ext.len().min(bytes.len()));
+    let mut v = bytes[..stem].to_vec();
+    v.extend_from_slice(marker.as_bytes());
+    v.extend_from_slice(num.as_bytes());
+    v.extend_from_slice(ext);
+    OsString::from_vec(v)
+}
+
+/// FNV-1a over the raw bytes of the name: 32 bit are plenty to keep trash stored names of distinct
+/// long names distinct (a collision only costs the next free claim number).
+fn fnv1a(bytes: &[u8]) -> u32 {
+    let mut h: u32 = 0x811c_9dc5;
+    for &b in bytes {
+        h ^= u32::from(b);
+        h = h.wrapping_mul(0x0100_0193);
+    }
+    h
 }
 
 fn append(name: &OsStr, suffix: &str) -> OsString {
