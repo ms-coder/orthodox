@@ -149,6 +149,37 @@ pub fn resolve_path(text: &str, base: &Path, home: &Path) -> Option<PathBuf> {
     Some(normalize(&joined))
 }
 
+/// Like [`resolve_path`] for a field whose initial text was the lossy rendering of `origin`
+/// (invariant 4: paths are bytes). When `origin` is not valid UTF-8 and the text still starts with
+/// that rendering (unchanged, or only extended below it with `/more`), the ORIGINAL bytes are
+/// used for that part instead of the text with U+FFFD in it. Text the user changed elsewhere is
+/// taken as typed (UTF-8).
+pub fn resolve_path_with_origin(
+    text: &str,
+    origin: Option<&Path>,
+    base: &Path,
+    home: &Path,
+) -> Option<PathBuf> {
+    if let Some(origin) = origin
+        && origin.to_str().is_none()
+    {
+        let lossy = origin.to_string_lossy();
+        let trimmed = text.trim();
+        if !trimmed.contains('\0') {
+            if trimmed == lossy {
+                return Some(normalize(origin));
+            }
+            if let Some(rest) = trimmed
+                .strip_prefix(lossy.as_ref())
+                .and_then(|r| r.strip_prefix('/'))
+            {
+                return Some(normalize(&origin.join(rest)));
+            }
+        }
+    }
+    resolve_path(text, base, home)
+}
+
 /// Lexical `.`/`..` removal (never touches the file system, so symlinks are not resolved).
 pub fn normalize(path: &Path) -> PathBuf {
     use std::path::Component;
@@ -209,6 +240,36 @@ mod tests {
         );
         assert_eq!(resolve_path("   ", base, home), None);
         assert_eq!(resolve_path("a\0b", base, home), None);
+    }
+
+    #[test]
+    fn non_utf8_origin_keeps_its_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let origin = PathBuf::from(std::ffi::OsStr::from_bytes(b"/data/caf\xe9 dir"));
+        let (base, home) = (Path::new("/w"), Path::new("/h"));
+        let lossy = origin.to_string_lossy().into_owned();
+        assert!(lossy.contains('\u{fffd}'));
+        let same = resolve_path_with_origin(&lossy, Some(&origin), base, home);
+        assert_eq!(same.as_deref(), Some(origin.as_path()));
+        let trailing = resolve_path_with_origin(&format!("{lossy}/"), Some(&origin), base, home);
+        assert_eq!(trailing.as_deref(), Some(origin.as_path()));
+        let below = resolve_path_with_origin(&format!("{lossy}/sub"), Some(&origin), base, home);
+        assert_eq!(below, Some(origin.join("sub")));
+        // Edited text is taken as typed.
+        let edited = resolve_path_with_origin("/other", Some(&origin), base, home);
+        assert_eq!(edited, Some(PathBuf::from("/other")));
+        let sibling = resolve_path_with_origin(&format!("{lossy}x"), Some(&origin), base, home);
+        assert_eq!(sibling, Some(PathBuf::from(format!("{lossy}x"))));
+        // A UTF-8 origin and no origin behave like resolve_path.
+        let utf8 = Path::new("/a/b");
+        assert_eq!(
+            resolve_path_with_origin("/a/b", Some(utf8), base, home),
+            Some(PathBuf::from("/a/b"))
+        );
+        assert_eq!(
+            resolve_path_with_origin("  ", Some(&origin), base, home),
+            None
+        );
     }
 
     #[test]

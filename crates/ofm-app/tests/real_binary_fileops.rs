@@ -330,7 +330,9 @@ fn shift_f8_deletes_tree_without_following_symlinks() {
         )
         .file("survivor", FileSpec::content(b"s"));
     let s = Running::launch_with("", &left, &TreeSpec::new());
-    s.keys(&["Down", "shift+F8", "Return"]);
+    // Permanent delete of a folder defaults to the Cancel button, so confirm with the Delete
+    // button's mnemonic (Alt+D) instead of Enter.
+    s.keys(&["Down", "shift+F8", "alt+d"]);
     wait_until("victim to disappear", 20, || {
         fs::symlink_metadata(s.left.join("victim")).is_err()
     });

@@ -12,7 +12,7 @@ use ofm_jobs::{JobSpec, LinkKind, RunMode};
 
 use crate::context::AppContext;
 use crate::i18n::tr;
-use crate::jobs::targets::resolve_path;
+use crate::jobs::targets::resolve_path_with_origin;
 use crate::jobs::{self, SubmitOpts, ui};
 use crate::navigation::modal;
 
@@ -29,16 +29,19 @@ pub enum LinkChoice {
 
 /// Validate the dialog and build the job. `link_text` is resolved against `base`; a trailing `/`
 /// means "inside that folder, named like the target". `target_is_dir` rejects hard links to
-/// folders up front (the engine would refuse them too).
+/// folders up front (the engine would refuse them too). `link_origin` is the path whose lossy
+/// rendering the field was filled with: while the text still starts with it, its original
+/// (possibly non-UTF-8) bytes are used.
 pub fn build_link(
     target: &Path,
     target_is_dir: bool,
     link_text: &str,
+    link_origin: Option<&Path>,
     base: &Path,
     home: &Path,
     choice: LinkChoice,
 ) -> Result<JobSpec, String> {
-    let mut link = resolve_path(link_text, base, home)
+    let mut link = resolve_path_with_origin(link_text, link_origin, base, home)
         .ok_or_else(|| tr("Enter the path of the link.").to_owned())?;
     if link_text.trim().ends_with('/')
         && let Some(name) = target.file_name()
@@ -98,7 +101,9 @@ pub fn present(ctx: &Rc<AppContext>) {
         .unwrap_or_else(|| src_dir.clone());
     let mut default_link = other_dir.join(&entry.name);
     if default_link == target {
-        default_link = other_dir.join(format!("{name} link"));
+        let mut linked = entry.name.clone();
+        linked.push(" link");
+        default_link = other_dir.join(linked);
     }
     let is_dir = entry.kind == EntryKind::Dir;
 
@@ -142,6 +147,7 @@ pub fn present(ctx: &Rc<AppContext>) {
     let submit: Rc<dyn Fn() -> bool> = {
         let (ctx, path_entry, error) = (Rc::clone(ctx), path_entry.clone(), error.clone());
         let (relative, hard) = (relative.clone(), hard.clone());
+        let link_origin = default_link.clone();
         Rc::new(move || {
             let choice = if hard.is_active() {
                 LinkChoice::Hard
@@ -154,6 +160,7 @@ pub fn present(ctx: &Rc<AppContext>) {
                 &target,
                 is_dir,
                 &path_entry.text(),
+                Some(&link_origin),
                 &src_dir,
                 &ui::home(),
                 choice,
@@ -213,17 +220,33 @@ mod tests {
     #[test]
     fn absolute_relative_and_hard() {
         let (t, base, home) = (Path::new("/a/x/file"), Path::new("/a/x"), Path::new("/h"));
-        let abs = build_link(t, false, "/a/y/l", base, home, LinkChoice::SymbolicAbsolute);
+        let abs = build_link(
+            t,
+            false,
+            "/a/y/l",
+            None,
+            base,
+            home,
+            LinkChoice::SymbolicAbsolute,
+        );
         assert_eq!(
             link(abs.expect("valid")),
             ("/a/x/file".into(), "/a/y/l".into(), LinkKind::Symbolic)
         );
-        let rel = build_link(t, false, "/a/y/l", base, home, LinkChoice::SymbolicRelative);
+        let rel = build_link(
+            t,
+            false,
+            "/a/y/l",
+            None,
+            base,
+            home,
+            LinkChoice::SymbolicRelative,
+        );
         assert_eq!(
             link(rel.expect("valid")),
             ("../x/file".into(), "/a/y/l".into(), LinkKind::Symbolic)
         );
-        let hard = build_link(t, false, "l", base, home, LinkChoice::Hard);
+        let hard = build_link(t, false, "l", None, base, home, LinkChoice::Hard);
         assert_eq!(
             link(hard.expect("valid")),
             ("/a/x/file".into(), "/a/x/l".into(), LinkKind::Hard)
@@ -233,15 +256,73 @@ mod tests {
     #[test]
     fn trailing_slash_means_inside_the_folder() {
         let (t, base, home) = (Path::new("/a/file"), Path::new("/a"), Path::new("/h"));
-        let spec = build_link(t, false, "/b/", base, home, LinkChoice::SymbolicAbsolute);
+        let spec = build_link(
+            t,
+            false,
+            "/b/",
+            None,
+            base,
+            home,
+            LinkChoice::SymbolicAbsolute,
+        );
         assert_eq!(link(spec.expect("valid")).1, PathBuf::from("/b/file"));
+    }
+
+    #[test]
+    fn non_utf8_paths_keep_their_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = |b: &[u8]| PathBuf::from(std::ffi::OsStr::from_bytes(b));
+        let target = raw(b"/a/t\xe9");
+        let (base, home) = (Path::new("/a"), Path::new("/h"));
+        // Default link path (other folder + the target's name), untouched in the field.
+        let default_link = raw(b"/b\xff/t\xe9");
+        let shown = default_link.to_string_lossy().into_owned();
+        let spec = build_link(
+            &target,
+            false,
+            &shown,
+            Some(&default_link),
+            base,
+            home,
+            LinkChoice::SymbolicAbsolute,
+        );
+        assert_eq!(
+            link(spec.expect("valid")),
+            (target.clone(), default_link.clone(), LinkKind::Symbolic)
+        );
+        // A trailing slash after a non-UTF-8 folder: the link is named like the target.
+        let folder = raw(b"/b\xff");
+        let text = format!("{}/", folder.to_string_lossy());
+        let spec = build_link(
+            &target,
+            false,
+            &text,
+            Some(&folder),
+            base,
+            home,
+            LinkChoice::Hard,
+        );
+        assert_eq!(link(spec.expect("valid")).1, default_link);
+        // Relative target computed from the exact bytes.
+        let spec = build_link(
+            &target,
+            false,
+            &shown,
+            Some(&default_link),
+            base,
+            home,
+            LinkChoice::SymbolicRelative,
+        );
+        let (stored, l, _) = link(spec.expect("valid"));
+        assert_eq!(l, default_link);
+        assert_eq!(stored, raw(b"../a/t\xe9"));
     }
 
     #[test]
     fn refuses_nonsense() {
         let (t, base, home) = (Path::new("/a/d"), Path::new("/a"), Path::new("/h"));
-        assert!(build_link(t, true, "", base, home, LinkChoice::SymbolicAbsolute).is_err());
-        assert!(build_link(t, true, "d", base, home, LinkChoice::SymbolicAbsolute).is_err());
-        assert!(build_link(t, true, "l", base, home, LinkChoice::Hard).is_err());
+        assert!(build_link(t, true, "", None, base, home, LinkChoice::SymbolicAbsolute).is_err());
+        assert!(build_link(t, true, "d", None, base, home, LinkChoice::SymbolicAbsolute).is_err());
+        assert!(build_link(t, true, "l", None, base, home, LinkChoice::Hard).is_err());
     }
 }
