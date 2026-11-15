@@ -122,6 +122,9 @@ pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
         let Some(ctx) = weak.upgrade() else {
             return glib::Propagation::Proceed;
         };
+        if !crate::jobs::allow_close(&ctx, w) {
+            return glib::Propagation::Stop; // T3.3: running jobs, the user is being asked
+        }
         let Some(state) = ctx.ext.get::<SessionState>() else {
             return glib::Propagation::Proceed;
         };
