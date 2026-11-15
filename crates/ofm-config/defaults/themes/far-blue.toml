@@ -71,7 +71,7 @@ button_focus_fg = "#000000"
 
 [colors.progress]
 bar = "#00FFFF"
-trough = "#000080"
+trough = "#008080"
 
 [colors.error]
 fg = "#FF5555"
