@@ -35,6 +35,7 @@ Status values: `not started` · `in progress` · `review` · `waiting for Igor` 
 | T2.2 | ui-engineer | done | m2/T2.2-chrome-themes | 57652db | merged; session/themes/F9 menu/F-key bar |
 | T2.3 | ui-engineer | done | m2/T2.3-navigation | bd3846c | merged; also registered dialog.ok/cancel (navigation/modal.rs) |
 | T2.4 | test-engineer | done | m2/T2.4-smoke-tests | ac1e85b | merged; real-binary tests (tests/real_binary.rs), g1 screenshot set via scripts/screenshot.sh g1 |
+| T3.2 | core-engineer | done | m3/T3.2-other-ops | 6b8f43d | merged; own freedesktop trash impl (no trash crate), chrono added |
 | T3.0 | architect | done | main | see git log | jobs API frozen, RealFs/FaultyFs implemented, PanelController watcher, JobsController stub |
 | T1.5 | reviewer | done | m1/review-fixes | 555f57b | findings fixed; rest deferred below |
 | T1.0 | architect | done | main | 9bc5168 | stubs, ADR-0002..0005, COMMANDS.md (128 commands) |
@@ -87,3 +88,4 @@ Status values: `not started` · `in progress` · `review` · `waiting for Igor` 
 - T2.4: tests launching `ofm` must set DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent (GApplication single-instance on the session bus) and use temp XDG dirs; select the window with `xdotool search --class ofm`. Open question: add `screenshot.sh g1` (+30 s) to check.sh? (default: no).
 | 2026-11-15 | Opus allowed for M3 by Igor (Claude quota resets soon): T3.1 copy/move engine (fileops-engineer) and T3.5 deep review (reviewer) on Opus; rest Sonnet | data-safety critical | - |
 | 2026-11-15 | GLM available: ZAI_API_KEY is in ~/.bashrc, not in the session env; run `bash -ic './scripts/glm.sh <dir> "<prompt>"'` | Igor exported it after session start | - |
+- T3.2 open: `Outcome::Size` has no Report so size-walk warnings (unreadable dirs) never reach the UI (needs API change; decide at T3.3/T3.5); mkdir `note_created` records the full requested path, not the topmost created component (cursor focus in UI); `SizeTotals.disk_bytes` includes dirs' own blocks (du-like); empty/`/` Delete list -> `Invalid`.
