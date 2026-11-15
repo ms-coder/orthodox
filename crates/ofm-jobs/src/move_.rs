@@ -130,6 +130,7 @@ impl Mover {
                     tracing::debug!(from = %src.display(), to = %to.display(), "renamed");
                     // A rename keeps the inode: later items of this job never overwrite it.
                     self.copier.note_published((st.dev, st.ino));
+                    self.copier.note_published_path(&to);
                     if top {
                         ctx.note_created(to);
                     }
