@@ -35,7 +35,9 @@ Status values: `not started` · `in progress` · `review` · `waiting for Igor` 
 | T2.2 | ui-engineer | done | m2/T2.2-chrome-themes | 57652db | merged; session/themes/F9 menu/F-key bar |
 | T2.3 | ui-engineer | done | m2/T2.3-navigation | bd3846c | merged; also registered dialog.ok/cancel (navigation/modal.rs) |
 | T2.4 | test-engineer | done | m2/T2.4-smoke-tests | ac1e85b | merged; real-binary tests (tests/real_binary.rs), g1 screenshot set via scripts/screenshot.sh g1 |
-| T3.3 | ui-engineer | done (needs e2e) | m3/T3.3-fileops-ui | e4bfafd | merged; verified only with synthetic events; real-engine e2e = T3.3v (test-engineer, branch m3/T3.3v-e2e-fileops) |
+| T3.4 | test-engineer (GLM died on 429, finished by Claude) | done | m3/T3.4-torture | 0a412d8 | merged; 94 torture tests, no engine bugs found; mutation-checked by lead (3 injected bugs caught by 4/25/6 tests) |
+| T3.3v | test-engineer | done | m3/T3.3v-e2e-fileops | 3665b1d | merged; real-binary file-ops e2e (8 pass, 2 slow via OFM_E2E_SLOW=1), pinned 8 bug tests |
+| T3.3 | ui-engineer | done | m3/T3.3-fileops-ui | e4bfafd | merged; verified only with synthetic events; real-engine e2e = T3.3v (test-engineer, branch m3/T3.3v-e2e-fileops) |
 | T3.1 | fileops-engineer (Opus) | done | m3/T3.1-engine-copy-move | feb7548 | merged; 51 integration tests incl. cancel at 9 offsets, ENOSPC/EIO/short write, real EXDEV /tmp->/dev/shm; self-checked T3.5 list 11/11 |
 | T3.2 | core-engineer | done | m3/T3.2-other-ops | 6b8f43d | merged; own freedesktop trash impl (no trash crate), chrono added |
 | T3.0 | architect | done | main | see git log | jobs API frozen, RealFs/FaultyFs implemented, PanelController watcher, JobsController stub |
@@ -97,3 +99,4 @@ Status values: `not started` · `in progress` · `review` · `waiting for Igor` 
 - T3.1 deferred: ACLs (`system.*` xattrs) are not copied (SPEC F17 lists xattrs, ownership — reviewer T3.5 to decide if ACLs are in scope; else M9); a retried file counts twice in `bytes_done` (progress cosmetics, M9); `plan::unique_name` probe loop has no CancelToken checkpoint (bounded; reviewer to confirm).
 - T3.4 note from T3.1: `FaultyFs` counts `copy_range_from` probes even when the read/write tier is used, so write faults must target the operation the active tier uses.
 - 2026-11-15: GLM T3.4 run died on Z.ai 429 "Usage limit reached for 5 hour" (resets 20:27 same day) after writing 7 uncommitted test files in ../orthodox-wt-T3.4. T3.4 re-assigned to a Claude test-engineer working in that worktree (merge main, un-ignore, run against real engine). Lesson: check glm log for 429 before assuming a GLM job is running; GLM jobs started via `bash -ic` run as `claude -p` (pgrep -af "claude -p").
+- T3.3v finding (blocker for G2): real key events never reach the dispatcher while a dialog is open (Enter/F2/Ctrl+A/Del/Ctrl+J); synthetic tests missed it. Escalated to architect (Opus) with the two small dialog bugs (Alt+A mnemonic clash in conflict dialog, rename selects whole name instead of stem). `ofm_testkit::temp::TempDir::drop` silently fails on trees with read-only dirs (leaks temp dirs) — M9.
