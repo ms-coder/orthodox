@@ -14,9 +14,11 @@
 //!
 //! Keys used (far preset): Ins marks and moves down, Ctrl+Num+ selects all, F5 copy, F6 move,
 //! Shift+F6 rename, F7 mkdir, F8 delete (to trash), Shift+F8 delete permanently, Ctrl+J jobs view
-//! (Alt+J = Cancel job, Alt+P = Pause there), F10 quit. Conflict dialog: Enter = Skip, Alt+S Skip,
-//! Alt+O Overwrite, Alt+W overwrite if newer. Dialogs are confirmed with Alt+C/M/R, not Enter
-//! (Enter in a dialog entry is a bug, see the `bug_*` tests).
+//! (Del = cancel job, Ctrl+J again closes it; Alt+P = Pause button), F10 quit. Dialogs: Enter =
+//! `dialog.ok` (also in a text entry), F2 = `dialog.queue`, Ctrl+A = `dialog.apply_all`. Conflict
+//! dialog: Enter = Skip, Alt+S Skip, Alt+O Overwrite, Alt+W overwrite if newer, Alt+A apply to
+//! all. A few tests deliberately confirm with the buttons' mnemonics (Alt+M, Alt+R, Alt+C) so the
+//! native GTK path stays covered too.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -177,7 +179,7 @@ fn f5_copies_marked_files_and_directory() {
     }
     let s = Running::launch_with("", &sample_tree(), &TreeSpec::new());
     mark_sample(&s);
-    s.keys(&["F5", "alt+c"]);
+    s.keys(&["F5", "Return"]);
     wait_tree_equals(
         "copy to land",
         &s.right,
@@ -242,7 +244,7 @@ fn f5_conflict_answers_skip_overwrite_and_if_newer() {
     // Run A, one answer per conflict (asked in name order): c1 Skip (Alt+S), c2 Overwrite
     // (Alt+O), c3 Skip (Alt+S). Only c2 may change.
     s.keys_paced(
-        &["ctrl+KP_Add", "F5", "alt+c", "alt+s", "alt+o", "alt+s"],
+        &["ctrl+KP_Add", "F5", "Return", "alt+s", "alt+o", "alt+s"],
         600,
     );
     wait_until("c2 overwritten", 20, || read(&d("c2")) == "SRC-c2");
@@ -251,8 +253,7 @@ fn f5_conflict_answers_skip_overwrite_and_if_newer() {
     assert_eq!(read(&d("c3")), "old-c3", "Skip changed c3");
     assert_no_parts(&[&s.right]);
 
-    // Run B: Overwrite, answered three times (Alt+A cannot be used for "apply to all": it is
-    // also the mnemonic of "Abort job", see the bug notes).
+    // Run B: Overwrite, answered three times (one answer per dialog, mnemonic confirm).
     s.keys_paced(
         &["ctrl+KP_Add", "F5", "alt+c", "alt+o", "alt+o", "alt+o"],
         600,
@@ -275,7 +276,7 @@ fn f5_conflict_answers_skip_overwrite_and_if_newer() {
     }
     std::thread::sleep(Duration::from_millis(500)); // let the panel watcher settle
     s.keys_paced(
-        &["ctrl+KP_Add", "F5", "alt+c", "alt+w", "alt+w", "alt+w"],
+        &["ctrl+KP_Add", "F5", "Return", "alt+w", "alt+w", "alt+w"],
         600,
     );
     wait_until("stale files replaced", 20, || {
@@ -300,7 +301,7 @@ fn f7_creates_nested_directories() {
     let s = Running::launch_with("", &TreeSpec::new(), &TreeSpec::new());
     s.keys(&["F7"]);
     type_text(&s, "a/b/c");
-    s.keys(&["alt+c"]);
+    s.keys(&["Return"]);
     wait_until("a/b/c created", 15, || s.left.join("a/b/c").is_dir());
 }
 
@@ -393,11 +394,10 @@ fn shift_f6_renames_in_place() {
         .file("old.txt", FileSpec::content(b"payload"))
         .file("other.txt", FileSpec::content(b"o"));
     let s = Running::launch_with("", &left, &TreeSpec::new());
-    // The whole name is selected when the dialog opens (the stem-only selection is lost, see
-    // `bug_rename_dialog_preselects_only_the_stem`), so typing replaces all of it.
+    // Only the stem is selected when the dialog opens, so typing keeps the extension.
     s.keys(&["Down", "shift+F6"]);
-    type_text(&s, "renamed.txt");
-    s.keys(&["alt+r"]);
+    type_text(&s, "renamed");
+    s.keys(&["Return"]);
     wait_until("rename", 15, || s.left.join("renamed.txt").exists());
     assert_eq!(read(&s.left.join("renamed.txt")), "payload");
     assert!(!s.left.join("old.txt").exists());
@@ -419,7 +419,7 @@ fn cursor_lands_on_the_new_item_after_copy() {
         .file("aaa", FileSpec::content(b"a"))
         .file("bbb", FileSpec::content(b"b"));
     let s = Running::launch_with("", &left, &right);
-    s.keys(&["Down", "Down", "F5", "alt+c"]); // cursor: d1, f1.txt
+    s.keys(&["Down", "Down", "F5", "Return"]); // cursor: d1, f1.txt
     wait_until("copy", 20, || s.right.join("f1.txt").exists());
     std::thread::sleep(Duration::from_millis(1200)); // watcher + focus_name
     let (session, s) = s.quit();
@@ -471,7 +471,7 @@ fn disk_base() -> TempDir {
 
 /// Select all, F5, tick "Sync to disk" (Alt+S) so the copy takes a while, Enter.
 fn start_big_copy(s: &Running) {
-    s.keys(&["ctrl+KP_Add", "F5", "alt+s", "alt+c"]);
+    s.keys(&["ctrl+KP_Add", "F5", "alt+s", "Return"]);
 }
 
 #[test]
@@ -483,7 +483,8 @@ fn cancel_mid_copy_leaves_no_partial_files() {
     let base = disk_base();
     let s = Running::launch_in("", base.path(), &big_tree(), &TreeSpec::new());
     start_big_copy(&s);
-    // Open the jobs view and cancel the (selected) job as fast as the keys can go.
+    // Open the jobs view and cancel the (selected) job with the "Cancel job" button's mnemonic as
+    // fast as the keys can go (Del is covered by `del_in_jobs_view_cancels_the_job`).
     s.burst_paced(&["ctrl+j", "alt+j"], 80);
     // The job has stopped when the directory listing (names and sizes) stays the same for 2 s.
     let snapshot = || -> Vec<(String, u64)> {
@@ -558,13 +559,12 @@ fn jobs_view_toggles_and_quit_with_running_job_prompts() {
         before.diff_pixels(&open) > 500,
         "Ctrl+J did not open the jobs view"
     );
-    // (Ctrl+J does not close it again, see `bug_ctrl_j_does_not_close_the_jobs_view`.)
-    s.keys(&["Escape"]);
+    s.keys(&["ctrl+j"]);
     std::thread::sleep(Duration::from_millis(300));
     let closed = s.shot();
     assert!(
         open.diff_pixels(&closed) > 500,
-        "Esc did not close the jobs view"
+        "Ctrl+J did not close the jobs view"
     );
 
     // F10 with a job running asks; the app must still be alive. Esc keeps it running.
@@ -597,20 +597,17 @@ fn jobs_view_toggles_and_quit_with_running_job_prompts() {
     }
 }
 
-// ---- bug pins ---------------------------------------------------------------------------------
+// ---- dialog keys through the keymap ----------------------------------------------------------
 //
-// While ANY dialog is open, real key events are not turned into commands: `dialog.ok` (Enter in
-// a text entry), `dialog.queue` (F2), `dialog.apply_all` (Ctrl+A), `jobs.cancel` (Del in the jobs
-// view) and `app.jobs` (Ctrl+J to close the jobs view) never execute (`OFM_E2E_LOG=<file>
-// RUST_LOG=debug` shows no `execute command=...` line after the dialog opened). What still works
-// is native GTK/libadwaita behaviour: Enter/Space on a focused button, Esc closing an adw::Dialog,
-// Alt+mnemonics. The other tests therefore press the dialogs' mnemonic buttons (Alt+C/M/R for
-// Copy/Move/Rename, Alt+J for "Cancel job"). Run these with `--include-ignored`; they pass once
-// the dispatcher sees keys while a dialog is open.
+// Formerly pinned bugs: libadwaita stops key events at an `adw::Dialog`, so the main window's key
+// controller never saw them and `dialog.ok` (Enter in a text entry), `dialog.queue` (F2),
+// `dialog.apply_all` (Ctrl+A), `jobs.cancel` (Del) and `app.jobs` (Ctrl+J) were dead while a
+// dialog was open. Fixed by attaching the dispatcher to every presented dialog
+// (`navigation::modal::present`). Plus two dialog details: unique Alt+A mnemonic in the conflict
+// dialog and the stem-only selection in the rename dialog.
 
 #[test]
-#[ignore = "bug: Enter in the Copy dialog's text entry does not run the copy (dialog.ok never dispatched)"]
-fn bug_enter_in_copy_dialog_entry_submits() {
+fn enter_in_copy_dialog_entry_submits() {
     if !tools_available() {
         return;
     }
@@ -626,8 +623,7 @@ fn bug_enter_in_copy_dialog_entry_submits() {
 }
 
 #[test]
-#[ignore = "bug: Enter in the mkdir dialog's text entry does not create the folder (dialog.ok never dispatched)"]
-fn bug_enter_in_mkdir_dialog_entry_submits() {
+fn enter_in_mkdir_dialog_entry_submits() {
     if !tools_available() {
         return;
     }
@@ -639,8 +635,7 @@ fn bug_enter_in_mkdir_dialog_entry_submits() {
 }
 
 #[test]
-#[ignore = "bug: F2 (dialog.queue) in the Copy dialog is not dispatched"]
-fn bug_f2_in_copy_dialog_queues() {
+fn f2_in_copy_dialog_queues() {
     if !tools_available() {
         return;
     }
@@ -657,8 +652,7 @@ fn bug_f2_in_copy_dialog_queues() {
 
 /// Ctrl+A (`dialog.apply_all`) in the conflict dialog: one answer for all remaining conflicts.
 #[test]
-#[ignore = "bug: Ctrl+A (dialog.apply_all) in the conflict dialog is not dispatched"]
-fn bug_ctrl_a_in_conflict_dialog_applies_to_all() {
+fn ctrl_a_in_conflict_dialog_applies_to_all() {
     if !tools_available() {
         return;
     }
@@ -676,8 +670,7 @@ fn bug_ctrl_a_in_conflict_dialog_applies_to_all() {
 }
 
 #[test]
-#[ignore = "bug: Shift+F6 selects the whole name, not just the stem (select_region is overridden by focus-in select-all)"]
-fn bug_rename_dialog_preselects_only_the_stem() {
+fn rename_dialog_preselects_only_the_stem() {
     if !tools_available() {
         return;
     }
@@ -692,8 +685,7 @@ fn bug_rename_dialog_preselects_only_the_stem() {
 }
 
 #[test]
-#[ignore = "bug: Alt+A is the mnemonic of both 'Apply to all' and 'Abort job' in the conflict dialog"]
-fn bug_conflict_dialog_alt_a_is_ambiguous() {
+fn conflict_dialog_alt_a_applies_to_all() {
     if !tools_available() {
         return;
     }
@@ -712,8 +704,8 @@ fn bug_conflict_dialog_alt_a_is_ambiguous() {
 }
 
 #[test]
-#[ignore = "bug: Ctrl+J does not close the jobs view again (docs/ARCHITECTURE: 'Ctrl+J again closes it'); slow, needs OFM_E2E_SLOW=1"]
-fn bug_ctrl_j_does_not_close_the_jobs_view() {
+#[ignore = "slow: ~1 GB on a real disk; set OFM_E2E_SLOW=1 and pass --include-ignored"]
+fn ctrl_j_toggles_the_jobs_view() {
     if !tools_available() || !slow_enabled() {
         return;
     }
@@ -737,8 +729,8 @@ fn bug_ctrl_j_does_not_close_the_jobs_view() {
 }
 
 #[test]
-#[ignore = "bug: Del (jobs.cancel) in the jobs view is not dispatched; slow, needs OFM_E2E_SLOW=1"]
-fn bug_del_in_jobs_view_cancels_the_job() {
+#[ignore = "slow: ~1 GB on a real disk; set OFM_E2E_SLOW=1 and pass --include-ignored"]
+fn del_in_jobs_view_cancels_the_job() {
     if !tools_available() || !slow_enabled() {
         return;
     }

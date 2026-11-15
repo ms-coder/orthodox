@@ -492,7 +492,17 @@ fn jobs_scenario() {
     fx.shot("quit-dialog");
     fx.run(cmd::DIALOG_OK);
     assert!(cap.controls.borrow().contains(&Control::CancelAll));
-    assert!(ctrl.quit_confirmed());
+    // The cancelled job still cleans up its temp files: the window must not close yet.
+    assert!(ctrl.quitting() && !ctrl.quit_confirmed());
+    assert!(
+        !jobs::allow_close(ctx, &window),
+        "cancelled job not finished yet: keep waiting"
+    );
+    assert_eq!(fx.modal_depth(), 0, "no second prompt while waiting");
+    finished(&fx, 30, Outcome::Cancelled(Report::default()));
+    pump_until("quit confirmed after the job finished", || {
+        ctrl.quit_confirmed()
+    });
     assert!(
         jobs::allow_close(ctx, &window),
         "confirmed: the next close goes through"

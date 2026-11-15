@@ -116,6 +116,7 @@ pub struct JobsController {
     ask_dialogs: RefCell<HashMap<JobId, adw::Dialog>>,
     capture: RefCell<Option<Rc<Capture>>>,
     quit_confirmed: Cell<bool>,
+    quitting: Cell<bool>,
 }
 
 impl JobsController {
@@ -132,6 +133,7 @@ impl JobsController {
             ask_dialogs: RefCell::new(HashMap::new()),
             capture: RefCell::new(None),
             quit_confirmed: Cell::new(false),
+            quitting: Cell::new(false),
         }
     }
 
@@ -156,6 +158,16 @@ impl JobsController {
     /// Remember that quitting was confirmed.
     pub fn set_quit_confirmed(&self) {
         self.quit_confirmed.set(true);
+    }
+
+    /// Quitting was decided and the cancelled jobs are still cleaning up (see `jobs::quit`).
+    pub fn quitting(&self) -> bool {
+        self.quitting.get()
+    }
+
+    /// Mark that the cancelled jobs are being waited for before the window closes.
+    pub fn set_quitting(&self, on: bool) {
+        self.quitting.set(on);
     }
 
     /// Submit a job and start pumping engine events on the GTK main loop (first call only).

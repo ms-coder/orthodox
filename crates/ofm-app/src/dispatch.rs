@@ -1,6 +1,7 @@
 //! Command dispatch (CLAUDE.md invariant 5: every action is a command).
 //!
-//! Flow: `EventControllerKey` (capture phase on a toplevel) -> [`keys::chord_from_event`] ->
+//! Flow: `EventControllerKey` (capture phase on the main window and on every presented dialog,
+//! see [`install_key_controller`]) -> [`keys::chord_from_event`] ->
 //! `Keymap` lookup in the right context (ADR-0005) -> [`CommandDispatcher::execute`]. Menus, the
 //! F-key bar, mouse actions and tests call `AppContext::execute(cmd)` directly.
 //!
@@ -123,7 +124,8 @@ pub enum WindowKind {
     Main,
     /// A viewer window: `Viewer` then `Global`.
     Viewer,
-    /// A standalone dialog window: `Dialog` then `Global`.
+    /// A dialog (an `adw::Dialog` hosted in the main window, or a standalone dialog window):
+    /// `Dialog` then `Global`.
     Dialog,
 }
 
@@ -173,15 +175,41 @@ pub fn entry_wants_key(chord: &KeyChord) -> bool {
     )
 }
 
+/// Name of the controller added by [`install_key_controller`] (guards against adding it twice).
+const CONTROLLER_NAME: &str = "ofm-dispatch";
+
+/// Whether [`install_key_controller`] already attached the dispatcher to `widget`.
+pub fn has_dispatch_controller(widget: &gtk::Widget) -> bool {
+    let list = widget.observe_controllers();
+    (0..list.n_items()).any(|i| {
+        list.item(i)
+            .and_downcast::<gtk::EventController>()
+            .and_then(|c| c.name())
+            .is_some_and(|n| n == CONTROLLER_NAME)
+    })
+}
+
 /// Attach the capture-phase key controller to `window`. This is the *only* place key events are
 /// turned into commands; widgets must not handle keys themselves (except text entries).
+///
+/// Called for the main window ([`WindowKind::Main`]) and, by `navigation::modal::present`, for
+/// every presented `adw::Dialog` ([`WindowKind::Dialog`]): libadwaita (>= 1.7 on GTK >= 4.18)
+/// marks a dialog with `gtk_widget_set_limit_events`, so key events targeted inside it are never
+/// propagated to the window's controller. With an older libadwaita the window controller sees
+/// the event first (capture runs top-down), resolves it in the same `dialog` section and stops it,
+/// so the dialog controller never runs: a chord is dispatched exactly once either way.
+/// Adding the controller to a widget that already has one is a no-op.
 pub fn install_key_controller(
     window: &impl IsA<gtk::Widget>,
     ctx: &Rc<AppContext>,
     kind: WindowKind,
 ) {
+    if has_dispatch_controller(window.as_ref()) {
+        return;
+    }
     let weak: Weak<AppContext> = Rc::downgrade(ctx);
     let controller = gtk::EventControllerKey::new();
+    controller.set_name(Some(CONTROLLER_NAME));
     controller.set_propagation_phase(gtk::PropagationPhase::Capture);
     let widget = window.as_ref().clone();
     controller.connect_key_pressed(move |_c, keyval, keycode, state| {

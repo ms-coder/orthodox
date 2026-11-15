@@ -4,6 +4,10 @@
 //! (so keys resolve in the `dialog` keymap section, ADR-0005), and the commands `dialog.ok` /
 //! `dialog.cancel` registered here act on the topmost dialog: `ok` runs the dialog's accept
 //! callback (the dialog closes when it returns `true`), `cancel` closes it.
+//!
+//! [`present`] also attaches the dispatcher's key controller to the dialog (libadwaita does not
+//! propagate key events from a dialog to the window), so every key of every dialog goes through
+//! the keymap. Dialogs must therefore be shown with [`present`], never with `adw::Dialog::present`.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -12,7 +16,7 @@ use adw::prelude::*;
 use ofm_core::cmd;
 
 use crate::context::{AppContext, ModalGuard};
-use crate::dispatch::CommandRegistry;
+use crate::dispatch::{self, CommandRegistry, WindowKind};
 
 type OkFn = Rc<dyn Fn() -> bool>;
 
@@ -103,6 +107,10 @@ pub fn present(
             stack.remove(id);
         }
     });
+    // Every dialog resolves its keys through the keymap's `dialog` section itself: libadwaita
+    // stops key events at the dialog, so the main window's controller does not see them
+    // (see `dispatch::install_key_controller`).
+    dispatch::install_key_controller(dialog, ctx, WindowKind::Dialog);
     dialog.present(Some(&win.window));
     true
 }

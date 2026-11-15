@@ -1,32 +1,85 @@
 //! Quit with running jobs (F15: "quitting with running jobs asks"). The main window's close
-//! handler calls [`allow_close`] first; it returns false while a question is shown.
+//! handler calls [`allow_close`] first; it returns false while a question is shown and while
+//! cancelled jobs are still cleaning up.
+//!
+//! Data safety: cancelling only *asks* the workers to stop; each one then removes its
+//! `*.ofm-part-*` temp file before it reports `Finished`. Closing the window right away would end
+//! the process first and leave the temp files behind, so [`cancel_then_close`] waits (polling the
+//! job table on the main loop, at most [`CANCEL_WAIT`]) until every job has finished.
 
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use adw::prelude::*;
+use gtk::glib;
 
 use super::ui;
 use crate::context::AppContext;
 use crate::i18n::tr;
 use crate::navigation::modal;
 
+/// Longest wait for cancelled jobs to clean up before the window closes anyway.
+pub const CANCEL_WAIT: Duration = Duration::from_secs(15);
+
+/// Cancel every job, wait until all of them reported `Finished` (or [`CANCEL_WAIT`] passed), then
+/// close `window` for good.
+fn cancel_then_close(ctx: &Rc<AppContext>, window: &gtk::Window) {
+    let Some(ctrl) = super::controller(ctx) else {
+        window.close();
+        return;
+    };
+    ctrl.cancel_all();
+    ctrl.set_quitting(true);
+    let deadline = Instant::now() + CANCEL_WAIT;
+    let (weak, window) = (Rc::downgrade(&ctrl), window.clone());
+    let finish = move || {
+        if let Some(ctrl) = weak.upgrade() {
+            if ctrl.has_unfinished() {
+                tracing::warn!("closing with jobs that did not stop in time");
+            }
+            ctrl.set_quit_confirmed();
+            ctrl.set_quitting(false);
+        }
+        window.close();
+    };
+    if !ctrl.has_unfinished() {
+        finish();
+        return;
+    }
+    let weak = Rc::downgrade(&ctrl);
+    let finish = std::cell::RefCell::new(Some(finish));
+    glib::timeout_add_local(Duration::from_millis(50), move || {
+        let busy = weak.upgrade().is_some_and(|c| c.has_unfinished());
+        if busy && Instant::now() < deadline {
+            return glib::ControlFlow::Continue;
+        }
+        if let Some(f) = finish.borrow_mut().take() {
+            f();
+        }
+        glib::ControlFlow::Break
+    });
+}
+
 /// Whether the window may close now. With unfinished jobs and `[general] confirm_quit_with_jobs`
 /// a dialog asks first (Enter = quit and cancel the jobs, Esc = keep running); on confirmation the
-/// jobs are cancelled and `window.close()` is called again. Without the confirmation setting the
-/// jobs are cancelled silently.
+/// jobs are cancelled, and once they have cleaned up `window.close()` is called again. Without the
+/// confirmation setting the jobs are cancelled without asking (and waited for the same way).
 pub fn allow_close(ctx: &Rc<AppContext>, window: &impl IsA<gtk::Window>) -> bool {
     let Some(ctrl) = super::controller(ctx) else {
         return true;
     };
-    if !ctrl.has_unfinished() {
-        return true;
-    }
     if ctrl.quit_confirmed() {
         return true;
     }
-    if !ctx.config.borrow().general.confirm_quit_with_jobs {
-        ctrl.cancel_all();
+    if ctrl.quitting() {
+        return false; // still waiting for the cancelled jobs
+    }
+    if !ctrl.has_unfinished() {
         return true;
+    }
+    if !ctx.config.borrow().general.confirm_quit_with_jobs {
+        cancel_then_close(ctx, window.as_ref());
+        return false;
     }
 
     let n = ctrl.unfinished_count();
@@ -59,13 +112,7 @@ pub fn allow_close(ctx: &Rc<AppContext>, window: &impl IsA<gtk::Window>) -> bool
 
     let confirm: Rc<dyn Fn()> = {
         let (ctx, window) = (Rc::clone(ctx), window.as_ref().clone());
-        Rc::new(move || {
-            if let Some(ctrl) = super::controller(&ctx) {
-                ctrl.cancel_all();
-                ctrl.set_quit_confirmed();
-            }
-            window.close();
-        })
+        Rc::new(move || cancel_then_close(&ctx, &window))
     };
     let weak = dialog.downgrade();
     {

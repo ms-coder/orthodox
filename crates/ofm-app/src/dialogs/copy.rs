@@ -136,6 +136,28 @@ pub fn build_transfer(input: &TransferInput<'_>) -> Result<JobSpec, String> {
     })
 }
 
+/// Select `0..end` (in characters, `-1` = all) when `entry` first gets the focus. Setting the
+/// selection before the dialog is shown does not work: focusing a GTK text field selects all of
+/// it (`gtk-entry-select-on-focus`) right after the focus moved, so the region is set from an
+/// idle callback once that has happened.
+fn select_on_first_focus(entry: &gtk::Entry, end: i32) {
+    let focus = gtk::EventControllerFocus::new();
+    let done = std::cell::Cell::new(false);
+    let weak = entry.downgrade();
+    focus.connect_enter(move |_| {
+        if done.replace(true) {
+            return;
+        }
+        let weak = weak.clone();
+        gtk::glib::idle_add_local_once(move || {
+            if let Some(e) = weak.upgrade() {
+                e.select_region(0, end);
+            }
+        });
+    });
+    entry.add_controller(focus);
+}
+
 /// Select the file name without its extension (what a rename usually changes).
 fn stem_len(name: &str) -> i32 {
     let chars = |s: &str| i32::try_from(s.chars().count()).unwrap_or(i32::MAX);
@@ -252,7 +274,16 @@ pub fn present(ctx: &Rc<AppContext>, kind: TransferKind) {
     };
     dialog.set_focus(Some(&first));
     if kind == TransferKind::Rename {
-        mask.select_region(0, stem_len(single_name.as_deref().unwrap_or("")));
+        let is_dir = targets
+            .entries
+            .first()
+            .is_some_and(|e| e.kind == ofm_core::EntryKind::Dir);
+        let end = if is_dir {
+            -1
+        } else {
+            stem_len(single_name.as_deref().unwrap_or(""))
+        };
+        select_on_first_focus(&mask, end);
     }
 
     // Submit: validates, then runs the job in the chosen mode; returns true when it was accepted.

@@ -42,8 +42,10 @@ with `ctx.ext.get::<T>()`. Do not add fields to `AppContext`.
 ## Patterns every task must follow
 
 - **Keys**: never handle keys in widgets (except text entry). Add the command + keymap entry; the
-  window-level capture controller in `dispatch.rs` does the rest. While a modal dialog is open hold
-  `let _g = ctx.enter_modal();` so keys resolve in the `dialog` keymap section.
+  capture-phase controller from `dispatch::install_key_controller` does the rest. Show every
+  dialog with `navigation::modal::present` (never `adw::Dialog::present` directly): it enters the
+  modal state (keys resolve in the `dialog` keymap section, then `global`) and attaches the same
+  dispatcher controller to the dialog itself (`WindowKind::Dialog`), see "Keys in dialogs" below.
 - **Background work**: `wiring::run_on_pool(&ctx.services.pool, |tx| { blocking I/O; tx.send_blocking(..) })`
   then `wiring::attach(rx, |msg| ControlFlow::Continue(()), || {})`. Drop results of stale
   generations (see `PanelController::load`). No `std::fs`/`stat` on the main thread (clippy.toml enforces).
@@ -151,3 +153,24 @@ frozen (architect): `lib, spec, event, error, ctx, runner, fs/mod, fs/faulty, op
 ## Deferred M1 finding closed by T3.0
 
 `FsFile::try_clone_from`/`copy_range_from` now go through `FsFile::as_fd`, so `FaultyFs` intercepts them.
+
+## Keys in dialogs (dispatcher on every dialog)
+
+libadwaita >= 1.7 (GTK >= 4.18) marks a presented `adw::Dialog` with `gtk_widget_set_limit_events`:
+key events targeted inside the dialog are **not** propagated to the main window, so the window's
+capture controller never sees them. Therefore `modal::present` calls
+`dispatch::install_key_controller(dialog, ctx, WindowKind::Dialog)` for every dialog.
+- Resolution: `dialog` section, then `global` (Ctrl+J = `app.jobs` closes the jobs view).
+- Text entries: `dispatch::entry_wants_key` lets plain typing/editing keys (letters, Space,
+  Backspace, Del, Home/End, Left/Right, Ctrl+A/C/V/X/Z/Y) reach a focused entry; Enter, Esc, F-keys
+  and other chords go to the keymap, so Enter in an entry is `dialog.ok`.
+- A dialog's `on_ok` (from `modal::present`) decides what Enter does; dialogs with buttons call
+  `jobs::ui::activate_focused_button` first, so Enter on a focused Cancel button is Cancel.
+- Alt+mnemonics are not bound in `dialog`/`global`, so they stay native GTK behaviour. Keep the
+  mnemonics of one dialog unique.
+- No double dispatch: with an older libadwaita (no event limit, e.g. Ubuntu 24.04) the window
+  controller runs first (capture is top-down), resolves in the same `dialog` section and stops the
+  event; with the limit only the dialog's controller runs. `install_key_controller` is idempotent
+  per widget (named controller `ofm-dispatch`).
+- Tests: `tests/real_binary_fileops.rs` presses real keys inside dialogs (Enter, F2, Ctrl+A, Del,
+  Ctrl+J); synthetic tests that call `ctx.execute` cannot catch a broken key path.

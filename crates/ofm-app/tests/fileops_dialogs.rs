@@ -138,6 +138,17 @@ fn dialogs_scenario() {
         rp.to_string_lossy()
     );
     assert_eq!(fx.entry("ofm-transfer-mask").text(), "a.txt");
+    // Real keys reach the keymap inside a dialog only through its own dispatcher controller
+    // (libadwaita does not propagate key events from a dialog to the window).
+    let mut w = fx.find("ofm-transfer-mask").parent();
+    let mut dialog_has_dispatcher = false;
+    while let Some(p) = w {
+        if p.parent().is_some() && ofm_app::dispatch::has_dispatch_controller(&p) {
+            dialog_has_dispatcher = true;
+        }
+        w = p.parent();
+    }
+    assert!(dialog_has_dispatcher, "the dialog has no key dispatcher");
     fx.shot("copy-dialog");
     fx.run(cmd::DIALOG_OK);
     assert_eq!(fx.modal_depth(), 0, "Enter accepts and closes");

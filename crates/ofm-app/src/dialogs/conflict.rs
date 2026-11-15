@@ -322,7 +322,7 @@ fn build_conflict(
             ConflictAnswer::OverwriteIfSizeDiffers,
             tr("Overwrite if si_ze differs"),
         ),
-        (ConflictAnswer::Abort, tr("_Abort job")),
+        (ConflictAnswer::Abort, tr("A_bort job")),
     ];
     let default_choice = if kind == ConflictKind::Replaceable {
         ConflictAnswer::Skip
@@ -477,7 +477,7 @@ fn build_error(
     let retry = ui::button(tr("_Retry"));
     retry.add_css_class("suggested-action");
     let skip = ui::button(tr("_Skip"));
-    let abort = ui::button(tr("_Abort"));
+    let abort = ui::button(tr("A_bort"));
     retry.set_widget_name("ofm-error-retry");
     skip.set_widget_name("ofm-error-skip");
     abort.set_widget_name("ofm-error-abort");
@@ -542,7 +542,7 @@ fn build_trash(dialog: &adw::Dialog, path: &str, answer: &Rc<dyn Fn(Option<Answe
     delete.add_css_class("destructive-action");
     let skip = ui::button(tr("_Skip"));
     skip.add_css_class("suggested-action");
-    let abort = ui::button(tr("_Abort"));
+    let abort = ui::button(tr("A_bort"));
     delete.set_widget_name("ofm-trash-delete");
     skip.set_widget_name("ofm-trash-skip");
     abort.set_widget_name("ofm-trash-abort");
