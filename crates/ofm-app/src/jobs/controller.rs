@@ -4,15 +4,29 @@
 //! The engine is created lazily by [`JobsController::submit`]. UI tests that must not spawn worker
 //! threads feed synthetic events through [`JobsController::handle_event`] (an `Ask` event can be
 //! built with `ofm_core::Responder::channel()`); T3.3 tests the dialogs that way before the real
-//! engine (T3.1) is merged.
+//! engine (T3.1) is merged. [`JobsController::capture`] additionally records submits and control
+//! calls instead of sending them to an engine.
 
-use std::cell::{OnceCell, RefCell};
-use std::rc::Rc;
+use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::{HashMap, VecDeque};
+use std::ops::ControlFlow;
+use std::path::PathBuf;
+use std::rc::{Rc, Weak};
 
-use ofm_jobs::{JobEngine, JobEvent, JobId, JobSpec, JobState, Outcome, Progress, RunMode};
+use adw::prelude::*;
+use ofm_core::{Location, Responder};
+use ofm_jobs::{
+    Answer, JobEngine, JobEvent, JobId, JobSpec, JobState, Outcome, Progress, Question, RunMode,
+};
 
+use super::targets::focus_target;
+use super::ui;
 use crate::context::AppContext;
+use crate::dialogs::conflict;
+use crate::i18n::tr;
+use crate::panel::PanelController;
 use crate::signal::Signal;
+use crate::wiring;
 
 /// One row of the jobs view.
 #[derive(Debug, Clone)]
@@ -46,12 +60,62 @@ pub enum JobsEvent {
     Cleared,
 }
 
+/// Completion callback of a job (see [`SubmitOpts::on_finished`]).
+pub type FinishedFn = Box<dyn FnOnce(&Rc<AppContext>, &Outcome)>;
+
+/// What the UI wants done around a job besides running it.
+#[derive(Default)]
+pub struct SubmitOpts {
+    /// Panel whose selection is cleared when the job finishes successfully.
+    pub origin: Option<Weak<PanelController>>,
+    /// Called once with the outcome when the job finished (any outcome).
+    pub on_finished: Option<FinishedFn>,
+}
+
+struct PendingAsk {
+    id: JobId,
+    question: Question,
+    reply: Responder<Answer>,
+}
+
+/// A control call recorded instead of being sent to the engine (see [`JobsController::capture`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Control {
+    /// `pause(id)`
+    Pause(JobId),
+    /// `resume(id)`
+    Resume(JobId),
+    /// `cancel(id)`
+    Cancel(JobId),
+    /// `cancel_all()`
+    CancelAll,
+}
+
+/// Test seam: when installed, submits and control calls are recorded instead of reaching the
+/// engine (no worker threads). Jobs still appear in the table through synthetic `Queued`
+/// events; the test feeds `Started`/`Progress`/`Finished` through `handle_event`.
+#[derive(Default)]
+pub struct Capture {
+    /// Every submitted job, in order.
+    pub submitted: RefCell<Vec<(JobId, JobSpec, RunMode)>>,
+    /// Every pause/resume/cancel call, in order.
+    pub controls: RefCell<Vec<Control>>,
+    next: Cell<u64>,
+}
+
 /// Owner of the engine and the job table.
 pub struct JobsController {
     engine: OnceCell<JobEngine>,
     jobs: RefCell<Vec<JobEntry>>,
     /// Observers; see [`JobsEvent`].
     pub changed: Signal<JobsEvent>,
+    pump_started: Cell<bool>,
+    meta: RefCell<HashMap<JobId, SubmitOpts>>,
+    asks: RefCell<VecDeque<PendingAsk>>,
+    ask_open: Cell<bool>,
+    ask_dialogs: RefCell<HashMap<JobId, adw::Dialog>>,
+    capture: RefCell<Option<Rc<Capture>>>,
+    quit_confirmed: Cell<bool>,
 }
 
 impl JobsController {
@@ -61,7 +125,21 @@ impl JobsController {
             engine: OnceCell::new(),
             jobs: RefCell::new(Vec::new()),
             changed: Signal::new(),
+            pump_started: Cell::new(false),
+            meta: RefCell::new(HashMap::new()),
+            asks: RefCell::new(VecDeque::new()),
+            ask_open: Cell::new(false),
+            ask_dialogs: RefCell::new(HashMap::new()),
+            capture: RefCell::new(None),
+            quit_confirmed: Cell::new(false),
         }
+    }
+
+    /// Install the test seam (see [`Capture`]) and return it.
+    pub fn capture(&self) -> Rc<Capture> {
+        let c = Rc::new(Capture::default());
+        *self.capture.borrow_mut() = Some(Rc::clone(&c));
+        c
     }
 
     /// Use a prepared engine (tests: `JobEngine::with_fs(FaultyFs)`); must be called before the
@@ -70,39 +148,109 @@ impl JobsController {
         self.engine.set(engine).is_ok()
     }
 
+    /// The user confirmed quitting with running jobs (the next close request goes through).
+    pub fn quit_confirmed(&self) -> bool {
+        self.quit_confirmed.get()
+    }
+
+    /// Remember that quitting was confirmed.
+    pub fn set_quit_confirmed(&self) {
+        self.quit_confirmed.set(true);
+    }
+
     /// Submit a job and start pumping engine events on the GTK main loop (first call only).
     /// Returns immediately; the worker does all I/O.
-    pub fn submit(self: &Rc<Self>, _ctx: &Rc<AppContext>, _spec: JobSpec, _mode: RunMode) -> JobId {
-        // T3.3: create the engine if needed (`JobEngine::new`), `wiring::attach(engine.events(), ..)`
-        // calling `handle_event` with a Weak<Self> / Weak<AppContext>, then `engine.submit`.
-        todo!("T3.3")
+    pub fn submit(self: &Rc<Self>, ctx: &Rc<AppContext>, spec: JobSpec, mode: RunMode) -> JobId {
+        self.submit_with(ctx, spec, mode, SubmitOpts::default())
+    }
+
+    /// [`submit`](Self::submit) with UI follow-ups (selection clearing, completion callback).
+    pub fn submit_with(
+        self: &Rc<Self>,
+        ctx: &Rc<AppContext>,
+        spec: JobSpec,
+        mode: RunMode,
+        opts: SubmitOpts,
+    ) -> JobId {
+        let capture = self.capture.borrow().clone();
+        if let Some(cap) = capture {
+            let id = JobId(cap.next.get() + 1);
+            cap.next.set(id.0);
+            let title = spec.title();
+            cap.submitted.borrow_mut().push((id, spec, mode));
+            self.meta.borrow_mut().insert(id, opts);
+            self.handle_event(ctx, JobEvent::Queued { id, title, mode });
+            return id;
+        }
+        let engine = self.engine.get_or_init(JobEngine::new);
+        self.start_pump(ctx, engine);
+        let id = engine.submit(spec, mode);
+        // Events are delivered by the pump on a later main-loop iteration, so the metadata is
+        // in place before the first event of this job is handled.
+        self.meta.borrow_mut().insert(id, opts);
+        id
+    }
+
+    fn start_pump(self: &Rc<Self>, ctx: &Rc<AppContext>, engine: &JobEngine) {
+        if self.pump_started.replace(true) {
+            return;
+        }
+        let (weak_self, weak_ctx) = (Rc::downgrade(self), Rc::downgrade(ctx));
+        wiring::attach(
+            engine.events(),
+            move |ev| match (weak_self.upgrade(), weak_ctx.upgrade()) {
+                (Some(this), Some(ctx)) => {
+                    this.handle_event(&ctx, ev);
+                    ControlFlow::Continue(())
+                }
+                _ => ControlFlow::Break(()),
+            },
+            || {},
+        );
     }
 
     /// Pause a job.
     pub fn pause(&self, id: JobId) {
-        if let Some(e) = self.engine.get() {
+        if let Some(c) = self.capture.borrow().as_ref() {
+            c.controls.borrow_mut().push(Control::Pause(id));
+        } else if let Some(e) = self.engine.get() {
             e.pause(id);
         }
     }
 
     /// Resume a job.
     pub fn resume(&self, id: JobId) {
-        if let Some(e) = self.engine.get() {
+        if let Some(c) = self.capture.borrow().as_ref() {
+            c.controls.borrow_mut().push(Control::Resume(id));
+        } else if let Some(e) = self.engine.get() {
             e.resume(id);
         }
     }
 
     /// Cancel a job.
     pub fn cancel(&self, id: JobId) {
-        if let Some(e) = self.engine.get() {
+        if let Some(c) = self.capture.borrow().as_ref() {
+            c.controls.borrow_mut().push(Control::Cancel(id));
+        } else if let Some(e) = self.engine.get() {
             e.cancel(id);
         }
     }
 
     /// Cancel every unfinished job (after the user confirmed quitting).
     pub fn cancel_all(&self) {
-        if let Some(e) = self.engine.get() {
+        if let Some(c) = self.capture.borrow().as_ref() {
+            c.controls.borrow_mut().push(Control::CancelAll);
+        } else if let Some(e) = self.engine.get() {
             e.cancel_all();
+        }
+    }
+
+    /// Pause a running job, resume a paused one (queued/finished jobs: nothing).
+    pub fn toggle_pause(&self, id: JobId) {
+        match self.job(id).map(|j| j.state) {
+            Some(JobState::Running) => self.pause(id),
+            Some(JobState::Paused) => self.resume(id),
+            _ => {}
         }
     }
 
@@ -111,12 +259,23 @@ impl JobsController {
         self.jobs.borrow().clone()
     }
 
+    /// The job with `id`, if still in the table.
+    pub fn job(&self, id: JobId) -> Option<JobEntry> {
+        self.jobs.borrow().iter().find(|j| j.id == id).cloned()
+    }
+
     /// True while any job is queued, running or paused (quit confirmation).
     pub fn has_unfinished(&self) -> bool {
+        self.unfinished_count() > 0
+    }
+
+    /// Number of jobs that have not finished.
+    pub fn unfinished_count(&self) -> usize {
         self.jobs
             .borrow()
             .iter()
-            .any(|j| j.state != JobState::Finished)
+            .filter(|j| j.state != JobState::Finished)
+            .count()
     }
 
     /// Drop finished jobs from the table (`jobs.clear_finished`).
@@ -131,7 +290,9 @@ impl JobsController {
             jobs.retain(|j| j.state != JobState::Finished);
             ids
         };
-        if let Some(e) = self.engine.get() {
+        if self.capture.borrow().is_none()
+            && let Some(e) = self.engine.get()
+        {
             for id in ids {
                 e.forget(id);
             }
@@ -142,8 +303,165 @@ impl JobsController {
     /// Apply one engine event on the main thread: update the table, emit [`JobsEvent`]s, open the
     /// conflict/error/trash dialog for `Ask` (`dialogs::conflict::present`), and on `Finished`
     /// refresh panels and show errors. Public so tests can feed synthetic events.
-    pub fn handle_event(self: &Rc<Self>, _ctx: &Rc<AppContext>, _ev: JobEvent) {
-        todo!("T3.3")
+    pub fn handle_event(self: &Rc<Self>, ctx: &Rc<AppContext>, ev: JobEvent) {
+        match ev {
+            JobEvent::Queued { id, title, mode } => {
+                self.jobs.borrow_mut().push(JobEntry {
+                    id,
+                    title,
+                    mode,
+                    state: JobState::Queued,
+                    progress: Progress::default(),
+                    asking: false,
+                    outcome: None,
+                });
+                self.changed.emit(&JobsEvent::Added(id));
+            }
+            JobEvent::Started { id } => self.update(id, |j| j.state = JobState::Running),
+            JobEvent::StateChanged { id, state } => self.update(id, |j| j.state = state),
+            JobEvent::Progress { id, progress } => self.update(id, |j| j.progress = progress),
+            JobEvent::Ask {
+                id,
+                question,
+                reply,
+            } => {
+                self.asks.borrow_mut().push_back(PendingAsk {
+                    id,
+                    question,
+                    reply,
+                });
+                self.show_next_ask(ctx);
+            }
+            JobEvent::Finished { id, outcome } => self.finished(ctx, id, outcome),
+        }
+    }
+
+    fn update(&self, id: JobId, f: impl FnOnce(&mut JobEntry)) {
+        let found = {
+            let mut jobs = self.jobs.borrow_mut();
+            jobs.iter_mut().find(|j| j.id == id).map(f).is_some()
+        };
+        if found {
+            self.changed.emit(&JobsEvent::Updated(id));
+        }
+    }
+
+    // ---- questions ------------------------------------------------------------------------------
+    /// Show the next queued question unless one is already open (one dialog at a time).
+    fn show_next_ask(self: &Rc<Self>, ctx: &Rc<AppContext>) {
+        while !self.ask_open.get() {
+            let Some(PendingAsk {
+                id,
+                question,
+                reply,
+            }) = self.asks.borrow_mut().pop_front()
+            else {
+                return;
+            };
+            self.ask_open.set(true);
+            self.update(id, |j| j.asking = true);
+            let (weak_self, weak_ctx) = (Rc::downgrade(self), Rc::downgrade(ctx));
+            let on_closed: Box<dyn FnOnce()> = Box::new(move || {
+                let (Some(this), Some(ctx)) = (weak_self.upgrade(), weak_ctx.upgrade()) else {
+                    return;
+                };
+                this.ask_dialogs.borrow_mut().remove(&id);
+                this.ask_open.set(false);
+                this.update(id, |j| j.asking = false);
+                this.show_next_ask(&ctx);
+            });
+            match conflict::present_with(ctx, id, question, reply, on_closed) {
+                Some(dialog) => {
+                    self.ask_dialogs.borrow_mut().insert(id, dialog);
+                }
+                None => {
+                    // No window: the responder was dropped, which aborts the job.
+                    self.ask_open.set(false);
+                    self.update(id, |j| j.asking = false);
+                }
+            }
+        }
+    }
+
+    // ---- completion -----------------------------------------------------------------------------
+    fn finished(self: &Rc<Self>, ctx: &Rc<AppContext>, id: JobId, outcome: Outcome) {
+        // A job that ended (cancelled, aborted) takes its open question with it.
+        self.asks.borrow_mut().retain(|a| a.id != id);
+        let open = self.ask_dialogs.borrow().get(&id).cloned();
+        if let Some(d) = open {
+            d.close();
+        }
+        let title = {
+            let mut jobs = self.jobs.borrow_mut();
+            jobs.iter_mut().find(|j| j.id == id).map(|j| {
+                j.state = JobState::Finished;
+                j.asking = false;
+                j.outcome = Some(outcome.clone());
+                j.title.clone()
+            })
+        };
+        let meta = self.meta.borrow_mut().remove(&id);
+        self.changed.emit(&JobsEvent::Finished(id));
+
+        let title = title.unwrap_or_default();
+        if let Some(report) = outcome.report() {
+            refresh_panels(ctx, &report.created);
+        }
+        if let Some(meta) = meta {
+            if outcome.is_success()
+                && let Some(c) = meta.origin.as_ref().and_then(Weak::upgrade)
+            {
+                c.mutate(|m| m.select_all(false));
+            }
+            if let Some(cb) = meta.on_finished {
+                cb(ctx, &outcome);
+            }
+        }
+        report_problems(ctx, &title, &outcome);
+    }
+}
+
+/// After a job: make every panel show the new state and put its cursor on the first created
+/// item inside it. The watcher delivers the changes for local directories; panels without a
+/// watch (archives, lists, a watch still starting) are reloaded explicitly.
+fn refresh_panels(ctx: &Rc<AppContext>, created: &[PathBuf]) {
+    for side in 0..2 {
+        let panel = ctx.host(side).active();
+        let focus = match panel.location() {
+            Location::Local(dir) => created.iter().find_map(|p| focus_target(&dir, p)),
+            _ => None,
+        };
+        match (panel.watching(), focus) {
+            (true, Some(name)) => panel.focus_name(name),
+            (true, None) => {}
+            (false, Some(name)) => panel.reload_and_focus(name),
+            (false, None) => panel.reload(),
+        }
+    }
+}
+
+/// Failures and warnings are shown once, when the job ends.
+fn report_problems(ctx: &Rc<AppContext>, title: &str, outcome: &Outcome) {
+    match outcome {
+        Outcome::Failed { error, .. } => {
+            ui::message(ctx, tr("Operation failed"), &format!("{title}\n\n{error}"));
+        }
+        Outcome::Ok(r) | Outcome::Cancelled(r) if !r.warnings.is_empty() => {
+            const SHOWN: usize = 10;
+            let mut text = format!("{title}\n");
+            for w in r.warnings.iter().take(SHOWN) {
+                text.push_str(&format!("\n{}: {}", w.path.display(), w.message));
+            }
+            if r.warnings.len() > SHOWN {
+                text.push_str(&format!(
+                    "\n... {} {}",
+                    r.warnings.len() - SHOWN,
+                    tr("more")
+                ));
+            }
+            ui::message(ctx, tr("Completed with warnings"), &text);
+        }
+        _ => {}
     }
 }
 
