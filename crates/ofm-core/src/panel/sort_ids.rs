@@ -132,7 +132,10 @@ fn sort_group_ext(spec: &SortSpec, entries: &[Entry], ids: &mut [u32]) {
             let (k, exact) = text_key_exact(ext_bytes(name));
             ExtItem {
                 id,
-                exact,
+                // Only the top 8 bytes of the key are kept: it is exact for the stored `u64` only
+                // if nothing was encoded below them (else two extensions that differ after byte 8
+                // would compare equal, e.g. "0__2" vs "0__2_").
+                exact: exact && k & u128::from(u64::MAX) == 0,
                 ext: (k >> 64) as u64,
                 name: text_key(name),
             }
@@ -257,6 +260,23 @@ mod tests {
         let mut ids: Vec<u32> = (0..entries.len() as u32).collect();
         ids.sort_by(|&a, &b| cmp_entries(spec, &entries[a as usize], &entries[b as usize]));
         ids
+    }
+
+    #[test]
+    fn ext_sort_tells_apart_extensions_that_differ_after_the_stored_key_width() {
+        // Found by proptest: "A.0__2" and "_.0__2_" have extensions "0__2" / "0__2_" whose encoded
+        // keys agree in the first 8 bytes (all that the extension sort stores) and differ in the 9th.
+        let entries = vec![entry("_.0__2_", false, 0, 0), entry("A.0__2", false, 0, 0)];
+        for reverse in [false, true] {
+            let spec = SortSpec {
+                key: SortKey::Ext,
+                reverse,
+                dirs_first: false,
+            };
+            let mut fast: Vec<u32> = (0..entries.len() as u32).collect();
+            sort_ids(&spec, &entries, &mut fast);
+            assert_eq!(fast, reference_sort(&spec, &entries), "reverse={reverse}");
+        }
     }
 
     proptest! {
