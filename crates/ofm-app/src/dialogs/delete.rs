@@ -37,6 +37,13 @@ fn texts(permanent: bool, what: &str) -> (String, &'static str) {
     }
 }
 
+/// Permanent deletion of several items or of any folder cannot be undone and can be large: the
+/// dialog then starts on Cancel, so a reflexive Enter does nothing. A single plain file keeps
+/// "Delete" as the default. Moving to the Trash is recoverable and always defaults to the action.
+pub fn default_is_cancel(permanent: bool, items: usize, has_dirs: bool) -> bool {
+    permanent && (items > 1 || has_dirs)
+}
+
 /// Names for the dialog body: up to [`LISTED`] lines, then "... and N more".
 pub fn name_list(names: &[String]) -> String {
     let mut lines: Vec<String> = names.iter().take(LISTED).cloned().collect();
@@ -128,12 +135,17 @@ pub fn present(ctx: &Rc<AppContext>, permanent: bool) {
     column.append(&perm);
 
     let cancel = ui::button(tr("Cancel"));
+    cancel.set_widget_name("ofm-delete-cancel");
     let run = ui::button(run_label);
     run.set_widget_name("ofm-delete-run");
     run.add_css_class("destructive-action");
     column.append(&ui::button_row(&[&cancel, &run]));
     dialog.set_child(Some(&modal::with_header(&column)));
-    dialog.set_focus(Some(&run));
+    if default_is_cancel(permanent, paths.len(), targets.has_dirs()) {
+        dialog.set_focus(Some(&cancel));
+    } else {
+        dialog.set_focus(Some(&run));
+    }
 
     // The check box switches between the two modes; the texts follow.
     {
@@ -200,6 +212,14 @@ mod tests {
         let text = name_list(&many);
         assert_eq!(text.lines().count(), LISTED + 1);
         assert!(text.ends_with("... 3 more"));
+    }
+
+    #[test]
+    fn dangerous_permanent_deletes_default_to_cancel() {
+        assert!(!default_is_cancel(true, 1, false), "single plain file");
+        assert!(default_is_cancel(true, 1, true), "a folder");
+        assert!(default_is_cancel(true, 2, false), "several items");
+        assert!(!default_is_cancel(false, 5, true), "trash is recoverable");
     }
 
     #[test]

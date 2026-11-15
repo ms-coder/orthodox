@@ -259,7 +259,14 @@ fn dialogs_scenario() {
     fx.run(cmd::FILE_DELETE_PERMANENT);
     assert!(fx.check("ofm-delete-permanent").is_active());
     fx.shot("delete-permanent-dialog");
+    pump_for(400); // the dialog must be mapped before the default focus takes effect
+    // A permanent delete of a FOLDER starts on the Cancel button: Enter must not delete.
     fx.run(cmd::DIALOG_OK);
+    assert_eq!(fx.modal_depth(), 0, "Enter hit the focused Cancel button");
+    assert_eq!(cap.submitted.borrow().len(), 6, "nothing was submitted");
+    // Confirming goes through the Delete button.
+    fx.run(cmd::FILE_DELETE_PERMANENT);
+    fx.button("ofm-delete-run").emit_clicked();
     match spec_of(&cap, 6).0 {
         JobSpec::Delete { paths, to_trash } => {
             assert_eq!(paths, vec![lp.join("sub")]);
@@ -270,15 +277,26 @@ fn dialogs_scenario() {
     // Un-ticking the box in the permanent dialog switches back to the Trash.
     fx.run(cmd::FILE_DELETE_PERMANENT);
     fx.check("ofm-delete-permanent").set_active(false);
-    fx.run(cmd::DIALOG_OK);
+    fx.button("ofm-delete-run").emit_clicked();
     assert!(matches!(
         spec_of(&cap, 7).0,
         JobSpec::Delete { to_trash: true, .. }
     ));
+    // A single plain file keeps Delete as the default: Enter deletes permanently.
+    fx.cursor_to(0, "a.txt");
+    fx.run(cmd::FILE_DELETE_PERMANENT);
+    fx.run(cmd::DIALOG_OK);
+    match spec_of(&cap, 8).0 {
+        JobSpec::Delete { paths, to_trash } => {
+            assert_eq!(paths, vec![lp.join("a.txt")]);
+            assert!(!to_trash);
+        }
+        other => panic!("{other:?}"),
+    }
     // Cancel with Esc does nothing.
     fx.run(cmd::FILE_DELETE);
     fx.run(cmd::DIALOG_CANCEL);
-    assert_eq!(cap.submitted.borrow().len(), 8);
+    assert_eq!(cap.submitted.borrow().len(), 9);
 
     // ---- mkdir ---------------------------------------------------------------------------------------
     fx.run(cmd::FILE_MKDIR);
@@ -289,7 +307,7 @@ fn dialogs_scenario() {
     fx.shot("mkdir-dialog");
     fx.run(cmd::DIALOG_OK);
     assert_eq!(fx.modal_depth(), 0);
-    let (spec, mode) = spec_of(&cap, 8);
+    let (spec, mode) = spec_of(&cap, 9);
     assert_eq!(mode, RunMode::Parallel, "mkdir does not wait behind copies");
     match spec {
         JobSpec::Mkdir { path } => assert_eq!(path, lp.join("new/nested")),
@@ -306,7 +324,7 @@ fn dialogs_scenario() {
     fx.check("ofm-link-relative").set_active(true);
     fx.shot("link-dialog");
     fx.run(cmd::DIALOG_OK);
-    match spec_of(&cap, 9).0 {
+    match spec_of(&cap, 10).0 {
         JobSpec::Link { target, link, kind } => {
             assert_eq!(kind, LinkKind::Symbolic);
             assert_eq!(link, rp.join("a.txt"));
@@ -333,7 +351,7 @@ fn dialogs_scenario() {
     assert!(!fx.check("ofm-props-bit2").is_active(), "owner execute");
     fx.shot("properties-dialog");
     fx.run(cmd::DIALOG_OK);
-    assert_eq!(cap.submitted.borrow().len(), 10, "no change, no job");
+    assert_eq!(cap.submitted.borrow().len(), 11, "no change, no job");
     fx.run(cmd::FILE_PROPERTIES);
     fx.entry("ofm-props-octal").set_text("0600");
     assert!(
@@ -343,7 +361,7 @@ fn dialogs_scenario() {
     fx.check("ofm-props-bit2").set_active(true); // boxes update the octal
     assert_eq!(fx.entry("ofm-props-octal").text(), "0700");
     fx.run(cmd::DIALOG_OK);
-    match spec_of(&cap, 10).0 {
+    match spec_of(&cap, 11).0 {
         JobSpec::SetAttrs {
             paths,
             mode,

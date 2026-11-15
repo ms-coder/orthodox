@@ -8,8 +8,8 @@
 //! Keys: Enter = run (queued unless "run in parallel" is ticked), F2 = add to the queue, Esc =
 //! cancel. Widget names (`ofm-transfer-*`) exist for the smoke tests.
 
-use std::ffi::OsString;
-use std::path::Path;
+use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -20,7 +20,7 @@ use ofm_jobs::{ConflictAnswer, CopyOpts, JobSpec, RunMode};
 use crate::context::AppContext;
 use crate::i18n::tr;
 use crate::jobs::actions::{self, Action};
-use crate::jobs::targets::{Targets, normalize, resolve_path};
+use crate::jobs::targets::{Targets, normalize, resolve_path_with_origin};
 use crate::jobs::{self, SubmitOpts, ui};
 use crate::navigation::modal;
 
@@ -50,7 +50,11 @@ pub struct TransferInput<'a> {
     pub home: &'a Path,
     /// Text of the destination field (ignored for rename).
     pub dest_text: &'a str,
-    /// Text of the mask / new-name field.
+    /// The path whose lossy rendering was the destination field's initial text: when the text is
+    /// still that (or extends it), the original bytes are used (non-UTF-8 folders).
+    pub dest_origin: Option<&'a Path>,
+    /// Text of the mask / new-name field (initially the lossy name for a single item; unchanged
+    /// means "keep the original name", whatever its bytes).
     pub mask_text: &'a str,
     /// Copy what symlinks point to.
     pub follow_symlinks: bool,
@@ -69,8 +73,9 @@ pub fn build_transfer(input: &TransferInput<'_>) -> Result<JobSpec, String> {
             .map(normalize)
             .ok_or_else(|| tr("Items in archives and lists cannot be renamed.").to_owned())?
     } else {
-        resolve_path(
+        resolve_path_with_origin(
             input.dest_text,
+            input.dest_origin,
             input.src_dir.unwrap_or(Path::new("/")),
             input.home,
         )
@@ -82,13 +87,15 @@ pub fn build_transfer(input: &TransferInput<'_>) -> Result<JobSpec, String> {
         return Err(tr("The name must not contain '/'.").to_owned());
     }
     let single = input.names.len() == 1;
+    // "Still the initial text" includes the lossy rendering of a non-UTF-8 name: the item then
+    // keeps its exact original bytes instead of being renamed to text containing U+FFFD.
     let keep_names = mask_text == "*"
         || (mask_text.is_empty() && !rename && !single)
         || (single
             && input
                 .names
                 .first()
-                .is_some_and(|n| n.to_str() == Some(mask_text)));
+                .is_some_and(|n| is_initial_name(n, input.mask_text, mask_text)));
     if mask_text.is_empty() && (rename || single) {
         return Err(tr("Enter a name.").to_owned());
     }
@@ -134,6 +141,13 @@ pub fn build_transfer(input: &TransferInput<'_>) -> Result<JobSpec, String> {
             opts,
         },
     })
+}
+
+/// True when the name field still holds the (lossy) text it was filled with for `name`: the item
+/// keeps its exact original name, which for a non-UTF-8 name is not what the text says.
+fn is_initial_name(name: &OsStr, raw_text: &str, trimmed_text: &str) -> bool {
+    let shown = name.to_string_lossy();
+    raw_text == shown || trimmed_text == shown
 }
 
 /// Select `0..end` (in characters, `-1` = all) when `entry` first gets the focus. Setting the
@@ -206,12 +220,20 @@ pub fn present(ctx: &Rc<AppContext>, kind: TransferKind) {
     dest.set_widget_name("ofm-transfer-dest");
     dest.update_property(&[gtk::accessible::Property::Label(tr("Destination folder"))]);
     dest.set_hexpand(true);
+    // The folder shown in the field; its original bytes are submitted while the text is unchanged.
+    let dest_origin: Option<PathBuf> = if kind == TransferKind::Rename {
+        None
+    } else {
+        ctx.other_controller()
+            .location()
+            .local_path()
+            .map(Path::to_path_buf)
+    };
     if kind != TransferKind::Rename {
         column.append(&ui::label(&prompt));
-        let other = ctx.other_controller().location();
         dest.set_text(
-            &other
-                .local_path()
+            &dest_origin
+                .as_deref()
                 .map_or(String::new(), |p| p.to_string_lossy().into_owned()),
         );
         column.append(&dest);
@@ -289,6 +311,7 @@ pub fn present(ctx: &Rc<AppContext>, kind: TransferKind) {
     // Submit: validates, then runs the job in the chosen mode; returns true when it was accepted.
     let submit: Rc<dyn Fn(bool) -> bool> = {
         let (ctx, targets, controller) = (Rc::clone(ctx), targets.clone(), Rc::clone(&controller));
+        let dest_origin = dest_origin.clone();
         let (dest, mask, follow, sync, parallel, error) = (
             dest.clone(),
             mask.clone(),
@@ -306,6 +329,7 @@ pub fn present(ctx: &Rc<AppContext>, kind: TransferKind) {
                 src_dir: targets.local_dir(),
                 home: &home,
                 dest_text: &dest.text(),
+                dest_origin: dest_origin.as_deref(),
                 mask_text: &mask.text(),
                 follow_symlinks: follow.is_active(),
                 sync: sync.is_active(),
@@ -417,6 +441,7 @@ mod tests {
             src_dir: Some(src),
             home,
             dest_text: dest,
+            dest_origin: None,
             mask_text: mask,
             follow_symlinks: false,
             sync: false,
@@ -541,6 +566,96 @@ mod tests {
         }
         let i = input(TransferKind::Copy, &["x"], src, home, "  ", "*");
         assert!(build_transfer(&i).is_err(), "empty destination");
+    }
+
+    fn raw(bytes: &[u8]) -> OsString {
+        use std::os::unix::ffi::OsStrExt;
+        OsStr::from_bytes(bytes).to_os_string()
+    }
+
+    /// Input for one non-UTF-8 source named `name` whose field holds its lossy text.
+    fn raw_input<'a>(
+        kind: TransferKind,
+        name: &OsStr,
+        src: &'a Path,
+        home: &'a Path,
+        dest: &'a str,
+        mask: &'a str,
+    ) -> TransferInput<'a> {
+        TransferInput {
+            kind,
+            sources: vec![Location::Local(src.join(name))],
+            names: vec![name.to_owned()],
+            src_dir: Some(src),
+            home,
+            dest_text: dest,
+            dest_origin: None,
+            mask_text: mask,
+            follow_symlinks: false,
+            sync: false,
+            overwrite_silently: false,
+        }
+    }
+
+    #[test]
+    fn non_utf8_single_name_is_kept_when_the_field_is_untouched() {
+        let (src, home) = (Path::new("/a"), Path::new("/h"));
+        let name = raw(b"caf\xe9.txt");
+        let shown = name.to_string_lossy().into_owned();
+        assert!(shown.contains('\u{fffd}'));
+        for kind in [TransferKind::Copy, TransferKind::Move] {
+            let i = raw_input(kind, &name, src, home, "/b", &shown);
+            let spec = build_transfer(&i).expect("valid");
+            assert_eq!(opts(&spec), (Path::new("/b"), None), "{kind:?}");
+        }
+        // Surrounding blanks the user left in do not turn it into a mask either.
+        let padded = format!(" {shown} ");
+        let i = raw_input(TransferKind::Copy, &name, src, home, "/b", &padded);
+        assert_eq!(opts(&build_transfer(&i).expect("valid")).1, None);
+        // An edited name is a literal rename mask.
+        let i = raw_input(TransferKind::Copy, &name, src, home, "/b", "plain.txt");
+        assert_eq!(
+            opts(&build_transfer(&i).expect("valid")).1,
+            Some("plain.txt")
+        );
+        // Rename in place with the untouched text is "unchanged", not a rename to U+FFFD.
+        let i = raw_input(TransferKind::Rename, &name, src, home, "", &shown);
+        assert!(build_transfer(&i).is_err());
+        // Same folder, untouched name: copy onto itself is refused.
+        let i = raw_input(TransferKind::Copy, &name, src, home, "/a", &shown);
+        assert!(build_transfer(&i).is_err());
+    }
+
+    #[test]
+    fn non_utf8_destination_keeps_its_bytes() {
+        let (src, home) = (Path::new("/a"), Path::new("/h"));
+        let dest = PathBuf::from(raw(b"/data/d\xff\xfe"));
+        let shown = dest.to_string_lossy().into_owned();
+        let name = raw(b"f\x80");
+        let mut i = raw_input(TransferKind::Copy, &name, src, home, &shown, "*");
+        i.dest_origin = Some(&dest);
+        let spec = build_transfer(&i).expect("valid");
+        assert_eq!(opts(&spec).0, dest.as_path(), "exact bytes, no U+FFFD copy");
+        // Extended below the folder: original prefix + the typed rest.
+        let below = format!("{shown}/sub");
+        let mut i = raw_input(TransferKind::Move, &name, src, home, &below, "*");
+        i.dest_origin = Some(&dest);
+        assert_eq!(
+            opts(&build_transfer(&i).expect("valid")).0,
+            dest.join("sub").as_path()
+        );
+        // Edited destination is taken as typed.
+        let mut i = raw_input(TransferKind::Copy, &name, src, home, "/elsewhere", "*");
+        i.dest_origin = Some(&dest);
+        assert_eq!(
+            opts(&build_transfer(&i).expect("valid")).0,
+            Path::new("/elsewhere")
+        );
+        // Source folder that is the (non-UTF-8) destination: same-folder check works on bytes.
+        let shown_name = name.to_string_lossy().into_owned();
+        let mut i = raw_input(TransferKind::Copy, &name, &dest, home, &shown, &shown_name);
+        i.dest_origin = Some(&dest);
+        assert!(build_transfer(&i).is_err());
     }
 
     #[test]
