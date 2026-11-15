@@ -4,10 +4,29 @@ The lead keeps this file current after every task. A fresh session must be able 
 
 ## Current state
 
-- Milestone: M3 (File operations, gate G2) — in progress; M2 done (tag m2-done)
-- T3.0 done and committed (API in docs/adr/0006-jobs-api.md; ARCHITECTURE.md §2 JobEvent/Question shapes are stale, ADR-0006 is authoritative). Now group 3.A: T3.1 engine+copy/move (fileops-engineer), T3.2 other ops (core-engineer), T3.3 file-op UI (ui-engineer), T3.4 torture suite (test-engineer; GLM only if ZAI_API_KEY set). Then T3.5 deep review (reviewer), tag m3-done, STOP at G2.
-- T3.0 must also: make `FsFile::try_clone_from/copy_range_from` wrappable by FaultyFs (deferred M1 finding); add a directory-watcher hook to `PanelController` for T3.3 auto-refresh (panel/ is frozen core, architect may edit).
+- Milestone: M3 (File operations) — **waiting for Igor at gate G2** (tag m3-done). All of T3.0–T3.7 merged, check.sh green. Reviews: T3.5 BLOCK -> T3.6 fixes -> re-review SIGN OFF WITH CONDITIONS -> T3.7 (N1 default ACL, N2 FAT unstable inodes, N3 chmod restore) merged and verified by the lead (reviewer's N1 repro now clean).
+- Next step: read Igor's G2 feedback into the "Gate feedback log", fix what he finds, then M4 (command line & terminal; T4.0 architect design first). GLM quota resets 2026-11-16 09:31 (server time); until then use Sonnet sparingly (Igor: save tokens), no Opus unless extremely important.
 
+### G2: trust the copy engine — please try this (ONLY ON COPIES OF YOUR DATA)
+
+Rule zero: never point OFM at your only copy of anything. Make a scratch area first, e.g.
+`mkdir -p ~/ofm-g2/{src,dst}` and put a COPY of a photo folder (a few GB, thousands of files, some odd names) into `~/ofm-g2/src` with `cp -a` or rsync. Keep the original untouched somewhere else. Run the app with `cargo run -p ofm-app -- ~/ofm-g2/src ~/ofm-g2/dst`.
+
+Comparison one-liners (run in a normal terminal; both print nothing when identical):
+- `diff -rq ~/ofm-g2/src ~/ofm-g2/dst/<folder>`  (content + names)
+- `rsync -rcn --delete --itemize-changes ~/ofm-g2/src/ ~/ofm-g2/dst/<folder>/`  (checksums, dry run; lists any difference)
+- `find ~/ofm-g2 -name '.*ofm-part*'`  (must print nothing: no leftover temp files)
+
+1. **Copy within the SSD:** mark the photo folder in the left panel, F5, Enter. Wait for the jobs bar to finish. Compare with the one-liners; sources must be unchanged.
+2. **Copy to the USB stick** (cross-device; first run `findmnt -no FSTYPE,TARGET /media/$USER/*` and tell me the file system: ext4, FAT/exFAT or NTFS): same as 1, destination = a new folder on the stick. Compare.
+3. **Cancel in the middle:** start another big copy, open the jobs view (Ctrl+J), cancel the job (Del). Then check: no file under a final name is truncated (rsync -rcn lists only MISSING files, never differing ones), and no `.ofm-part` files remain.
+4. **Conflicts:** copy the same folder again into the same destination. In the conflict dialog try Skip, then repeat and choose "Overwrite if newer" with apply-to-all (Ctrl+A). Before the second run `touch` a few files in the source so they are newer. Only the newer ones may change.
+5. **Move:** F6 a copy-folder from src to the stick and back. After each move check source gone / destination complete (rsync one-liner against your other copy).
+6. **Delete to trash and restore:** F8 on a few files in the scratch area; open GNOME Files > Trash and restore them; they must come back with the right content. (Shift+F8 deletes permanently: only in the scratch area.)
+7. **Odd names:** put files named like `-rf`, `a b`, `new
+line`, `ü ß`, a very long name, and a non-UTF-8 name (`printf 'x\xff.txt'` via touch "$(printf 'x\xff.txt')") in the source and copy/move them with F5/F6, Enter in the dialog: names must stay byte-identical.
+8. **Quit during a job:** start a big copy and press F10: it asks, then cancels and waits for cleanup (up to 15 s); no temp files left.
+Tell me anything odd: slowness, wrong dialog wording (own-output collisions say 'same file'), dots/artifacts, crashes. Include the stick's file system type.
 ## Milestones
 
 | M | Name | Status | Tag | Notes |
@@ -15,7 +34,7 @@ The lead keeps this file current after every task. A fresh session must be able 
 | M0 | Bootstrap | done | m0-done | |
 | M1 | Core foundations | done | m1-done | |
 | M2 | UI shell (G1) | done | m2-done | | |
-| M3 | File operations (G2) | in progress | | |
+| M3 | File operations (G2) | waiting for Igor | m3-done | | |
 | M4 | Command line & terminal | not started | | |
 | M5 | Viewer & quick view | not started | | |
 | M6 | Archives | not started | | |
@@ -121,3 +140,4 @@ All of B1, M2-M5, m2-m6 fixed; M1 partial. Conditions before m3-done: N1 (MAJOR)
 Deferred to M9: N4 NFS retransmitted link() EEXIST can leave moved item at source (compare lstat from/to inode in noreplace.rs); N5 trash renameat2(NOREPLACE) outside Fs, EINVAL on NFS/FUSE -> every trash item asks retry/skip (route through noreplace fallback); N6 link dialog link_origin for non-UTF-8 folder after user deletes the name (U+FFFD, ENOENT, no data loss); EINTR in checked close counts as success (nit).
 
 2026-11-16: GLM quota out again (429, resets 2026-11-16 09:31 server time) — 7b and 7c died; Igor asked to continue on Sonnet and save tokens. Plan: ONE Sonnet fileops-engineer finishes T3.7b + T3.7c in their existing worktrees (7c had fix+test uncommitted; 7b only tests). T3.7a (N1 default ACL) still running on GLM in ../orthodox-wt-T3.7a (6 files dirty); if it dies, finish with the same Sonnet agent. Token-saving rules: short prompts, one agent per batch, no Opus, lead verifies by running check.sh + reviewer repros instead of new reviews.
+- G2 known wording issue: a collision with the job's own output reuses ConflictKind::SameFile, so the dialog says 'source and destination are the same file'.
