@@ -4,27 +4,9 @@ The lead keeps this file current after every task. A fresh session must be able 
 
 ## Current state
 
-- Milestone: M2 (UI shell) — **waiting for Igor at gate G1**. All of T2.0–T2.4 merged, check.sh green (~77 s).
-- Next step: read Igor's G1 feedback into the "Gate feedback log", create fix tasks if needed, tag m2-done, then M3 (T3.0 architect stubs for the copy engine; fileops-engineer; Opus review of M3 at G2 only by explicit decision).
-
-### G1: please try this
-
-Run `cargo run -p ofm-app` (or `cargo run -p ofm-app -- DIR_LEFT DIR_RIGHT`). Nothing modifies files yet (file operations come in M3), so it is safe to browse anywhere.
-
-1. **Navigation:** Tab switches panels; arrows, PgUp/PgDn, Home/End move; Enter enters a dir; Backspace goes up and puts the cursor on the dir you left; Alt+F12 history list; Ctrl+D hotlist; Alt+F1/F2 drive menu.
-2. **Views and sorting:** Ctrl+1/2/3 = Brief/Full/Custom; Ctrl+F3..F6 sort; click a column header to sort (click twice reverses); Ctrl+H toggles hidden files. Try a directory with 100k+ files (e.g. generate one in /tmp) and scroll hard.
-3. **Mouse:** click, double-click, Ctrl/Shift-click, wheel, right-click (a context-menu signal only, no menu yet).
-4. **Selection and search:** Insert/Space mark, `+`/`-`/`*` (numpad) mask dialog, quick search (far: Alt+letters; tc: plain letters), Esc clears.
-5. **Tabs:** Ctrl+T new, Ctrl+W close, lock a tab; quit and restart: tabs, sort, view, window size and split ratio should come back.
-6. **Chrome and themes:** F9 menu bar (menu items for commands not implemented yet do nothing), F-key bar with Shift/Ctrl/Alt variants, `app.theme_next` cycles far-blue / commander-light / adwaita instantly. Screenshots: `./scripts/screenshot.sh g1` writes `target/screenshots/g1-*.png`.
-7. **Layouts you care about:** try your usual keyboard layout (and a non-Latin one): letter shortcuts on non-Latin layouts are unverified.
-
-Known issues to judge (tell me if any is a blocker):
-- Commander Light: white text on the bright orange active path bar is low contrast; Adwaita brief mode is hard to scan with the same orange accent.
-- Brief mode draws a header (with sort arrow) for every column, even empty ones.
-- Menu entries and F-keys for copy/move/delete/mkdir/view/edit do nothing until M3/M5.
-- No live directory refresh (no watcher wired into the panels yet): use refresh (Ctrl+R).
-- Real-key testing note: stock xdotool sends F5/F9/F10 as Alt+F5/F9/F10 under Xvfb; `tests/real_binary.rs` uses an XTest helper for that. My earlier remark that F9 opened the menu in a manual xdotool run is therefore unverified; the test suite does cover it.
+- Milestone: M3 (File operations, gate G2) — in progress; M2 done (tag m2-done)
+- Now: T3.0 jobs API freeze (architect, on main). Then group 3.A: T3.1 engine+copy/move (fileops-engineer), T3.2 other ops (core-engineer), T3.3 file-op UI (ui-engineer), T3.4 torture suite (test-engineer; GLM only if ZAI_API_KEY set). Then T3.5 deep review (reviewer), tag m3-done, STOP at G2.
+- T3.0 must also: make `FsFile::try_clone_from/copy_range_from` wrappable by FaultyFs (deferred M1 finding); add a directory-watcher hook to `PanelController` for T3.3 auto-refresh (panel/ is frozen core, architect may edit).
 
 ## Milestones
 
@@ -32,8 +14,8 @@ Known issues to judge (tell me if any is a blocker):
 |---|---|---|---|---|
 | M0 | Bootstrap | done | m0-done | |
 | M1 | Core foundations | done | m1-done | |
-| M2 | UI shell (G1) | waiting for Igor | | |
-| M3 | File operations (G2) | not started | | |
+| M2 | UI shell (G1) | done | m2-done | | |
+| M3 | File operations (G2) | in progress | | |
 | M4 | Command line & terminal | not started | | |
 | M5 | Viewer & quick view | not started | | |
 | M6 | Archives | not started | | |
@@ -73,12 +55,15 @@ Status values: `not started` · `in progress` · `review` · `waiting for Igor` 
 | `FsFile::try_clone_from/copy_range_from` need raw fd / as_any so FaultyFs can wrap | M3 T3.0 (architect) |
 | Keymap duplicate-chord "last wins" is key-sorted; unknown top-level sections silently ignored | M8 polish |
 | Missing `themes/` dir never watched; `atomic_write` follows symlinks | M9 hardening |
+| Stray dots in empty FileList area on Igor's Wayland session (not reproducible on Xvfb) | M9 / when Igor reports renderer result |
+| Light theme: white text on orange active path bar low contrast; Brief mode draws header for empty columns | M8 polish |
 | Ext sort 100k = ~55 ms on busy dev box (target 50) | re-measure in M9 |
 
 ## Gate feedback log
 
 | Gate | Date | Igor's feedback | Resulting tasks |
 |---|---|---|---|
+| G1 | 2026-11-15 | "file manager looks great, really cool, continue with other milestones". Earlier report: small stray dots left of the list in empty area (Wayland session). | Dots not reproducible on Xvfb (cairo+ngl, scale 1/2, text scale 1.25; 24 captures clean); code review found no draw path. Asked Igor to try GSK_RENDERER=cairo / GDK_BACKEND=x11 — no answer yet. Deferred to M9 hardening unless it reappears. |
 
 ## Decisions and deviations
 
