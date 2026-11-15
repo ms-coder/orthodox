@@ -744,3 +744,28 @@ fn del_in_jobs_view_cancels_the_job() {
     let done = (0..BIG_FILES).all(|i| s.right.join(format!("big{i}")).exists());
     assert!(!done, "Del did not cancel the running job");
 }
+
+/// Regression (G2): the jobs view selected its OLDEST row, so with finished jobs above the running
+/// one, Cancel / Pause / Del acted on a finished job and the copy ran on. A quick mkdir job
+/// finishes first; then the big copy starts; Del in the jobs view must stop the copy.
+#[test]
+#[ignore = "slow: ~1 GB on a real disk; set OFM_E2E_SLOW=1 and pass --include-ignored"]
+fn del_cancels_the_running_job_when_finished_jobs_are_listed_above_it() {
+    if !tools_available() || !slow_enabled() {
+        return;
+    }
+    let base = disk_base();
+    let s = Running::launch_in("", base.path(), &big_tree(), &TreeSpec::new());
+    // Job 1: F7 mkdir "x" in the left panel (finishes at once and stays in the jobs list).
+    s.keys_paced(&["F7", "x", "Return"], 400);
+    std::thread::sleep(Duration::from_millis(1500));
+    // Job 2: the big copy of all marked files.
+    start_big_copy(&s);
+    s.burst(&["ctrl+j", "Delete"]);
+    std::thread::sleep(Duration::from_secs(6));
+    let done = (0..BIG_FILES).all(|i| s.right.join(format!("big{i}")).exists());
+    assert!(
+        !done,
+        "Del hit a finished job instead of the running copy (selection must follow the running job)"
+    );
+}

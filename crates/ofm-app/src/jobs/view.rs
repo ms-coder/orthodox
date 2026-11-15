@@ -130,6 +130,23 @@ impl Row {
     }
 }
 
+/// The job the buttons and keys act on. The selected row wins while it is still unfinished;
+/// otherwise the most relevant unfinished job: a running one, then a paused one, then the oldest
+/// queued one. Without this, a finished job at the top of the list (the oldest row, selected by
+/// default) swallowed Cancel / Pause / Del while the running job sat further down.
+fn pick_target(selected: Option<JobId>, jobs: &[(JobId, JobState)]) -> Option<JobId> {
+    if let Some(sel) = selected
+        && jobs
+            .iter()
+            .any(|(id, st)| *id == sel && *st != JobState::Finished)
+    {
+        return Some(sel);
+    }
+    [JobState::Running, JobState::Paused, JobState::Queued]
+        .into_iter()
+        .find_map(|want| jobs.iter().find(|(_, st)| *st == want).map(|(id, _)| *id))
+}
+
 struct View {
     ctrl: Rc<JobsController>,
     list: gtk::ListBox,
@@ -148,14 +165,40 @@ impl View {
             .map(|r| r.id)
     }
 
+    fn states(&self) -> Vec<(JobId, JobState)> {
+        self.ctrl.jobs().iter().map(|j| (j.id, j.state)).collect()
+    }
+
+    /// The job an action applies to (see [`pick_target`]).
+    fn target(&self) -> Option<JobId> {
+        pick_target(self.selected(), &self.states())
+    }
+
+    /// Keep the selection on a job that can still be controlled: when the selected job finished
+    /// (or nothing is selected) move it to the running / paused / queued one, else to the first row.
+    fn reselect(&self) {
+        let want = self.target();
+        let rows = self.rows.borrow();
+        let row = want
+            .and_then(|id| rows.iter().find(|r| r.id == id))
+            .or_else(|| {
+                if self.list.selected_row().is_none() {
+                    rows.first()
+                } else {
+                    None
+                }
+            });
+        if let Some(row) = row {
+            self.list.select_row(Some(&row.widget));
+        }
+    }
+
     fn add(&self, job: &JobEntry) {
         let row = Row::new(job);
         self.list.append(&row.widget);
-        if self.list.selected_row().is_none() {
-            self.list.select_row(Some(&row.widget));
-        }
         self.rows.borrow_mut().push(row);
         self.empty.set_visible(false);
+        self.reselect();
     }
 
     fn sync(&self, id: JobId) {
@@ -163,6 +206,7 @@ impl View {
         if let Some(row) = self.rows.borrow().iter().find(|r| r.id == id) {
             row.refresh(&job);
         }
+        self.reselect();
         self.update_buttons();
     }
 
@@ -175,18 +219,14 @@ impl View {
             }
             keep
         });
-        if self.list.selected_row().is_none()
-            && let Some(first) = self.rows.borrow().first()
-        {
-            self.list.select_row(Some(&first.widget));
-        }
+        self.reselect();
         self.empty.set_visible(self.rows.borrow().is_empty());
         self.update_buttons();
     }
 
     fn update_buttons(&self) {
         let label = match self
-            .selected()
+            .target()
             .and_then(|id| self.ctrl.job(id))
             .map(|j| j.state)
         {
@@ -199,12 +239,12 @@ impl View {
     fn act(&self, action: Action) -> bool {
         match action {
             Action::PauseResume => {
-                if let Some(id) = self.selected() {
+                if let Some(id) = self.target() {
                     self.ctrl.toggle_pause(id);
                 }
             }
             Action::Cancel => {
-                if let Some(id) = self.selected() {
+                if let Some(id) = self.target() {
                     self.ctrl.cancel(id);
                 }
             }
@@ -269,6 +309,7 @@ pub fn toggle(ctx: &Rc<AppContext>) {
         view.add(&job);
     }
     view.empty.set_visible(view.rows.borrow().is_empty());
+    view.reselect();
     view.update_buttons();
 
     // Live updates while the dialog is open.
@@ -337,4 +378,50 @@ pub fn toggle(ctx: &Rc<AppContext>) {
             s.open.borrow_mut().take();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn j(n: u64, st: JobState) -> (JobId, JobState) {
+        (JobId(n), st)
+    }
+
+    #[test]
+    fn finished_selection_falls_back_to_the_running_job() {
+        // Igor's G2 run: three finished copies on top, the big one running at the bottom, the
+        // oldest row selected by default. Cancel / Del / Pause must hit the running job.
+        let jobs = [
+            j(1, JobState::Finished),
+            j(2, JobState::Finished),
+            j(3, JobState::Finished),
+            j(4, JobState::Running),
+        ];
+        assert_eq!(pick_target(Some(JobId(1)), &jobs), Some(JobId(4)));
+        assert_eq!(pick_target(None, &jobs), Some(JobId(4)));
+    }
+
+    #[test]
+    fn an_unfinished_selection_is_kept() {
+        let jobs = [j(1, JobState::Running), j(2, JobState::Queued)];
+        assert_eq!(pick_target(Some(JobId(2)), &jobs), Some(JobId(2)));
+    }
+
+    #[test]
+    fn running_beats_paused_beats_queued_and_nothing_to_do_gives_none() {
+        let jobs = [
+            j(1, JobState::Queued),
+            j(2, JobState::Paused),
+            j(3, JobState::Running),
+        ];
+        assert_eq!(pick_target(None, &jobs), Some(JobId(3)));
+        let jobs = [j(1, JobState::Queued), j(2, JobState::Paused)];
+        assert_eq!(pick_target(None, &jobs), Some(JobId(2)));
+        assert_eq!(
+            pick_target(Some(JobId(1)), &[j(1, JobState::Finished)]),
+            None
+        );
+        assert_eq!(pick_target(None, &[]), None);
+    }
 }
