@@ -7,6 +7,7 @@ confirm_quit_with_jobs = true
 confirm_delete = true
 confirm_overwrite = true
 one_panel_mode = false          # F01; remembered across restarts via session.toml
+inhibit_system_shortcuts = true # let OFM get Alt+F1..F12 etc. from GNOME while focused (Super+Esc gives them back)
 
 [keymap]
 preset = "far"                  # far | tc | mc ; user overrides live in keymap.toml

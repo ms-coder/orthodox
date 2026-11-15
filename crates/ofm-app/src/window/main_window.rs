@@ -100,9 +100,32 @@ impl MainWindow {
     }
 }
 
+/// Ask the compositor to send us its own shortcuts while this window has the focus (Wayland
+/// keyboard-shortcuts-inhibit; on GNOME Alt+F2 would otherwise open the shell's "Enter a Command"
+/// box and Alt+F7/F8/F10 move, resize and maximize windows instead of reaching the keymap). The
+/// compositor may ask the user once; Super+Esc restores the shortcuts. A no-op where unsupported.
+fn request_shortcut_inhibit(window: &adw::ApplicationWindow) {
+    let ask = |w: &adw::ApplicationWindow| {
+        if let Some(top) = w
+            .surface()
+            .and_then(|s| s.downcast::<gtk::gdk::Toplevel>().ok())
+        {
+            top.inhibit_system_shortcuts(None::<&gtk::gdk::Event>);
+        }
+    };
+    if window.is_realized() {
+        ask(window);
+    } else {
+        window.connect_realize(ask);
+    }
+}
+
 /// Window-level UI after construction: restored size, split ratio, one-panel mode, live theme
 /// colours and the save-on-close handler.
 pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
+    if ctx.config.borrow().general.inhibit_system_shortcuts {
+        request_shortcut_inhibit(&win.window);
+    }
     if let Some(state) = ctx.ext.get::<SessionState>() {
         let w = &state.loaded.window;
         if w.width > 0 && w.height > 0 {
