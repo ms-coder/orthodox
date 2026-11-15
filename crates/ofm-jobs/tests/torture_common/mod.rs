@@ -74,7 +74,42 @@ pub fn src_dst(tag: &str) -> (TempDirGuard, TempDirGuard) {
 }
 
 /// `ofm_testkit::temp::TempDir` re-exported under a short name.
-pub use ofm_testkit::temp::TempDir as TempDirGuard;
+/// Unlike the plain testkit guard it first makes every entry writable again, so trees with
+/// read-only directories (mode 0o555) do not leak into the temp dir.
+pub struct TempDirGuard(ofm_testkit::temp::TempDir);
+
+impl TempDirGuard {
+    /// New unique temp dir with the given name prefix.
+    pub fn with_name(prefix: &str) -> io::Result<Self> {
+        ofm_testkit::temp::TempDir::with_name(prefix).map(Self)
+    }
+
+    /// Path of the directory.
+    pub fn path(&self) -> &Path {
+        self.0.path()
+    }
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        fn unlock(dir: &Path) {
+            use std::os::unix::fs::PermissionsExt;
+            let Ok(md) = std::fs::symlink_metadata(dir) else {
+                return;
+            };
+            if !md.is_dir() {
+                return;
+            }
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                for e in rd.flatten() {
+                    unlock(&e.path());
+                }
+            }
+        }
+        unlock(self.0.path());
+    }
+}
 
 /// `Location::Local(path)`.
 pub fn local(p: impl AsRef<Path>) -> Location {

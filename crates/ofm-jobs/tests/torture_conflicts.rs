@@ -60,7 +60,6 @@ fn scripted(
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn only_the_files_the_user_chose_are_replaced() {
     let (src, dst) = src_dst("cf-interactive");
     write_file(&src.path().join("a.txt"), b"NEW-A", 0o644, 0);
@@ -111,7 +110,6 @@ fn only_the_files_the_user_chose_are_replaced() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn overwrite_apply_to_all_replaces_everything_and_asks_once() {
     let (src, dst) = src_dst("cf-ow-all");
     for n in ["a.txt", "b.txt", "c.txt"] {
@@ -149,7 +147,6 @@ fn overwrite_apply_to_all_replaces_everything_and_asks_once() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn pre_decided_skip_policy_asks_nothing() {
     let (src, dst) = src_dst("cf-predecided");
     write_file(&src.path().join("a.txt"), b"NEW", 0o644, 0);
@@ -170,7 +167,6 @@ fn pre_decided_skip_policy_asks_nothing() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn overwrite_if_newer_uses_strictly_newer_mtime() {
     let (src, dst) = src_dst("cf-newer");
     let day = 86_400_000_000_000i128;
@@ -248,7 +244,6 @@ fn overwrite_if_newer_uses_strictly_newer_mtime() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn overwrite_if_size_differs_compares_sizes() {
     let (src, dst) = src_dst("cf-sizediff");
     write_file(&src.path().join("differs.txt"), b"123456", 0o644, 0);
@@ -284,7 +279,6 @@ fn overwrite_if_size_differs_compares_sizes() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn rename_new_uses_name_n_ext_scheme() {
     let (src, dst) = src_dst("cf-renamenew");
     write_file(&src.path().join("a.txt"), b"INCOMING", 0o644, 0);
@@ -344,7 +338,6 @@ fn rename_new_uses_name_n_ext_scheme() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn rename_new_finds_the_next_free_number() {
     let (src, dst) = src_dst("cf-renamenew2");
     write_file(&src.path().join("a.txt"), b"INCOMING", 0o644, 0);
@@ -370,7 +363,6 @@ fn rename_new_finds_the_next_free_number() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn rename_existing_moves_the_old_file_out_of_the_way() {
     let (src, dst) = src_dst("cf-renameexisting");
     write_file(&src.path().join("a.txt"), b"INCOMING", 0o644, 0);
@@ -397,7 +389,6 @@ fn rename_existing_moves_the_old_file_out_of_the_way() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn file_onto_existing_directory_is_a_type_mismatch() {
     let (src, dst) = src_dst("cf-typemismatch");
     write_file(&src.path().join("a"), b"FILE", 0o644, 0);
@@ -428,7 +419,6 @@ fn file_onto_existing_directory_is_a_type_mismatch() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn type_mismatch_is_asked_with_the_right_kind() {
     let (src, dst) = src_dst("cf-askkind");
     write_file(&src.path().join("a"), b"FILE", 0o644, 0);
@@ -446,7 +436,6 @@ fn type_mismatch_is_asked_with_the_right_kind() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn directory_onto_existing_directory_merges_without_asking() {
     let (src, dst) = src_dst("cf-merge");
     std::fs::create_dir_all(src.path().join("sub")).unwrap();
@@ -472,7 +461,6 @@ fn directory_onto_existing_directory_merges_without_asking() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_into_own_directory_asks_and_renames_new() {
     // F13: copying a file into the directory it already lives in. The conflict is SameFile;
     // Overwrite is refused; RenameNew writes `a (1).txt`.
@@ -499,7 +487,6 @@ fn copy_into_own_directory_asks_and_renames_new() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn same_inode_detected_through_hardlinked_destination() {
     // The destination file is a hard link to the source: same dev+ino -> SameFile conflict,
     // an Overwrite policy must degrade to skip and leave the data intact.
@@ -531,7 +518,6 @@ fn same_inode_detected_through_hardlinked_destination() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn conflict_abort_cancels_and_keeps_completed_work() {
     let (src, dst) = src_dst("cf-abort");
     write_file(&src.path().join("first.txt"), b"done before", 0o644, 0);
@@ -562,7 +548,6 @@ fn conflict_abort_cancels_and_keeps_completed_work() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn conflict_for_a_symlink_pair_is_replaceable() {
     let (src, dst) = src_dst("cf-symlink");
     std::os::unix::fs::symlink("somewhere-old", dst.path().join("link")).unwrap();

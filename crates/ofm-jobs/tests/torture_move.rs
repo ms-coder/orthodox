@@ -37,7 +37,6 @@ fn exdev() -> FaultErrno {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn move_same_filesystem_is_a_pure_rename() {
     let (src, dst) = src_dst("move-rename");
     write_file(&src.path().join("a.txt"), b"alpha", 0o644, 0);
@@ -83,7 +82,6 @@ fn move_same_filesystem_is_a_pure_rename() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn move_tree_same_filesystem_keeps_metadata() {
     let (src, dst) = src_dst("move-tree");
     let spec = TreeSpec::new()
@@ -108,8 +106,7 @@ fn move_tree_same_filesystem_keeps_metadata() {
     );
     assert!(matches!(out, Outcome::Ok(_)), "{out:?}");
     let reference = src_tree_copy(&spec);
-    assert_full_tree_equal(&reference, dst.path());
-    std::fs::remove_dir_all(&reference).unwrap();
+    assert_full_tree_equal(reference.path(), dst.path());
     assert_eq!(
         std::fs::read_dir(src.path()).unwrap().count(),
         0,
@@ -118,15 +115,14 @@ fn move_tree_same_filesystem_keeps_metadata() {
 }
 
 /// Rebuild `spec` into a fresh temp dir; the comparison reference for moves (the original tree
-/// is gone after the move). Caller removes the returned directory.
-fn src_tree_copy(spec: &TreeSpec) -> PathBuf {
+/// is gone after the move). The guard's drop cleans up (read-only dirs included).
+fn src_tree_copy(spec: &TreeSpec) -> torture_common::TempDirGuard {
     let t = torture_common::TempDirGuard::with_name("ofm-t34-move-ref").unwrap();
     spec.build(t.path()).unwrap();
-    t.into_path()
+    t
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn move_whole_dir_renames_it() {
     let (src, dst) = src_dst("move-dir");
     let spec = TreeSpec::new().dir(
@@ -152,7 +148,6 @@ fn move_whole_dir_renames_it() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn move_rename_in_place_with_literal_mask() {
     // "Rename" (Shift+F6): a Move into the same directory with a literal new name.
     let (src, _dst) = src_dst("move-inplace");
@@ -177,7 +172,6 @@ fn move_rename_in_place_with_literal_mask() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn move_same_fs_conflict_overwrite_replaces_and_removes_source() {
     let (src, dst) = src_dst("move-conflict-ow");
     write_file(&src.path().join("a.txt"), b"NEW", 0o644, 0);
@@ -196,7 +190,6 @@ fn move_same_fs_conflict_overwrite_replaces_and_removes_source() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn move_same_fs_conflict_skip_keeps_both_sides() {
     let (src, dst) = src_dst("move-conflict-skip");
     write_file(&src.path().join("a.txt"), b"NEW", 0o644, 0);
@@ -216,7 +209,6 @@ fn move_same_fs_conflict_skip_keeps_both_sides() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn move_survives_exdev_injected_on_rename() {
     // The task-mandated EXDEV simulation: the FIRST rename returns EXDEV; the engine must fall
     // back to copy + verify + delete-source for that item (later renames succeed normally).
@@ -262,7 +254,6 @@ fn move_survives_exdev_injected_on_rename() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn move_exdev_with_failing_fsync_never_deletes_source() {
     // Cross-device move must fsync the destination before deleting the source. Make the first
     // fsync fail: aborting the job must leave the source fully intact.
@@ -294,7 +285,6 @@ fn move_exdev_with_failing_fsync_never_deletes_source() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn move_across_real_filesystems_copies_syncs_and_deletes_per_item() {
     let Some(pair) = two_filesystems() else {
         eprintln!("SKIP: no second filesystem available for the cross-device move");
@@ -341,7 +331,6 @@ fn move_across_real_filesystems_copies_syncs_and_deletes_per_item() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn move_across_real_filesystems_deletes_source_only_per_completed_item() {
     let Some(pair) = two_filesystems() else {
         eprintln!("SKIP: no second filesystem available for the cross-device move");
@@ -400,7 +389,6 @@ fn move_across_real_filesystems_deletes_source_only_per_completed_item() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn move_across_real_filesystems_cancelled_mid_copy_keeps_source() {
     let Some(pair) = two_filesystems() else {
         eprintln!("SKIP: no second filesystem available for the cross-device move");
@@ -441,7 +429,6 @@ fn move_across_real_filesystems_cancelled_mid_copy_keeps_source() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn move_destination_inside_source_is_refused() {
     let (src, _dst) = src_dst("move-inside");
     let spec = TreeSpec::new()
@@ -477,7 +464,6 @@ fn move_destination_inside_source_is_refused() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn move_pre_cancelled_touches_nothing() {
     let (src, dst) = src_dst("move-precancel");
     write_file(&src.path().join("a.txt"), b"stay", 0o644, 0);
@@ -494,7 +480,6 @@ fn move_pre_cancelled_touches_nothing() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn move_random_trees_same_filesystem() {
     for seed in 11..=16u64 {
         let (src, dst) = src_dst(&format!("move-rnd-{seed}"));
@@ -516,10 +501,9 @@ fn move_random_trees_same_filesystem() {
             sink,
         );
         assert!(matches!(out, Outcome::Ok(_)), "seed {seed}: {out:?}");
-        assert_full_tree_equal(&reference, dst.path());
+        assert_full_tree_equal(reference.path(), dst.path());
         for n in &names {
             assert!(!n.exists(), "source {n:?} must be gone after the move");
         }
-        std::fs::remove_dir_all(&reference).unwrap();
     }
 }

@@ -28,7 +28,6 @@ fn real() -> Arc<dyn ofm_jobs::Fs> {
 const MIB: u64 = 1 << 20;
 
 #[test]
-#[ignore = "T3.1"]
 fn pre_cancelled_copy_creates_nothing() {
     let (src, dst) = src_dst("cxl-precopy");
     write_file(&src.path().join("a.txt"), b"payload", 0o644, 0);
@@ -46,7 +45,6 @@ fn pre_cancelled_copy_creates_nothing() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn cancel_during_planning_stops_before_any_file() {
     // at = 0: the very first progress snapshot (planning phase) cancels.
     let (src, dst) = src_dst("cxl-plan");
@@ -77,7 +75,6 @@ fn cancel_during_planning_stops_before_any_file() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn cancel_at_many_byte_offsets_of_a_single_file() {
     const SIZE: u64 = 8 * MIB;
     // A cancel that fires while the job is still planning (at = 0) must stop it before ANY
@@ -152,7 +149,6 @@ fn cancel_at_many_byte_offsets_of_a_single_file() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn cancel_between_files_keeps_completed_items() {
     // Three 2 MiB files; cancel once ~3 MiB are through: the first file (or the first two) is
     // complete and published, the rest never appears partially.
@@ -197,7 +193,6 @@ fn cancel_between_files_keeps_completed_items() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn cancel_racing_a_copy_from_another_thread_is_always_safe() {
     // Wall-clock (not byte-counter) cancellation: whatever the interleaving, the destination
     // only ever contains complete files and no temp files.
@@ -244,7 +239,6 @@ fn cancel_racing_a_copy_from_another_thread_is_always_safe() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn cancel_while_paused_returns_promptly() {
     let (src, dst) = src_dst("cxl-pause");
     write_file(&src.path().join("a.txt"), b"paused work", 0o644, 0);
@@ -276,7 +270,6 @@ fn cancel_while_paused_returns_promptly() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn cancel_of_a_move_keeps_sources_until_items_complete() {
     // Same-filesystem move: cancel lands between renames; whatever is left stays at the source.
     let (src, dst) = src_dst("cxl-move");

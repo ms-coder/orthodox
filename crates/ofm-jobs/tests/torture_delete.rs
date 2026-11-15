@@ -35,7 +35,6 @@ fn delete(paths: &[std::path::PathBuf], to_trash: bool) -> JobSpec {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn permanent_delete_removes_a_mixed_tree() {
     let (root, outside) = src_dst("del-mixed");
     let spec = TreeSpec::new()
@@ -77,7 +76,6 @@ fn raw_name() -> std::ffi::OsString {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn delete_never_follows_symlinks_out_of_the_set() {
     let (root, outside) = src_dst("del-links");
     std::fs::create_dir_all(outside.path().join("precious")).unwrap();
@@ -103,7 +101,6 @@ fn delete_never_follows_symlinks_out_of_the_set() {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn delete_of_a_symlink_itself_unlinks_only_the_link() {
     let (root, _) = src_dst("del-link-only");
     std::fs::write(root.path().join("real.txt"), b"target data").unwrap();
@@ -120,7 +117,6 @@ fn delete_of_a_symlink_itself_unlinks_only_the_link() {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn delete_read_only_dir_reports_errors_and_does_not_chmod() {
     if running_as_root() {
         eprintln!("SKIP: running as root, mode 0o500 does not block deletion");
@@ -157,7 +153,6 @@ fn delete_read_only_dir_reports_errors_and_does_not_chmod() {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn delete_missing_path_is_a_warning_not_an_error() {
     let (root, _) = src_dst("del-missing");
     std::fs::create_dir_all(root.path()).unwrap();
@@ -180,7 +175,6 @@ fn delete_missing_path_is_a_warning_not_an_error() {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn delete_retries_past_a_transient_unlink_error() {
     let (root, _) = src_dst("del-retry");
     std::fs::create_dir_all(root.path()).unwrap();
@@ -203,7 +197,6 @@ fn delete_retries_past_a_transient_unlink_error() {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn delete_skip_all_leaves_failed_items_in_place() {
     if running_as_root() {
         eprintln!("SKIP: running as root, EACCES faults would not occur the same way");
@@ -243,7 +236,6 @@ fn delete_skip_all_leaves_failed_items_in_place() {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn delete_abort_on_error_keeps_what_was_not_deleted() {
     let (root, _) = src_dst("del-abort");
     std::fs::create_dir_all(root.path()).unwrap();
@@ -264,7 +256,6 @@ fn delete_abort_on_error_keeps_what_was_not_deleted() {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn delete_rmdir_error_skips_the_dir() {
     let (root, _) = src_dst("del-rmdir");
     std::fs::create_dir_all(root.path().join("d")).unwrap();
@@ -289,7 +280,6 @@ fn delete_rmdir_error_skips_the_dir() {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn trash_io_error_never_deletes_permanently() {
     let (root, _) = src_dst("trash-io");
     std::fs::create_dir_all(root.path()).unwrap();
@@ -320,7 +310,6 @@ fn trash_io_error_never_deletes_permanently() {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn trash_unavailable_asking_skip_leaves_files() {
     let (root, _) = src_dst("trash-ask-skip");
     std::fs::create_dir_all(root.path()).unwrap();
@@ -368,7 +357,6 @@ fn trash_unavailable_asking_skip_leaves_files() {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn trash_unavailable_confirmed_permanent_deletes() {
     let (root, _) = src_dst("trash-ask-del");
     std::fs::create_dir_all(root.path()).unwrap();
@@ -406,7 +394,6 @@ fn trash_unavailable_confirmed_permanent_deletes() {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn delete_pre_cancelled_touches_nothing() {
     let (root, _) = src_dst("del-precancel");
     std::fs::create_dir_all(root.path().join("d")).unwrap();
@@ -419,7 +406,6 @@ fn delete_pre_cancelled_touches_nothing() {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn delete_cancelled_at_first_progress_keeps_the_tree() {
     let (root, _) = src_dst("del-cancel0");
     std::fs::create_dir_all(root.path().join("d")).unwrap();
@@ -432,7 +418,6 @@ fn delete_cancelled_at_first_progress_keeps_the_tree() {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn delete_cancelled_midway_leaves_a_consistent_subset() {
     // Cancel from another thread while a wide tree is being deleted: whatever remains is a
     // proper subset of the original tree (deleted items are simply gone, nothing half-removed).
@@ -480,7 +465,6 @@ fn assert_absent_or_content(path: &Path) {
 }
 
 #[test]
-#[ignore = "T3.2"]
 fn trashed_file_lands_in_a_temporary_xdg_trash() {
     // Needs the real trash implementation (T3.2). XDG_DATA_HOME points at a temp dir so the
     // real trash is never touched; the temp dir and the source share a filesystem, so the

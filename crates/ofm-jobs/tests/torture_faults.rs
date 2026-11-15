@@ -48,7 +48,6 @@ fn safety_all(dst: &Path, names: &[(&str, &str)], what: &str) {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn write_tier_faults_at_nth_call_never_leave_a_broken_destination() {
     let tiers = [
         FaultOp::FileWrite,
@@ -97,7 +96,6 @@ fn write_tier_faults_at_nth_call_never_leave_a_broken_destination() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn persistent_enospc_on_writes_skips_inflight_and_copies_the_rest() {
     // Needs the read/write tier (copy_file_range and FICLONE cannot cross devices), so this
     // runs on two real filesystems; skipped (with a log line) when only one exists.
@@ -147,7 +145,6 @@ fn persistent_enospc_on_writes_skips_inflight_and_copies_the_rest() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn enospc_on_write_with_skip_policy_leaves_no_trace() {
     let Some(pair) = two_filesystems() else {
         eprintln!("SKIP: no second filesystem available to force the read/write tier");
@@ -176,7 +173,6 @@ fn enospc_on_write_with_skip_policy_leaves_no_trace() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn transient_write_fault_recovered_by_retry() {
     let Some(pair) = two_filesystems() else {
         eprintln!("SKIP: no second filesystem available to force the read/write tier");
@@ -207,7 +203,6 @@ fn transient_write_fault_recovered_by_retry() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn short_writes_are_looped_to_completion() {
     let Some(pair) = two_filesystems() else {
         eprintln!("SKIP: no second filesystem available to force the read/write tier");
@@ -244,7 +239,6 @@ fn short_writes_are_looped_to_completion() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn create_temp_failure_skips_the_item_and_keeps_the_rest() {
     let (src, dst) = src_dst("fault-create");
     let names = [("a.txt", "alpha"), ("b.txt", "beta"), ("c.txt", "gamma")];
@@ -289,7 +283,6 @@ fn create_temp_failure_skips_the_item_and_keeps_the_rest() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn publish_rename_failure_cleans_the_temp() {
     let (src, dst) = src_dst("fault-publish");
     std::fs::create_dir_all(src.path()).unwrap();
@@ -314,7 +307,6 @@ fn publish_rename_failure_cleans_the_temp() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn overwrite_rename_failure_keeps_the_existing_destination() {
     let (src, dst) = src_dst("fault-ow-rename");
     std::fs::create_dir_all(src.path()).unwrap();
@@ -348,7 +340,6 @@ fn overwrite_rename_failure_keeps_the_existing_destination() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn source_open_failure_reports_and_skips() {
     let (src, dst) = src_dst("fault-open");
     for (n, c) in [("a.txt", "one"), ("b.txt", "two"), ("c.txt", "three")] {
@@ -356,8 +347,8 @@ fn source_open_failure_reports_and_skips() {
     }
     std::fs::create_dir_all(dst.path()).unwrap();
 
-    // 2nd open_read fails persistently: exactly one source is skipped (order not pinned).
-    let fs = faulty(FaultPlan::new().fail_from(FaultOp::OpenRead, 2, FaultErrno::Io));
+    // the 2nd open_read fails once: exactly one source is skipped (order not pinned).
+    let fs = faulty(FaultPlan::new().fail_nth(FaultOp::OpenRead, 2, FaultErrno::Io));
     let (out, _rec) = run_policy(
         &copy_spec(
             &[
@@ -395,7 +386,6 @@ fn source_open_failure_reports_and_skips() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn faulted_tree_copy_never_corrupts_completed_directories() {
     // Faults interleaved with directory recursion: completed subtrees stay complete, nothing
     // partial is visible, no temp survives anywhere under the destination.
@@ -442,7 +432,6 @@ fn faulted_tree_copy_never_corrupts_completed_directories() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn exdev_move_fault_matrix_keeps_sources_intact() {
     // Cross-device move (EXDEV injected on rename) with data faults: sources survive unless the
     // item verifiably completed.

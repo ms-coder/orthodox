@@ -1,5 +1,4 @@
-//! T3.4 torture suite — copy (spec F17, ADR-0004). Every test is ignored until T3.1 lands; the
-//! reason string names the task that must make it pass.
+//! T3.4 torture suite — copy (spec F17, ADR-0004). Runs against the real engine.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -37,7 +36,6 @@ fn copy_children(src: &Path, dst: &Path, opts: CopyOpts) -> Outcome {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_roundtrip_preserves_content_mode_mtime_and_created_list() {
     let (src, dst) = src_dst("copy-basic");
     let m = |days: i128| ofm_testkit::tree::DEFAULT_MTIME_NS + days * 86_400_000_000_000;
@@ -87,7 +85,6 @@ fn copy_roundtrip_preserves_content_mode_mtime_and_created_list() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_preserves_user_xattrs() {
     let (src, dst) = src_dst("copy-xattr");
     if !xattrs_supported(src.path()) {
@@ -114,7 +111,6 @@ fn copy_preserves_user_xattrs() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_handles_weird_names() {
     let (src, dst) = src_dst("copy-names");
     let mut spec = TreeSpec::new();
@@ -136,7 +132,6 @@ fn copy_handles_weird_names() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_max_length_names() {
     // 255 bytes = NAME_MAX. The engine's temp name `.<name>.ofm-part-<suffix>` would exceed it,
     // so a correct implementation must truncate the temp name, not the final one.
@@ -160,7 +155,6 @@ fn copy_max_length_names() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_200_level_deep_tree() {
     let (src, dst) = src_dst("copy-deep");
     let mut inner = TreeSpec::new().file("bottom.txt", FileSpec::content(b"deep"));
@@ -179,7 +173,6 @@ fn copy_200_level_deep_tree() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_10k_small_files() {
     let (src, dst) = src_dst("copy-10k");
     let mut spec = TreeSpec::new();
@@ -202,7 +195,6 @@ fn copy_10k_small_files() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_recreates_symlinks_without_following() {
     let (src, dst) = src_dst("copy-links");
     let abs_target = src.path().join("readme.md");
@@ -253,7 +245,6 @@ fn copy_recreates_symlinks_without_following() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_follow_symlinks_option_copies_targets() {
     let (src, dst) = src_dst("copy-follow");
     let spec = TreeSpec::new()
@@ -286,14 +277,18 @@ fn copy_follow_symlinks_option_copies_targets() {
             .unwrap()
             .is_symlink()
     );
-    // The broken link could not be followed: skipped, never recreated as a link.
-    assert!(!dst.path().join("to-broken").exists());
-    assert!(report_of(&out, "follow").skipped >= 1);
+    // A dangling link cannot be followed: it is recreated as the (still dangling) link itself,
+    // never as an empty file (documented in plan::stat_maybe_follow).
+    let m = std::fs::symlink_metadata(dst.path().join("to-broken")).unwrap();
+    assert!(m.is_symlink());
+    assert_eq!(
+        std::fs::read_link(dst.path().join("to-broken")).unwrap(),
+        Path::new("gone")
+    );
     assert_no_part_files(dst.path());
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_hardlinks_become_separate_files() {
     let (src, dst) = src_dst("copy-hardlink");
     let spec = TreeSpec::new()
@@ -317,7 +312,6 @@ fn copy_hardlinks_become_separate_files() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_2g_sparse_file_stays_sparse() {
     let (src, dst) = src_dst("copy-sparse2g");
     const SIZE: u64 = 2 << 30;
@@ -361,7 +355,6 @@ fn copy_2g_sparse_file_stays_sparse() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_sparse_ranges_match_exactly() {
     let (src, dst) = src_dst("copy-sparse-ranges");
     let a: Vec<u8> = (0..4096u32).map(|i| (i % 7) as u8).collect();
@@ -383,7 +376,6 @@ fn copy_sparse_ranges_match_exactly() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_skips_unreadable_file_and_copies_the_rest() {
     if running_as_root() {
         eprintln!("SKIP: running as root, mode 0o000 does not block reads");
@@ -428,7 +420,6 @@ fn copy_skips_unreadable_file_and_copies_the_rest() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_into_read_only_dest_dir_fails_cleanly() {
     if running_as_root() {
         eprintln!("SKIP: running as root, mode 0o500 does not block writes");
@@ -460,7 +451,6 @@ fn copy_into_read_only_dest_dir_fails_cleanly() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_creates_missing_dest_dir() {
     let (src, dst) = src_dst("copy-mkdir");
     write_file(&src.path().join("a.txt"), b"deep dest", 0o644, 0);
@@ -477,7 +467,6 @@ fn copy_creates_missing_dest_dir() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_destination_inside_source_is_refused() {
     let (src, _dst) = src_dst("copy-inside");
     let spec = TreeSpec::new()
@@ -509,7 +498,6 @@ fn copy_destination_inside_source_is_refused() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_rejects_invalid_requests_before_io() {
     let (src, dst) = src_dst("copy-invalid");
 
@@ -543,7 +531,6 @@ fn copy_rejects_invalid_requests_before_io() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_applies_rename_masks() {
     let (src, dst) = src_dst("copy-mask");
     let spec = TreeSpec::new()
@@ -564,7 +551,6 @@ fn copy_applies_rename_masks() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_literal_mask_renames_a_single_file() {
     let (src, dst) = src_dst("copy-literal");
     write_file(&src.path().join("f.txt"), b"renamed copy", 0o644, 0);
@@ -588,7 +574,6 @@ fn copy_literal_mask_renames_a_single_file() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_random_trees_match_exactly() {
     for seed in 1..=8u64 {
         let (src, dst) = src_dst(&format!("copy-rnd-{seed}"));
@@ -605,7 +590,6 @@ fn copy_random_trees_match_exactly() {
 }
 
 #[test]
-#[ignore = "T3.1"]
 fn copy_source_tree_of_one_dir() {
     // Copying the source DIRECTORY itself (not its children): result sits under dst/<name>/.
     let (src, dst) = src_dst("copy-dirtree");
