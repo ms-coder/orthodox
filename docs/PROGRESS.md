@@ -14,7 +14,7 @@ Rule zero: never point OFM at your only copy of anything. Make a scratch area fi
 
 Comparison one-liners (run in a normal terminal; both print nothing when identical):
 - `diff -rq ~/ofm-g2/src ~/ofm-g2/dst/<folder>`  (content + names)
-- `rsync -rcn --delete --itemize-changes ~/ofm-g2/src/ ~/ofm-g2/dst/<folder>/`  (checksums, dry run; lists any difference)
+- `rsync -rlcnH --delete --itemize-changes ~/ofm-g2/src/ ~/ofm-g2/dst/<folder>/`  (checksums, dry run; lists any difference)
 - `find ~/ofm-g2 -name '.*ofm-part*'`  (must print nothing: no leftover temp files)
 
 1. **Copy within the SSD:** mark the photo folder in the left panel, F5, Enter. Wait for the jobs bar to finish. Compare with the one-liners; sources must be unchanged.
@@ -141,3 +141,4 @@ Deferred to M9: N4 NFS retransmitted link() EEXIST can leave moved item at sourc
 
 2026-11-16: GLM quota out again (429, resets 2026-11-16 09:31 server time) — 7b and 7c died; Igor asked to continue on Sonnet and save tokens. Plan: ONE Sonnet fileops-engineer finishes T3.7b + T3.7c in their existing worktrees (7c had fix+test uncommitted; 7b only tests). T3.7a (N1 default ACL) still running on GLM in ../orthodox-wt-T3.7a (6 files dirty); if it dies, finish with the same Sonnet agent. Token-saving rules: short prompts, one agent per batch, no Opus, lead verifies by running check.sh + reviewer repros instead of new reviews.
 - G2 known wording issue: a collision with the job's own output reuses ConflictKind::SameFile, so the dialog says 'source and destination are the same file'.
+- G2 setup done by lead (2026-11-15): synthetic data in ~/ofm-g2/src (4.7 GB, 3021 files: 3000 photo-like files, 3x300 MB videos, 1 GiB sparse file, odd-names/ with newline/non-UTF-8/long/leading-dash names, symlinks, hardlink pair, empty file+dir, case-collision/ IMG.JPG vs img.jpg), pristine reference in ~/ofm-g2-reference (rsync -aHS). Verify src unchanged: `rsync -rlcnH --delete --itemize-changes ~/ofm-g2-reference/ ~/ofm-g2/src/` (use -l so symlinks are compared). case-collision/ is the FAT/exFAT stick test: the engine must ask/rename, never silently overwrite.
