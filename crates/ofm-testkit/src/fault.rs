@@ -109,6 +109,8 @@ pub enum FaultOp {
     FileSetOwner,
     /// `FsFile::sync`.
     FileSync,
+    /// `FsFile::close` (checked close: deferred write errors of NFS/FUSE show up here).
+    FileClose,
 }
 
 /// When a fault fires; calls are counted per [`FaultOp`], 1-based.

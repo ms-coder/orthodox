@@ -9,10 +9,12 @@
 //! `fstat` it; create `.<name>.ofm-part-<suffix>` in the destination directory with
 //! `O_CREAT|O_EXCL` mode 0600; data via FICLONE -> `copy_file_range` -> 1 MiB read/write (sparse
 //! sources via SEEK_DATA/SEEK_HOLE + `set_len`), `ctx.checkpoint()` before every chunk of at most
-//! 1 MiB; metadata on the temp file (`meta.rs`); fsync when `sync`; verify; publish with
-//! `rename_noreplace`, or `rename_replace` only after an `Overwrite` resolution; fsync the
-//! directory when `sync`. The temp file is unlinked on EVERY error/cancel path (explicitly, and by
-//! a drop guard for panics). An existing destination is never opened for writing.
+//! 1 MiB; metadata on the temp file (`meta.rs`); fsync when `sync` or when overwriting; verify;
+//! checked `close`; publish with `rename_noreplace` (fallbacks for NFS/FUSE in `noreplace.rs`), or
+//! `rename_replace` only after an `Overwrite` resolution; fsync the directory when `sync` or when
+//! overwriting. The temp file is unlinked on EVERY error/cancel path (explicitly, and by a drop
+//! guard for panics). An existing destination is never opened for writing, and an item this job
+//! published itself is never overwritten by a later item (T3.6 B1, [`resolve_target`]).
 //!
 //! Directories are created with mode 0700, filled (iteratively, so deep trees cannot overflow the
 //! stack), and get their final mode/owner/times post-order (also on cancel, best effort).
@@ -25,6 +27,7 @@
 
 mod file;
 mod meta;
+pub(crate) mod noreplace;
 
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -93,18 +96,23 @@ pub(crate) enum Target {
     Skip,
 }
 
-/// Probe `dest` and decide what to do with an existing item there: same dev+ino as the source =
-/// `SameFile`; directory onto directory = merge (never a question); directory vs non-directory =
-/// `TypeMismatch`; anything else = `Replaceable`. `RenameNew` picks a free `name (N).ext`;
-/// `RenameExisting` renames the existing item out of the way (`rename_noreplace`) and probes again.
-/// For a `SameFile` conflict `RenameExisting` behaves like `RenameNew` (both keep the original and
-/// add a numbered twin) so the source is never renamed under the running job.
+/// Probe `dest` and decide what to do with an existing item there: same dev+ino as the source, or
+/// an item this job itself published (`own`, T3.6 B1: two sources landing on one name, e.g.
+/// `IMG.JPG` and `img.jpg` on a case-insensitive FAT stick) = `SameFile` (never overwritten, not
+/// even with a silent overwrite policy; the dialog defaults to "Rename new"); directory onto
+/// directory = merge (never a question); directory vs non-directory = `TypeMismatch`; anything
+/// else = `Replaceable`. `RenameNew` picks a free `name (N).ext`; `RenameExisting` renames the
+/// existing item out of the way (`rename_noreplace`) and probes again — refused (warning + skip)
+/// when the existing item is a directory containing the source. For a `SameFile` conflict
+/// `RenameExisting` behaves like `RenameNew` (both keep the original and add a numbered twin) so
+/// neither the source nor the job's own output is renamed under the running job.
 pub(crate) fn resolve_target(
     ctx: &mut JobCtx,
     src: &Path,
     src_st: &FsStat,
     dest: &Path,
     op: Operation,
+    own: &HashSet<(u64, u64)>,
 ) -> Result<Target, JobError> {
     let fs = ctx.fs();
     loop {
@@ -118,7 +126,14 @@ pub(crate) fn resolve_target(
                 ErrorResolution::Skip => return Ok(Target::Skip),
             },
         };
-        let kind = if (existing.dev, existing.ino) == (src_st.dev, src_st.ino) {
+        let id = (existing.dev, existing.ino);
+        let kind = if id == (src_st.dev, src_st.ino) {
+            ConflictKind::SameFile
+        } else if own.contains(&id) {
+            tracing::info!(
+                src = %src.display(), dest = %dest.display(),
+                "destination is an item this job created; not overwritable"
+            );
             ConflictKind::SameFile
         } else if src_st.is_dir() && existing.is_dir() {
             return Ok(Target::Merge(dest.to_path_buf()));
@@ -149,12 +164,21 @@ pub(crate) fn resolve_target(
                 return unique_target(ctx, dest, op);
             }
             Resolution::RenameExisting => {
+                if existing.is_dir() && contains(&*fs, &existing, src) {
+                    ctx.warn(
+                        dest,
+                        "the existing folder contains the source; not renamed; skipped",
+                    );
+                    ctx.note_skipped();
+                    return Ok(Target::Skip);
+                }
                 let Target::Fresh(aside) = unique_target(ctx, dest, op)? else {
                     return Ok(Target::Skip);
                 };
+                let is_dir = existing.is_dir();
                 if ctx
                     .attempt(dest, Operation::Rename, |fs| {
-                        fs.rename_noreplace(dest, &aside)
+                        noreplace::rename_noreplace(fs, dest, &aside, is_dir)
                     })?
                     .is_none()
                 {
@@ -165,6 +189,38 @@ pub(crate) fn resolve_target(
             }
         }
     }
+}
+
+/// Whether the directory `dir` (an `lstat` result) is a physical ancestor of `src`: compares it
+/// with the directory holding `src` and its chain `..`, `../..`, ... up to `/` as the kernel
+/// resolves it (symlinked and differently spelled paths included). A lookup error counts as
+/// "contains" (refuse when unsure).
+fn contains(fs: &dyn Fs, dir: &FsStat, src: &Path) -> bool {
+    let target = (dir.dev, dir.ino);
+    let Some(parent) = src.parent() else {
+        return false;
+    };
+    let mut cur = parent.to_path_buf();
+    let mut prev: Option<(u64, u64)> = None;
+    for _ in 0..4096 {
+        let st = match fs.stat(&cur) {
+            Ok(st) => st,
+            Err(e) => {
+                tracing::debug!(path = %cur.display(), error = %e, "ancestor check failed");
+                return true;
+            }
+        };
+        let id = (st.dev, st.ino);
+        if id == target {
+            return true;
+        }
+        if prev == Some(id) {
+            return false; // reached "/"
+        }
+        prev = Some(id);
+        cur.push("..");
+    }
+    true
 }
 
 /// `Fresh(dir/name (N).ext)` with the first free N (lookup errors: retry/skip/abort).
@@ -217,14 +273,20 @@ pub(crate) struct Copier {
     sync: bool,
     is_root: bool,
     buf: Vec<u8>,
-    /// (dev, ino) of destination directories this job created: never entered as a source (a
-    /// followed symlink pointing into the destination would otherwise copy forever).
-    created_dirs: HashSet<(u64, u64)>,
+    /// (dev, ino) of every item this job published (files, symlinks, created directories, and
+    /// items a same-device move renamed into place). A destination conflict with one of them is
+    /// never overwritten (T3.6 B1, see [`resolve_target`]); directories among them are never
+    /// entered as a source (a followed symlink pointing into the destination would otherwise
+    /// copy forever).
+    published: HashSet<(u64, u64)>,
     /// (dev, ino) of the source directories currently open on the walk stack (symlink loops).
     active: HashSet<(u64, u64)>,
     /// Metadata warnings already reported (what, errno): later ones only go to the log, so a copy
     /// to a FAT stick does not produce one warning per file.
     warned: HashSet<(&'static str, Option<i32>)>,
+    /// `copy_file_range` already moved data of the current file (an `EIO` after that is a real
+    /// error, before it a reason to fall back to read/write).
+    range_copied: bool,
 }
 
 impl Copier {
@@ -236,10 +298,21 @@ impl Copier {
             sync: sync || mode == Mode::Move,
             is_root: fs.is_root(),
             buf: Vec::new(),
-            created_dirs: HashSet::new(),
+            published: HashSet::new(),
             active: HashSet::new(),
             warned: HashSet::new(),
+            range_copied: false,
         }
+    }
+
+    /// Items this job published so far (dev, ino): pass to [`resolve_target`].
+    pub(crate) fn published(&self) -> &HashSet<(u64, u64)> {
+        &self.published
+    }
+
+    /// Record an item this job put in place (same-device move renames go through here).
+    pub(crate) fn note_published(&mut self, id: (u64, u64)) {
+        self.published.insert(id);
     }
 
     fn op(&self) -> Operation {
@@ -311,7 +384,7 @@ impl Copier {
                 return Ok(Node::Skipped);
             }
             FileType::Dir
-                if self.created_dirs.contains(&(st.dev, st.ino))
+                if self.published.contains(&(st.dev, st.ino))
                     || self.active.contains(&(st.dev, st.ino)) =>
             {
                 ctx.warn(
@@ -323,24 +396,25 @@ impl Copier {
             _ => {}
         }
         loop {
-            let (path, replace) = match resolve_target(ctx, src, &st, dest, self.op())? {
-                Target::Skip => return Ok(Node::Skipped),
-                Target::Merge(d) => {
-                    return Ok(match self.list(ctx, src)? {
-                        Some(names) => Node::Dir(Frame {
-                            src: src.to_path_buf(),
-                            dest: d,
-                            st,
-                            names,
-                            next: 0,
-                            created: false,
-                        }),
-                        None => Node::Skipped,
-                    });
-                }
-                Target::Fresh(d) => (d, false),
-                Target::Replace(d) => (d, true),
-            };
+            let (path, replace) =
+                match resolve_target(ctx, src, &st, dest, self.op(), &self.published)? {
+                    Target::Skip => return Ok(Node::Skipped),
+                    Target::Merge(d) => {
+                        return Ok(match self.list(ctx, src)? {
+                            Some(names) => Node::Dir(Frame {
+                                src: src.to_path_buf(),
+                                dest: d,
+                                st,
+                                names,
+                                next: 0,
+                                created: false,
+                            }),
+                            None => Node::Skipped,
+                        });
+                    }
+                    Target::Fresh(d) => (d, false),
+                    Target::Replace(d) => (d, true),
+                };
             let result = match st.file_type() {
                 FileType::File => self.copy_file(ctx, src, &path, replace)?,
                 FileType::Symlink => self.copy_symlink(ctx, src, &st, &path, replace)?,
@@ -394,7 +468,7 @@ impl Copier {
         }
         match fs.lstat(dest) {
             Ok(d) => {
-                self.created_dirs.insert((d.dev, d.ino));
+                self.published.insert((d.dev, d.ino));
             }
             Err(e) => tracing::debug!(path = %dest.display(), error = %e, "lstat new dir"),
         }

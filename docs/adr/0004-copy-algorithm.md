@@ -55,3 +55,36 @@ Worker panics are caught and reported as `Outcome::Failed`.
 - Extra directory entries (`.ofm-part-*`) briefly visible; file watchers may report them.
 - `Fs` is a wide trait (about 25 methods); `FaultyFs` must delegate faithfully.
 - Torture suite in `ofm-jobs` is mandatory for every change here (ARCHITECTURE §5).
+
+## T3.6 review fixes (2026-11-15)
+
+Findings of the T3.5 review, fixed in T3.6a (regression tests: `crates/ofm-jobs/tests/t36a_*.rs`):
+
+- **Own output is never overwritten (B1).** Two sources with the same destination name (rename
+  mask `*.bak` on `a.txt` + `a.md`, same name from two folders of a list panel) fail the job at plan
+  time with `JobError::Invalid`. Collisions only the destination creates (case-insensitive FAT/exFAT:
+  `IMG.JPG` vs `img.jpg`, also `D/` vs `d/`) are caught per item: the job records (dev, ino) of
+  everything it published (files, symlinks, created dirs, same-device renames); a conflict with one
+  of them is asked as `ConflictKind::SameFile` (no overwrite answer, not even a silent overwrite
+  policy; "Rename existing" acts like "Rename new"; the dialog defaults to "Rename new"). A move
+  unlinks a source only after its *own* destination is complete, so a refused or renamed collision
+  keeps that source.
+- **"Rename, never replace" without `RENAME_NOREPLACE` (M3).** NFS and many FUSE file systems
+  (ntfs-3g, sshfs, gvfs) answer `EINVAL`/`ENOSYS`/`EOPNOTSUPP`. Then `link(from, to)` + `unlink(from)`
+  is used (atomic, never replaces; `EEXIST` is a conflict as before; a failing `unlink` undoes the
+  link). For directories, and where hard links are unavailable too (FAT: `EPERM`), the last resort is
+  "`lstat` says `to` is absent, then plain `rename`". **Known race:** a name another program creates
+  in the microseconds between that `lstat` and the `rename` would be replaced (for a directory only
+  an empty one). Accepted: it needs a concurrent writer picking exactly that name on a file system
+  that offers no atomic alternative; the job itself never creates a name it did not check.
+- **Checked close (M4).** The temp file is closed with `FsFile::close` (close(2) result checked)
+  before it is published: NFS/FUSE may report a deferred write error only there, and a cross-device
+  move must see it before it unlinks the source.
+- **Overwrite is always durable (M5).** When the user chose overwrite, the new file is fsynced
+  before `rename_replace` and the directory after it, whatever `sync` says.
+- **Smaller fixes.** "Rename existing" refuses (warning + skip) when the existing directory contains
+  the source (m3). Sources are opened with `O_NONBLOCK` (cleared after `fstat`), FIFOs/sockets/devices
+  are refused, so a FIFO swapped in after `lstat` cannot block the worker (m5). FICLONE /
+  `copy_file_range` fall back to the next tier also on `EPERM`, `ETXTBSY` and on `EIO` before the
+  tier copied a byte, like coreutils (m6).
+- Still open (M9): openat/unlinkat-based delete/chmod (m1), cleanup of stale `.ofm-part-*` (m7).

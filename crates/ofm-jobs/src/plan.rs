@@ -9,7 +9,7 @@
 //!
 //! Nothing in this module writes to the file system except [`ensure_dir`].
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -83,26 +83,37 @@ pub fn is_valid_name(name: &OsStr) -> bool {
 }
 
 /// Destination names of all top-level sources (rename mask applied), validated before any I/O:
-/// a mask yielding `""`, `.`, `..`, a `/` or more than 255 bytes is `JobError::Invalid`.
+/// a mask yielding `""`, `.`, `..`, a `/` or more than 255 bytes is `JobError::Invalid`, and so
+/// are two sources with the same destination name (T3.6 B1: `*.bak` on `a.txt` + `a.md`, or two
+/// `f` from different folders of a list panel), which would otherwise meet as a conflict of the
+/// job with its own output. Names are compared bytewise; collisions that only a case-insensitive
+/// destination creates are caught per item by `copy::resolve_target`.
 pub fn target_names(
     sources: &[PathBuf],
     mask: Option<&RenameMask>,
 ) -> Result<Vec<OsString>, JobError> {
-    sources
-        .iter()
-        .map(|s| {
-            let name = target_name(s, mask);
-            if is_valid_name(&name) {
-                Ok(name)
-            } else {
-                Err(JobError::Invalid(format!(
-                    "invalid destination name '{}' for {}",
-                    name.to_string_lossy(),
-                    s.display()
-                )))
-            }
-        })
-        .collect()
+    let mut seen: HashMap<OsString, &Path> = HashMap::new();
+    let mut out = Vec::with_capacity(sources.len());
+    for s in sources {
+        let name = target_name(s, mask);
+        if !is_valid_name(&name) {
+            return Err(JobError::Invalid(format!(
+                "invalid destination name '{}' for {}",
+                name.to_string_lossy(),
+                s.display()
+            )));
+        }
+        if let Some(first) = seen.insert(name.clone(), s) {
+            return Err(JobError::Invalid(format!(
+                "{} and {} would both be written as '{}'",
+                first.display(),
+                s.display(),
+                name.to_string_lossy()
+            )));
+        }
+        out.push(name);
+    }
+    Ok(out)
 }
 
 /// Count files/dirs/bytes under `sources` (never follows symlinks unless `follow_symlinks`; guards
@@ -437,6 +448,26 @@ mod tests {
             parse_mask(None).unwrap().map(|m| m.target().to_owned()),
             None
         );
+    }
+
+    #[test]
+    fn duplicate_target_names_are_invalid() {
+        let m = parse_mask(Some("*.bak")).unwrap();
+        let srcs = vec![PathBuf::from("/x/a.txt"), PathBuf::from("/x/a.md")];
+        assert!(matches!(
+            target_names(&srcs, m.as_ref()),
+            Err(JobError::Invalid(msg)) if msg.contains("a.bak")
+        ));
+        assert_eq!(target_names(&srcs, None).unwrap().len(), 2);
+        let same = vec![PathBuf::from("/a/f"), PathBuf::from("/b/f")];
+        assert!(matches!(
+            target_names(&same, None),
+            Err(JobError::Invalid(_))
+        ));
+        // Bytewise: case variants are distinct here (a case-insensitive destination is handled
+        // per item at run time).
+        let case = vec![PathBuf::from("/a/IMG.JPG"), PathBuf::from("/a/img.jpg")];
+        assert_eq!(target_names(&case, None).unwrap().len(), 2);
     }
 
     #[test]

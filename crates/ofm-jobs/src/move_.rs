@@ -5,7 +5,10 @@
 //! and is only possible non-directory over non-directory; a directory onto an existing directory
 //! merges (its entries are moved one by one, the emptied source directory is removed). A rename
 //! failing with `EXDEV` (bind mounts, Btrfs subvolumes, mount points inside a source tree) falls
-//! back to the cross-device path for that item.
+//! back to the cross-device path for that item. Where the file system has no `RENAME_NOREPLACE`
+//! (NFS, FUSE) the rename goes through `copy::noreplace` (`link` + `unlink`, else a checked
+//! rename). Every item put in place is recorded (dev, ino), so a later source landing on the
+//! same name (case-insensitive destination) is asked about and never replaces it (T3.6 B1).
 //!
 //! Different `st_dev`: the copy machinery in `copy::Mode::Move` — every file is fsynced, its
 //! directory fsynced, size/mtime and source stability verified, and only then is that one source
@@ -21,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use ofm_core::Location;
 
-use crate::copy::{Copier, Mode, Target, resolve_target};
+use crate::copy::{Copier, Mode, Target, noreplace, resolve_target};
 use crate::ctx::{ErrorResolution, JobCtx};
 use crate::error::JobError;
 use crate::event::Operation;
@@ -102,7 +105,15 @@ impl Mover {
         }
         let fs = ctx.fs();
         loop {
-            let (to, replace) = match resolve_target(ctx, src, &st, dest, Operation::Move)? {
+            let target = resolve_target(
+                ctx,
+                src,
+                &st,
+                dest,
+                Operation::Move,
+                self.copier.published(),
+            )?;
+            let (to, replace) = match target {
                 Target::Skip => return Ok(()),
                 Target::Merge(d) => return self.merge(ctx, src, &d, top),
                 Target::Fresh(d) => (d, false),
@@ -112,11 +123,13 @@ impl Mover {
             let r = if replace {
                 fs.rename_replace(src, &to)
             } else {
-                fs.rename_noreplace(src, &to)
+                noreplace::rename_noreplace(&*fs, src, &to, st.is_dir())
             };
             match r {
                 Ok(()) => {
                     tracing::debug!(from = %src.display(), to = %to.display(), "renamed");
+                    // A rename keeps the inode: later items of this job never overwrite it.
+                    self.copier.note_published((st.dev, st.ino));
                     if top {
                         ctx.note_created(to);
                     }

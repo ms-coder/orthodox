@@ -67,6 +67,33 @@ fn invalid(path: &Path, msg: &str) -> Fail {
 struct Published {
     /// Everything verified and synced: the source may be deleted.
     source_deletable: bool,
+    /// (dev, ino) of the published item (the job never overwrites it later, T3.6 B1).
+    dest_id: (u64, u64),
+}
+
+// Linux errno values used by `kernel_tier_unsupported`.
+const EPERM: i32 = 1;
+const EIO: i32 = 5;
+const EBADF: i32 = 9;
+const EXDEV: i32 = 18;
+const EINVAL: i32 = 22;
+const ENOTTY: i32 = 25;
+const ETXTBSY: i32 = 26;
+const ENOSYS: i32 = 38;
+const EOPNOTSUPP: i32 = 95;
+
+/// A kernel-assisted copy (FICLONE, `copy_file_range`) failed in a way that means "use the next
+/// tier", like coreutils (T3.6 m6): unsupported here, refused by a seccomp filter or for an
+/// immutable/swap file (`EPERM`, `ETXTBSY`), or `EIO` before this tier copied the first byte (some
+/// FUSE and CIFS servers). A genuine I/O error then shows up again in the read/write tier, with
+/// the usual retry/skip/abort. `RealFs` already maps most of these to "unsupported"; this covers
+/// wrappers and injected faults.
+fn kernel_tier_unsupported(e: &io::Error, nothing_copied: bool) -> bool {
+    match e.raw_os_error() {
+        Some(EPERM | EXDEV | EINVAL | ENOTTY | ETXTBSY | ENOSYS | EOPNOTSUPP | EBADF) => true,
+        Some(EIO) => nothing_copied,
+        _ => e.kind() == io::ErrorKind::Unsupported,
+    }
 }
 
 /// Unlinks the temp file unless disarmed (explicit cleanup reports failures; drop is the panic
@@ -176,6 +203,7 @@ impl Copier {
         loop {
             match self.try_file(ctx, src, dest, replace) {
                 Ok(p) => {
+                    self.note_published(p.published.dest_id);
                     if self.mode == Mode::Move {
                         self.finish_move(ctx, src, &p)?;
                     }
@@ -292,9 +320,12 @@ impl Copier {
         dest: &Path,
         replace: bool,
     ) -> Result<Published, Fail> {
+        // An overwrite always makes the new file durable before it replaces the old one (T3.6
+        // M5): otherwise a crash right after the rename can leave neither version.
+        let durable = self.sync || replace;
         self.copy_data(ctx, sf, &mut *df, st, src, dest)?;
         let times_ok = self.file_meta(ctx, fs, src, guard.path(), &mut *df, st);
-        if self.sync {
+        if durable {
             df.sync().map_err(at(dest))?;
         }
         // Verify before publishing: the copy is complete and the source did not change meanwhile.
@@ -320,10 +351,12 @@ impl Copier {
                 "timestamp of the copy differs from the source",
             ));
         }
-        drop(df);
+        // Checked close (T3.6 M4): NFS/FUSE may report a deferred write error only here. It must
+        // be seen before the temp is published (and, in move mode, before the source goes).
+        df.close().map_err(at(dest))?;
         self.publish(ctx, fs, guard, dest, replace)?;
         let mut deletable = true;
-        if self.sync
+        if durable
             && let Some(dir) = dest.parent()
             && let Err(e) = fs.sync_dir(dir)
         {
@@ -339,11 +372,13 @@ impl Copier {
         }
         Ok(Published {
             source_deletable: deletable,
+            dest_id: (tst.dev, tst.ino),
         })
     }
 
-    /// Rename the finished temp into place: `rename_noreplace`, or `rename_replace` when the user
-    /// chose overwrite for this item.
+    /// Rename the finished temp into place: `rename_noreplace` (with the link/checked-rename
+    /// fallbacks of [`noreplace`](super::noreplace) where the file system lacks it), or
+    /// `rename_replace` when the user chose overwrite for this item.
     fn publish(
         &mut self,
         ctx: &mut JobCtx,
@@ -357,7 +392,7 @@ impl Copier {
         let r = if replace {
             fs.rename_replace(&tmp, dest)
         } else {
-            fs.rename_noreplace(&tmp, dest)
+            super::noreplace::rename_noreplace(fs, &tmp, dest, false)
         };
         match r {
             Ok(()) => {
@@ -381,14 +416,24 @@ impl Copier {
         src: &Path,
         dest: &Path,
     ) -> Result<(), Fail> {
+        self.range_copied = false;
         if st.size == 0 {
             return Ok(());
         }
         ctx.checkpoint()?;
         // Reflink keeps holes and shares extents (Btrfs/XFS); one call, no chunking possible.
-        if df.try_clone_from(&*sf).map_err(at(dest))? {
-            ctx.add_bytes(st.size);
-            return Ok(());
+        match df.try_clone_from(&*sf) {
+            Ok(true) => {
+                ctx.add_bytes(st.size);
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(e) if kernel_tier_unsupported(&e, true) => {
+                tracing::debug!(path = %dest.display(), error = %e, "reflink failed; next tier");
+                // Whatever a failed clone may have left: start the temp from empty.
+                df.set_len(0).map_err(at(dest))?;
+            }
+            Err(e) => return Err(at(dest)(e)),
         }
         if st.is_sparse() {
             return self.copy_sparse(ctx, sf, df, st, src, dest);
@@ -465,12 +510,19 @@ impl Copier {
                 return Ok(done);
             }
             if kernel {
-                match df.copy_range_from(sf, want).map_err(at(dest))? {
-                    Some(0) | None => kernel = false, // EOF or unsupported: let read() decide
-                    Some(n) => {
+                match df.copy_range_from(sf, want) {
+                    Ok(Some(0) | None) => kernel = false, // EOF or unsupported: let read() decide
+                    Ok(Some(n)) => {
+                        self.range_copied = true;
                         done += n;
                         ctx.add_bytes(n);
                     }
+                    // A failed call copies nothing, so both offsets are still where they were.
+                    Err(e) if kernel_tier_unsupported(&e, !self.range_copied) => {
+                        tracing::debug!(path = %dest.display(), error = %e, "copy_file_range failed; read/write");
+                        kernel = false;
+                    }
+                    Err(e) => return Err(at(dest)(e)),
                 }
                 continue;
             }
@@ -508,6 +560,7 @@ impl Copier {
         loop {
             match self.try_symlink(ctx, src, st, dest, replace) {
                 Ok(p) => {
+                    self.note_published(p.published.dest_id);
                     if self.mode == Mode::Move {
                         self.finish_move(ctx, src, &p)?;
                     }
@@ -562,9 +615,11 @@ impl Copier {
             if let Err(e) = fs.set_times(&tmp, st.atime_ns, st.mtime_ns, false) {
                 tracing::debug!(path = %dest.display(), error = %e, "symlink times not set");
             }
+            // The identity of the new link (a rename keeps it): recorded as this job's output.
+            let made = fs.lstat(&tmp).map_err(at(dest))?;
             self.publish(ctx, &*fs, &mut guard, dest, replace)?;
             let mut deletable = true;
-            if self.sync
+            if (self.sync || replace)
                 && let Err(e) = fs.sync_dir(dir)
             {
                 ctx.warn(dir, format!("directory not synced: {e}"));
@@ -575,6 +630,7 @@ impl Copier {
             }
             Ok(Published {
                 source_deletable: deletable,
+                dest_id: (made.dev, made.ino),
             })
         })();
         if result.is_err() {
