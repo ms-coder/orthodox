@@ -5,7 +5,7 @@ The lead keeps this file current after every task. A fresh session must be able 
 ## Current state
 
 - Milestone: M3 (File operations, gate G2) — in progress; M2 done (tag m2-done)
-- Now: T3.0 jobs API freeze (architect, on main). Then group 3.A: T3.1 engine+copy/move (fileops-engineer), T3.2 other ops (core-engineer), T3.3 file-op UI (ui-engineer), T3.4 torture suite (test-engineer; GLM only if ZAI_API_KEY set). Then T3.5 deep review (reviewer), tag m3-done, STOP at G2.
+- T3.0 done and committed (API in docs/adr/0006-jobs-api.md; ARCHITECTURE.md §2 JobEvent/Question shapes are stale, ADR-0006 is authoritative). Now group 3.A: T3.1 engine+copy/move (fileops-engineer), T3.2 other ops (core-engineer), T3.3 file-op UI (ui-engineer), T3.4 torture suite (test-engineer; GLM only if ZAI_API_KEY set). Then T3.5 deep review (reviewer), tag m3-done, STOP at G2.
 - T3.0 must also: make `FsFile::try_clone_from/copy_range_from` wrappable by FaultyFs (deferred M1 finding); add a directory-watcher hook to `PanelController` for T3.3 auto-refresh (panel/ is frozen core, architect may edit).
 
 ## Milestones
@@ -35,6 +35,7 @@ Status values: `not started` · `in progress` · `review` · `waiting for Igor` 
 | T2.2 | ui-engineer | done | m2/T2.2-chrome-themes | 57652db | merged; session/themes/F9 menu/F-key bar |
 | T2.3 | ui-engineer | done | m2/T2.3-navigation | bd3846c | merged; also registered dialog.ok/cancel (navigation/modal.rs) |
 | T2.4 | test-engineer | done | m2/T2.4-smoke-tests | ac1e85b | merged; real-binary tests (tests/real_binary.rs), g1 screenshot set via scripts/screenshot.sh g1 |
+| T3.0 | architect | done | main | see git log | jobs API frozen, RealFs/FaultyFs implemented, PanelController watcher, JobsController stub |
 | T1.5 | reviewer | done | m1/review-fixes | 555f57b | findings fixed; rest deferred below |
 | T1.0 | architect | done | main | 9bc5168 | stubs, ADR-0002..0005, COMMANDS.md (128 commands) |
 | T1.1 | glm | done | m1/T1.1-panel-model | a6f322a | |
@@ -69,7 +70,7 @@ Status values: `not started` · `in progress` · `review` · `waiting for Igor` 
 
 | Date | What | Why | ADR |
 |---|---|---|---|
-| 2026-11-14 | All agents (architect, reviewer, fileops) on Sonnet, not Opus | Igor is on Pro plan with limited weekly quota | - |
+| 2026-11-14 | All agents (architect, reviewer, fileops) on Sonnet, not Opus (superseded 2026-11-15 for M3, see next row) | Igor is on Pro plan with limited weekly quota | - |
 | 2026-11-14 | GLM offload via `scripts/glm.sh` for tests, packaging, docs, ofm-viewer, ofm-search | Separate Z.ai Coding Plan quota | - |
 
 ## Open notes from T2.0
@@ -84,3 +85,5 @@ Status values: `not started` · `in progress` · `review` · `waiting for Igor` 
 - T2.2: `app.theme_next` rewrites config.toml (comments in hand-edited config are lost) — M8/M9 polish. `cli_overrides_paths()` checks argv[1]; cleaner as a flag in AppInit.
 - T2.2: F9 menu key handling relies on GTK running later-added controllers first (verified with probe + real F9 open).
 - T2.4: tests launching `ofm` must set DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent (GApplication single-instance on the session bus) and use temp XDG dirs; select the window with `xdotool search --class ofm`. Open question: add `screenshot.sh g1` (+30 s) to check.sh? (default: no).
+| 2026-11-15 | Opus allowed for M3 by Igor (Claude quota resets soon): T3.1 copy/move engine (fileops-engineer) and T3.5 deep review (reviewer) on Opus; rest Sonnet | data-safety critical | - |
+| 2026-11-15 | GLM available: ZAI_API_KEY is in ~/.bashrc, not in the session env; run `bash -ic './scripts/glm.sh <dir> "<prompt>"'` | Igor exported it after session start | - |

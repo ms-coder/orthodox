@@ -1,4 +1,4 @@
-//! Fault-injection plans for the job engine's `FaultyFs` (ofm-jobs, M3).
+//! Fault-injection plans for the job engine's `FaultyFs` (`ofm_jobs::fs::faulty`, feature `testing`).
 //!
 //! Plain data only: a [`FaultPlan`] describes *which* operation fails *when*
 //! and *how*. The `FaultyFs` wrapper (to be implemented in `ofm-jobs` around
@@ -81,6 +81,8 @@ pub enum FaultOp {
     GetXattr,
     /// `Fs::set_xattr`.
     SetXattr,
+    /// `Fs::trash`.
+    Trash,
     /// `FsFile::stat`.
     FileStat,
     /// `FsFile::read`.

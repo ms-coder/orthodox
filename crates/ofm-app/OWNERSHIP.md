@@ -1,4 +1,4 @@
-# ofm-app: file ownership for parallel tasks (M2)
+# ofm-app: file ownership for parallel tasks (M2, M3)
 
 Rule: a task edits **only** the paths listed for it. Everything under "Frozen core" is changed by
 the architect/lead only; if you need an API change there, report it instead of editing.
@@ -81,3 +81,73 @@ with `ctx.ext.get::<T>()`. Do not add fields to `AppContext`.
 | `Key::Char('+')` unparseable / GDK mapping for `Gray+` | done in `keys.rs` (KP_Add -> `Gray+`; Shift re-translated to base key, so `Shift+=`) |
 | Pending cursor after `begin_load` on large dirs | done in `PanelController` (`pending_cursor`, cleared on user move) |
 | Validate `Session.active_panel/active_tab` on load | open -> T2.2 (session restore) |
+
+---
+
+# M3 (file operations): ownership and hooks
+
+T3.0 added the skeleton below. Same rules as above: edit only your own paths; cross-module wiring
+only through `src/hooks.rs` (already calls `jobs::install_commands/install_state/install_ui`).
+
+| Owner | Paths |
+|---|---|
+| **T3.3** file-op UI | `src/jobs/**`, `src/dialogs/{copy,conflict,delete,mkdir,link,properties}.rs`, new files `tests/jobs_*.rs` |
+| **T3.1/T3.2/T3.4** | no `ofm-app` files (`crates/ofm-jobs/**` only, see below) |
+| Frozen core (T3.0) | everything in "Frozen core" above (now incl. `src/panel/**` with the watcher), `src/dialogs/mod.rs`, `src/jobs/mod.rs` hook signatures, `Cargo.toml` (ask the lead) |
+
+`ofm-jobs` ownership (see `crates/ofm-jobs/src/lib.rs`): T3.1 `engine, plan, copy, move_, progress,
+fs/real`; T3.2 `ops/{delete,mkdir,link,attrs,size,trash}` (+ the `trash` dependency); T3.4 `tests/**`;
+frozen (architect): `lib, spec, event, error, ctx, runner, fs/mod, fs/faulty, ops/mod`. API contract:
+`docs/adr/0006-jobs-api.md`.
+
+## Hook table (M3)
+
+| Hook | T3.3 fills |
+|---|---|
+| `install_commands` | `jobs::install_commands`: the commands below, each registered exactly once |
+| `install_state` | `jobs::install_state` (done: `JobsController` in `ctx.ext`; fetch with `jobs::controller(&ctx)`) |
+| `install_ui` | `jobs::install_ui`: jobs view (Ctrl+J), status-line progress, quit-with-running-jobs prompt |
+| `install_panel_view` | not used |
+
+## Command ownership (M3)
+
+- **T3.3**: `file.copy`, `file.move`, `file.rename`, `file.mkdir`, `file.delete`, `file.delete_permanent`,
+  `file.link`, `file.properties`, `file.calc_size`, `app.jobs`, `jobs.pause_resume`, `jobs.cancel`,
+  `jobs.clear_finished`.
+- Still unowned (`NotImplemented`): `file.new_file`, `file.batch_rename*` (M8), `file.clipboard_*`,
+  `file.copy_path`, `file.open_with` (desktop integration milestone), `file.view/edit` (M5).
+
+## `JobsController` (src/jobs/controller.rs, T3.3 implements the two `todo!("T3.3")` bodies)
+
+- `submit(&Rc<Self>, &Rc<AppContext>, JobSpec, RunMode) -> JobId`: lazily creates `JobEngine::new()`,
+  attaches the pump (`wiring::attach(engine.events(), ..)` with Weak refs) once, submits.
+- `handle_event(&Rc<Self>, &Rc<AppContext>, JobEvent)`: the pump body; also the test entry point:
+  tests feed synthetic `JobEvent`s (build `Ask` with `ofm_core::Responder::channel()`), no engine
+  or threads needed. Updates the job table, emits `JobsEvent`, opens `dialogs::conflict::present` for
+  `Ask`, refreshes/focuses panels on `Finished` (`Report::created`).
+- `set_engine(JobEngine)` for tests (`JobEngine::with_fs(Arc<FaultyFs>)`; needs `ofm-jobs` with the
+  `testing` feature in `[dev-dependencies]`: ask the lead to add it).
+- `pause/resume/cancel/cancel_all/jobs/has_unfinished/clear_finished` work today.
+- The UI must honour `ConflictKind::allows` (disable forbidden choices) and answer every `Ask` exactly
+  once (closing a dialog = drop the responder = abort the job).
+
+## Directory watching in `PanelController` (frozen core, done in T3.0)
+
+`PanelController` subscribes to `ofm_vfs::watch` for its local directory and applies changes through
+`PanelModel::apply_update` (emits `PanelEvent::Model`). Nobody else starts watchers.
+- Lifecycle: started by `load` (before the listing is queued) when the directory changes, kept across
+  reloads of the same directory, stopped on navigation to a non-local location and on `shutdown`
+  (tab close). Starting runs on the I/O pool (no syscalls on the main thread).
+- Events during a listing are buffered and flushed at `Done`; `Changed` names are re-stat-ed on the
+  pool, one batch in flight at a time, stale results (load generation changed) are dropped; `Rescan`
+  -> `reload()`; `DirGone` -> navigates to the nearest existing ancestor.
+- After an operation: `focus_name(name)` (cursor on `name` as soon as it is listed, waits max 5 s,
+  cancelled by a user cursor move) for local panels; `reload_and_focus(name)` for locations the
+  watcher does not cover (archive/list). `watching()` tells whether a watch is established.
+- Known limitation: while the job still writes, `*.ofm-part-*` temp names are visible in the panel
+  (ADR-0004 consequence); they vanish on the rename. Do not special-case them in the model.
+- Tests: `tests/panel_watch.rs` (headless; private glib `MainContext` per test).
+
+## Deferred M1 finding closed by T3.0
+
+`FsFile::try_clone_from`/`copy_range_from` now go through `FsFile::as_fd`, so `FaultyFs` intercepts them.

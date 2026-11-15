@@ -8,7 +8,20 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Exposes `fs::faulty::FaultyFs` (needs ofm-testkit's FaultPlan). Enabled for this crate's own
+# integration tests through the self dev-dependency below; other crates opt in from their
+# `[dev-dependencies]`. Never enable it in a normal dependency list.
+testing = ["dep:ofm-testkit"]
+
 [dependencies]
 ofm-core = { path = "../ofm-core" }
 async-channel.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+rustix = { version = "1.1.6", features = ["fs", "process"] }
+ofm-testkit = { path = "../ofm-testkit", optional = true }
+
+[dev-dependencies]
+ofm-testkit = { path = "../ofm-testkit" }
+ofm-jobs = { path = ".", features = ["testing"] }

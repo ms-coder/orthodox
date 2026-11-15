@@ -12,6 +12,7 @@
 //! - `widgets::file_list`: T2.1
 //! - `window`, `theme`, `chrome`: T2.2
 //! - `navigation`, `dialogs::mask`, `dialogs::hotlist`: T2.3
+//! - `jobs`, `dialogs::{copy,conflict,delete,mkdir,link,properties}`: T3.3
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod app;
@@ -21,6 +22,7 @@ pub mod dialogs;
 pub mod dispatch;
 pub mod hooks;
 pub mod i18n;
+pub mod jobs;
 pub mod keys;
 pub mod navigation;
 pub mod panel;

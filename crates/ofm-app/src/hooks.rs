@@ -13,7 +13,7 @@ use std::rc::Rc;
 use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
 use crate::window::{MainWindow, PanelView};
-use crate::{chrome, dialogs, navigation, widgets, window};
+use crate::{chrome, dialogs, jobs, navigation, widgets, window};
 
 /// Register command handlers. Every module registers only commands it owns (OWNERSHIP.md);
 /// duplicates are detected by a test.
@@ -23,6 +23,7 @@ pub fn install_commands(reg: &mut CommandRegistry) {
     chrome::install_commands(reg); // T2.2: app.menu, app.theme_next, ...
     navigation::install_commands(reg); // T2.3: go_*, history, tabs, select.*, quicksearch, ...
     dialogs::install_commands(reg); // T2.3: mask + hotlist dialogs' commands
+    jobs::install_commands(reg); // T3.3: file.copy/move/delete/..., app.jobs, jobs.*
 }
 
 /// Create module-owned state and store it with `ctx.ext.insert(Rc::new(..))`.
@@ -31,6 +32,7 @@ pub fn install_state(ctx: &Rc<AppContext>) {
     chrome::install_state(ctx); // T2.2
     navigation::install_state(ctx); // T2.3
     dialogs::install_state(ctx); // T2.3
+    jobs::install_state(ctx); // T3.3: JobsController in ctx.ext
 }
 
 /// Decorate one panel view right after it is built (tab bar, quick-search popover, ...).
@@ -44,6 +46,7 @@ pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
     window::install_ui(ctx, win); // T2.2
     chrome::install_ui(ctx, win); // T2.2
     navigation::install_ui(ctx, win); // T2.3
+    jobs::install_ui(ctx, win); // T3.3: jobs view, progress in status line
 }
 
 #[cfg(test)]

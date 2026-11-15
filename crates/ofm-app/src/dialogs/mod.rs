@@ -1,13 +1,19 @@
-//! Dialogs. Each file has one owner (see OWNERSHIP.md): `mask.rs` and `hotlist.rs` belong to T2.3
-//! now; later milestones add `copy_move.rs`, `conflict.rs`, `delete.rs`, `mkdir.rs`, ... as new
-//! files and one `mod` line plus one call in each hook below (those two lines are the only
-//! shared edits, made by the lead when the milestone starts).
+//! Dialogs. Each file has one owner (see OWNERSHIP.md): `mask.rs` and `hotlist.rs` belong to T2.3;
+//! `copy.rs`, `conflict.rs`, `delete.rs`, `mkdir.rs`, `link.rs`, `properties.rs` to T3.3 (M3 file
+//! operations; they register nothing here: their commands are installed by `jobs::install_commands`).
+//! Later milestones add files plus one `mod` line (made by the architect when the milestone starts).
 //!
 //! A dialog is a plain function/struct that builds an `adw::Dialog` (or window), holds
 //! `ctx.enter_modal()` while shown, and runs commands via `ctx.execute`.
 
+pub mod conflict;
+pub mod copy;
+pub mod delete;
 pub mod hotlist;
+pub mod link;
 pub mod mask;
+pub mod mkdir;
+pub mod properties;
 
 use std::rc::Rc;
 

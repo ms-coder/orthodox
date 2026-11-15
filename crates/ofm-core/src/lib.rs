@@ -24,4 +24,4 @@ pub use commands::cmd;
 pub use entry::{Entry, EntryKind, TargetKind};
 pub use keychord::{Key, KeyChord, KeyChordParseError, Mods};
 pub use location::{ListId, Location, LocationKind};
-pub use responder::{Pending, Responder};
+pub use responder::{Pending, Responder, Wait};
