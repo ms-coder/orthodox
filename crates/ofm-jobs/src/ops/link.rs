@@ -2,20 +2,75 @@
 //! stored verbatim; hard: `fs.hard_link(target, link)` (refuse directories with a clear error).
 //! An existing `link` is an error (never replaced silently); `ctx.note_created(link)` on success.
 
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use crate::ctx::JobCtx;
+use crate::ctx::{ErrorResolution, JobCtx};
 use crate::error::JobError;
+use crate::event::Operation;
 use crate::spec::LinkKind;
 
 /// Create `link` pointing at `target`.
-pub fn run(
-    _ctx: &mut JobCtx,
-    _target: &Path,
-    _link: &Path,
-    _kind: LinkKind,
-) -> Result<(), JobError> {
-    todo!("T3.2")
+pub fn run(ctx: &mut JobCtx, target: &Path, link: &Path, kind: LinkKind) -> Result<(), JobError> {
+    if !link.is_absolute() {
+        return Err(JobError::Invalid(format!(
+            "link path must be absolute: {}",
+            link.display()
+        )));
+    }
+    if target.as_os_str().is_empty() {
+        return Err(JobError::Invalid("link target is empty".into()));
+    }
+    if kind == LinkKind::Hard {
+        if !target.is_absolute() {
+            return Err(JobError::Invalid(format!(
+                "hard link target must be absolute: {}",
+                target.display()
+            )));
+        }
+        // Directories cannot be hard-linked; say so instead of passing on a bare EPERM.
+        let st = ctx.attempt(target, Operation::Link, |fs| fs.lstat(target))?;
+        match st {
+            None => return Ok(()),
+            Some(st) if st.is_dir() => {
+                return Err(JobError::io(
+                    target,
+                    io::Error::new(
+                        io::ErrorKind::IsADirectory,
+                        "hard links to directories are not allowed",
+                    ),
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+
+    ctx.set_totals(1, 0);
+    ctx.set_current(link);
+    let result = loop {
+        ctx.checkpoint()?;
+        let fs = ctx.fs();
+        let r = match kind {
+            LinkKind::Symbolic => fs.symlink(target, link),
+            LinkKind::Hard => fs.hard_link(target, link),
+        };
+        match r {
+            Ok(()) => break Some(()),
+            // Never replaced silently, and asking "retry" would not help.
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(JobError::io(link, e));
+            }
+            Err(e) => match ctx.resolve_error(link, Operation::Link, &e)? {
+                ErrorResolution::Retry => {}
+                ErrorResolution::Skip => break None,
+            },
+        }
+    };
+    if result.is_some() {
+        ctx.file_done();
+        ctx.note_created(link);
+    }
+    Ok(())
 }
 
 /// Lexical relative path from the directory containing `link` to `target`, for "relative symlink"
@@ -60,12 +115,4 @@ mod tests {
         assert_eq!(r("/l", "/t/u"), PathBuf::from("t/u"));
         assert_eq!(r("rel/l", "/t"), PathBuf::from("/t"));
     }
-
-    #[test]
-    #[ignore = "T3.2"]
-    fn symlink_and_hardlink_creation() {}
-
-    #[test]
-    #[ignore = "T3.2"]
-    fn existing_link_path_is_an_error() {}
 }
