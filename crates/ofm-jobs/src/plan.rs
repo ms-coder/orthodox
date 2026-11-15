@@ -5,7 +5,8 @@
 //! "Same file" (copy into the directory the source lives in, hardlinks, bind mounts) is not
 //! decided here but per item, by dev+ino, when the destination name is probed
 //! (`copy::resolve_target` -> `ConflictKind::SameFile`): that also catches cases a
-//! directory-level comparison would miss.
+//! directory-level comparison would miss. The same probe protects the job's own output, by
+//! inode and by published name modulo case (inodes are unstable on vfat/exFAT, T3.7b).
 //!
 //! Nothing in this module writes to the file system except [`ensure_dir`].
 

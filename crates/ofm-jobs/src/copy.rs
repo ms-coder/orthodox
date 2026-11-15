@@ -14,7 +14,9 @@
 //! `rename_replace` only after an `Overwrite` resolution; fsync the directory when `sync` or when
 //! overwriting. The temp file is unlinked on EVERY error/cancel path (explicitly, and by a drop
 //! guard for panics). An existing destination is never opened for writing, and an item this job
-//! published itself is never overwritten by a later item (T3.6 B1, [`resolve_target`]).
+//! published itself is never overwritten by a later item (T3.6 B1, [`resolve_target`]) — judged by
+//! `(dev, ino)` AND by the published destination names ([`Published`], T3.7b: vfat/exFAT renumber
+//! inodes, so a case variant of a published name must not look like somebody else's file).
 //!
 //! Directories are created with mode 0700, filled (iteratively, so deep trees cannot overflow the
 //! stack), and get their final mode/owner/times post-order (also on cancel, best effort).
@@ -29,10 +31,10 @@ mod file;
 mod meta;
 pub(crate) mod noreplace;
 
-use std::collections::HashSet;
-use std::ffi::OsString;
+use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::io;
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
 use ofm_core::Location;
@@ -96,9 +98,75 @@ pub(crate) enum Target {
     Skip,
 }
 
+/// Everything this job published at the destination (T3.6 B1, T3.7b): the `(dev, ino)` of every
+/// item and, per case-folded path, the spellings it was published under.
+///
+/// The inode alone is not enough: on vfat/exFAT the kernel hands an evicted inode a NEW
+/// `iunique()` number, so under page-cache pressure a published `IMG.JPG` looks like a stranger
+/// when a later `img.jpg` (another source, same name modulo case) finds it. The names are
+/// therefore recorded too (memory: one path per published item) and compared case-insensitively
+/// (Unicode lower-casing per path component; non-UTF-8 components ASCII-only).
+#[derive(Default)]
+pub(crate) struct Published {
+    ids: HashSet<(u64, u64)>,
+    /// case-folded destination path -> the spellings the job published under it.
+    names: HashMap<PathBuf, Vec<PathBuf>>,
+}
+
+/// One path component, case-folded.
+fn fold_component(c: &OsStr) -> OsString {
+    match c.to_str() {
+        Some(s) => OsString::from(s.chars().flat_map(char::to_lowercase).collect::<String>()),
+        None => OsString::from_vec(c.as_bytes().to_ascii_lowercase()),
+    }
+}
+
+/// `path` with every component case-folded (also the parent directories: `Photos/a` and
+/// `photos/a` are one entry on a case-insensitive file system).
+fn fold_path(path: &Path) -> PathBuf {
+    path.components()
+        .map(|c| fold_component(c.as_os_str()))
+        .collect()
+}
+
+impl Published {
+    /// Record the identity of a published item.
+    fn note_id(&mut self, id: (u64, u64)) {
+        self.ids.insert(id);
+    }
+
+    /// Record the final path an item was published under.
+    fn note_path(&mut self, path: &Path) {
+        let spellings = self.names.entry(fold_path(path)).or_default();
+        if !spellings.iter().any(|p| p == path) {
+            spellings.push(path.to_path_buf());
+        }
+    }
+
+    /// Whether an item with this `(dev, ino)` was published.
+    fn has_id(&self, id: (u64, u64)) -> bool {
+        self.ids.contains(&id)
+    }
+
+    /// Whether `dest` — which exists now — is a name this job published, modulo case. A
+    /// differently spelled published path must still exist (`lstat`): where names are case-
+    /// sensitive it is a different object that merely folds onto the same name, and a published
+    /// item that has been deleted meanwhile no longer protects anything. Unsure (any other
+    /// error) counts as "published": the safe direction.
+    fn has_name(&self, fs: &dyn Fs, dest: &Path) -> bool {
+        let Some(spellings) = self.names.get(&fold_path(dest)) else {
+            return false;
+        };
+        spellings.iter().any(|p| {
+            p == dest || !matches!(fs.lstat(p), Err(e) if e.kind() == io::ErrorKind::NotFound)
+        })
+    }
+}
+
 /// Probe `dest` and decide what to do with an existing item there: same dev+ino as the source, or
 /// an item this job itself published (`own`, T3.6 B1: two sources landing on one name, e.g.
-/// `IMG.JPG` and `img.jpg` on a case-insensitive FAT stick) = `SameFile` (never overwritten, not
+/// `IMG.JPG` and `img.jpg` on a case-insensitive FAT stick; recognised by inode or, because FAT
+/// renumbers inodes, by the published name modulo case, T3.7b) = `SameFile` (never overwritten, not
 /// even with a silent overwrite policy; the dialog defaults to "Rename new"); directory onto
 /// directory = merge (never a question); directory vs non-directory = `TypeMismatch`; anything
 /// else = `Replaceable`. `RenameNew` picks a free `name (N).ext`; `RenameExisting` renames the
@@ -112,7 +180,7 @@ pub(crate) fn resolve_target(
     src_st: &FsStat,
     dest: &Path,
     op: Operation,
-    own: &HashSet<(u64, u64)>,
+    own: &Published,
 ) -> Result<Target, JobError> {
     let fs = ctx.fs();
     loop {
@@ -129,7 +197,7 @@ pub(crate) fn resolve_target(
         let id = (existing.dev, existing.ino);
         let kind = if id == (src_st.dev, src_st.ino) {
             ConflictKind::SameFile
-        } else if own.contains(&id) {
+        } else if own.has_id(id) || own.has_name(&*fs, dest) {
             tracing::info!(
                 src = %src.display(), dest = %dest.display(),
                 "destination is an item this job created; not overwritable"
@@ -273,12 +341,12 @@ pub(crate) struct Copier {
     sync: bool,
     is_root: bool,
     buf: Vec<u8>,
-    /// (dev, ino) of every item this job published (files, symlinks, created directories, and
-    /// items a same-device move renamed into place). A destination conflict with one of them is
+    /// Identity and names of every item this job published (files, symlinks, created
+    /// directories, and items a same-device move renamed into place). A destination conflict with one of them is
     /// never overwritten (T3.6 B1, see [`resolve_target`]); directories among them are never
     /// entered as a source (a followed symlink pointing into the destination would otherwise
     /// copy forever).
-    published: HashSet<(u64, u64)>,
+    published: Published,
     /// (dev, ino) of the source directories currently open on the walk stack (symlink loops).
     active: HashSet<(u64, u64)>,
     /// Metadata warnings already reported (what, errno): later ones only go to the log, so a copy
@@ -298,21 +366,27 @@ impl Copier {
             sync: sync || mode == Mode::Move,
             is_root: fs.is_root(),
             buf: Vec::new(),
-            published: HashSet::new(),
+            published: Published::default(),
             active: HashSet::new(),
             warned: HashSet::new(),
             range_copied: false,
         }
     }
 
-    /// Items this job published so far (dev, ino): pass to [`resolve_target`].
-    pub(crate) fn published(&self) -> &HashSet<(u64, u64)> {
+    /// Items this job published so far: pass to [`resolve_target`].
+    pub(crate) fn published(&self) -> &Published {
         &self.published
     }
 
     /// Record an item this job put in place (same-device move renames go through here).
     pub(crate) fn note_published(&mut self, id: (u64, u64)) {
-        self.published.insert(id);
+        self.published.note_id(id);
+    }
+
+    /// Record the final path of an item this job put in place (T3.7b). Items that were skipped
+    /// were never published and are never recorded.
+    pub(crate) fn note_published_path(&mut self, path: &Path) {
+        self.published.note_path(path);
     }
 
     fn op(&self) -> Operation {
@@ -384,7 +458,7 @@ impl Copier {
                 return Ok(Node::Skipped);
             }
             FileType::Dir
-                if self.published.contains(&(st.dev, st.ino))
+                if self.published.has_id((st.dev, st.ino))
                     || self.active.contains(&(st.dev, st.ino)) =>
             {
                 ctx.warn(
@@ -425,7 +499,10 @@ impl Copier {
                 _ => return Ok(Node::Skipped),
             };
             match result {
-                file::Written::Done => return Ok(Node::Done(path)),
+                file::Written::Done => {
+                    self.note_published_path(&path);
+                    return Ok(Node::Done(path));
+                }
                 file::Written::Skipped => return Ok(Node::Skipped),
                 file::Written::Exists => {} // raced with another writer: resolve again
             }
@@ -468,10 +545,11 @@ impl Copier {
         }
         match fs.lstat(dest) {
             Ok(d) => {
-                self.published.insert((d.dev, d.ino));
+                self.published.note_id((d.dev, d.ino));
             }
             Err(e) => tracing::debug!(path = %dest.display(), error = %e, "lstat new dir"),
         }
+        self.published.note_path(dest);
         if self.sync
             && let Some(parent) = dest.parent()
             && let Err(e) = fs.sync_dir(parent)
