@@ -97,6 +97,7 @@ pub struct AppContext {
     window: OnceCell<Rc<MainWindow>>,
     modal_depth: Cell<u32>,
     cmdline_has_text: Cell<bool>,
+    terminal_focused: Cell<bool>,
 }
 
 impl AppContext {
@@ -128,6 +129,7 @@ impl AppContext {
             window: OnceCell::new(),
             modal_depth: Cell::new(0),
             cmdline_has_text: Cell::new(false),
+            terminal_focused: Cell::new(false),
         })
     }
 
@@ -222,6 +224,17 @@ impl AppContext {
     /// Whether the command line currently has text.
     pub fn cmdline_has_text(&self) -> bool {
         self.cmdline_has_text.get()
+    }
+
+    /// T4.1 sets this while the VTE terminal has the keyboard focus: key resolution then
+    /// consults only the `global` keymap section (everything else belongs to the shell).
+    pub fn set_terminal_focused(&self, focused: bool) {
+        self.terminal_focused.set(focused);
+    }
+
+    /// Whether the VTE terminal currently has the keyboard focus.
+    pub fn terminal_focused(&self) -> bool {
+        self.terminal_focused.get()
     }
 }
 

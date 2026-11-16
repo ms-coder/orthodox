@@ -220,8 +220,9 @@ editing). Pure logic lives in `ofm-core::cmdline` (also frozen; T4.3 extends its
 - Never spawn shells or touch VTE from `cmdline/`; never edit widgets in `cmdline_slot` from
   `terminal/` (chrome already put the slot CSS there).
 
-## M4 lead follow-ups (before T4.1/T4.2 start; ADR-0003 "Consequences")
+## M4 lead follow-ups (DONE on main, applied after T4.0)
 
-1. `dispatch.rs`: resolve chords in `Global` only while a `vte::Terminal` has focus (the VTE is a
-   text-entry-like surface; otherwise panel cursor keys would fire while typing in the terminal).
-2. `ofm-config`: `[terminal] return_to_panels` (bool, default `false`) + `defaults/config.toml`.
+1. `AppContext::set_terminal_focused(bool)` / `terminal_focused()`; `dispatch::resolve` consults only
+   the `global` keymap section while it is true. **T4.1 sets it** from a focus controller on the VTE
+   widget (focus-enter -> true, focus-leave -> false).
+2. `[terminal] return_to_panels` (bool, default `false`) in `ofm-config` + `defaults/config.toml`.

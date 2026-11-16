@@ -134,6 +134,8 @@ pub fn resolve(ctx: &AppContext, kind: WindowKind, chord: KeyChord) -> Option<Co
     let keymap = ctx.keymap.borrow();
     match kind {
         WindowKind::Main if ctx.modal_open() => keymap.resolve_in(KeyContext::Dialog, chord),
+        // The VTE terminal is a text surface: only `global` chords (Ctrl+O, F10, Ctrl+J, ...).
+        WindowKind::Main if ctx.terminal_focused() => keymap.resolve_in(KeyContext::Global, chord),
         WindowKind::Main => keymap.resolve_main(chord, ctx.cmdline_has_text()),
         WindowKind::Viewer => keymap.resolve_in(KeyContext::Viewer, chord),
         WindowKind::Dialog => keymap.resolve_in(KeyContext::Dialog, chord),

@@ -138,6 +138,9 @@ pub struct TerminalSection {
     pub font: String,
     /// Scrollback lines.
     pub scrollback: u32,
+    /// Bring the panels back automatically when a command started from the command line ends
+    /// (default: never; Ctrl+O brings them back).
+    pub return_to_panels: bool,
 }
 
 /// `[viewer]`.
@@ -238,6 +241,7 @@ impl Default for TerminalSection {
             shell: String::new(),
             font: String::new(),
             scrollback: 10000,
+            return_to_panels: false,
         }
     }
 }
