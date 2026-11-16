@@ -34,7 +34,8 @@ Detection is by basename of the shell path:
   `PROMPT_COMMAND="__ofm_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}"` where `__ofm_osc7` prints
   `ESC ] 7 ; file://HOST/ENCODED-PWD ST` (appended so user hooks keep working).
 - **zsh**: `ZDOTDIR=<wrapper-dir>` containing a `.zshrc` that sources `~/.zshrc` (via
-  `.zshenv`/`.zprofile` pass-through — the wrapper dir only carries `.zshrc`) and registers
+  `.zshenv`/`.zprofile` pass-through files in the wrapper dir; `OFM_ORIG_ZDOTDIR` carries the
+  user's own `ZDOTDIR`, which the wrapper `.zshrc` restores before sourcing theirs) and registers
   `precmd_functions+=(__ofm_osc7)` plus `chpwd_functions+=(__ofm_osc7)` (no clobbering of user
   hooks; `HIST_IGNORE_SPACE` note: zsh ignores leading-space commands only when that option is
   set, so the wrapper enables it if unset).
@@ -65,8 +66,14 @@ T4.1 tests the snippets with real shells).
   user launched by typing in the terminal view.
 - Child exit → **Exited**. The terminal prints a short notice into the scrollback
   ("[process exited — restarting shell]") and respawns immediately (same rules as the first
-  spawn: active panel dir, rc injection); every exit is logged. No respawn cap; quitting OFM is
-  the way out.
+  spawn: active panel dir, rc injection); every exit is logged. Three exits within ~2 s stop the
+  respawning (a notice says so; the shell restarts on the next Ctrl+O or keypress in the
+  terminal; T4.5).
+- OSC 7 is only a heuristic: any program that prints `ESC ] 7 ; file://… ST` (e.g. `cat` of a
+  hostile file) can fake it, moving the panel and marking the shell Idle. Idle detection
+  therefore cannot be relied on for security; what keeps a fed line harmless is byte-exact,
+  shell-specific quoting (`QuoteStyle`: fish differs from POSIX), refusing to feed names with
+  control bytes, and not feeding into a half-typed terminal line (T4.5).
 - If in doubt OFM treats the shell as Busy: a stalled sync is harmless, a wrong injection is not
   (e.g. no OSC 7 for an unknown shell ⇒ never Idle-for-injection; panel→shell sync disabled).
 

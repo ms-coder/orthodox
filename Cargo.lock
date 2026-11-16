@@ -1138,6 +1138,7 @@ dependencies = [
  "async-channel",
  "gtk4",
  "libadwaita",
+ "libc",
  "ofm-config",
  "ofm-core",
  "ofm-jobs",

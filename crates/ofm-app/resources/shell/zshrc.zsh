@@ -1,8 +1,9 @@
 # OFM terminal integration for zsh (ADR-0003). OFM spawns the shell with ZDOTDIR pointing
-# at a per-session directory whose only file is this .zshrc (zsh still reads ~/.zshenv and
-# ~/.zprofile from $HOME; a user rc that resets ZDOTDIR disables the integration — OFM then
-# simply never sees OSC 7 and never injects a cd).
-# For interactive shells this file sources ~/.zshrc, enables HIST_IGNORE_SPACE (zsh only
+# at a per-session directory holding passthrough .zshenv/.zprofile (they source the user's
+# own from ${OFM_ORIG_ZDOTDIR:-$HOME}) and this .zshrc.
+# For interactive shells this file first restores the user's ZDOTDIR (so the user's rc and
+# every child shell see their own value, never OFM's wrapper dir), sources their .zshrc,
+# enables HIST_IGNORE_SPACE (zsh only
 # skips space-prefixed commands when it is set; OFM feeds its panel->shell `cd` syncs with
 # a leading space) and appends __ofm_osc7 to precmd_functions and chpwd_functions (user
 # hooks keep running; OSC 7 is emitted on every prompt and every directory change).
@@ -38,7 +39,16 @@ __ofm_osc7() {
 # Everything below is for interactive shells only.
 [[ -o interactive ]] || return 0
 
-[ -r "$HOME/.zshrc" ] && . "$HOME/.zshrc"
+# Restore ZDOTDIR to the user's own (unset when they had none), then run their .zshrc.
+__ofm_home=${OFM_ORIG_ZDOTDIR:-$HOME}
+if [[ -n $OFM_ORIG_ZDOTDIR ]]; then
+    export ZDOTDIR=$OFM_ORIG_ZDOTDIR
+else
+    unset ZDOTDIR
+fi
+unset OFM_ORIG_ZDOTDIR
+[ -r "$__ofm_home/.zshrc" ] && . "$__ofm_home/.zshrc"
+unset __ofm_home
 
 setopt HIST_IGNORE_SPACE
 

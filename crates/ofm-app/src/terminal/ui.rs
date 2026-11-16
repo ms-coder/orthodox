@@ -12,11 +12,11 @@ use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use ofm_core::Location;
-use ofm_core::cmdline::{cd_command, osc7_parse};
+use ofm_core::cmdline::{QuoteStyle, cd_command_for, osc7_parse};
 use vte4::prelude::{TerminalExt, TerminalExtManual};
 
 use super::ShellState;
-use super::shell::{self, ShellKind, SyncDecision};
+use super::shell::{self, RespawnGuard, ShellKind, SyncDecision};
 use crate::context::AppContext;
 use crate::i18n::tr;
 use crate::keys;
@@ -56,6 +56,14 @@ pub(crate) struct TerminalUi {
     /// (ADR-0003 "rapid switches coalesce"); it also suppresses shell→panel navigation for
     /// that OSC 7 so a panel navigation is never undone.
     stale: Cell<bool>,
+    /// The user typed something into the terminal that was not submitted yet (a half-typed
+    /// line); a cd sync would be appended to it. Cleared by Enter, Ctrl-C and OSC 7.
+    line_dirty: Cell<bool>,
+    /// Detects a shell that exits again and again right after it was started.
+    guard: RefCell<RespawnGuard>,
+    /// Respawning was stopped (exit loop, or the spawn itself failed); the next terminal
+    /// toggle or keypress in the terminal tries again.
+    halted: Cell<bool>,
 }
 
 impl TerminalUi {
@@ -104,6 +112,9 @@ impl TerminalUi {
             hostname: RefCell::new(None),
             cwd: RefCell::new(None),
             stale: Cell::new(false),
+            line_dirty: Cell::new(false),
+            guard: RefCell::new(RespawnGuard::default()),
+            halted: Cell::new(false),
         });
         *ui.self_weak.borrow_mut() = Rc::downgrade(&ui);
 
@@ -133,34 +144,50 @@ impl TerminalUi {
                 });
         }
 
-        // The user pressed Enter inside the terminal: a program may now be running, so no
-        // cd sync until the next OSC 7 (ADR-0003).
+        // The user typed into the terminal: Enter means a program may now be running, so no
+        // cd sync until the next OSC 7 (ADR-0003); anything else leaves a half-typed line
+        // that a fed `cd` would be appended to, until Enter / Ctrl-C / the next prompt.
         {
             let weak = self.weak();
             self.term.connect_commit(move |_, text, _| {
-                if text.contains('\r')
-                    && let Some(ui) = weak.upgrade()
-                    && ui.host.get() != ShellState::Exited
-                {
+                let Some(ui) = weak.upgrade() else { return };
+                ui.line_dirty
+                    .set(shell::line_dirty_after(ui.line_dirty.get(), text));
+                if text.contains('\r') && ui.host.get() != ShellState::Exited {
                     ui.host.set(ShellState::Busy);
                 }
             });
         }
 
         // Child exit: notice into the scrollback, then respawn (same rules as the first
-        // spawn). Every exit is logged; there is no respawn cap (ADR-0003).
+        // spawn). Every exit is logged. Three exits within about two seconds mean the shell
+        // cannot start: stop, and restart only on the next toggle / keypress (ADR-0003).
         {
             let weak = self.weak();
             self.term.connect_child_exited(move |_, status| {
                 let Some(ui) = weak.upgrade() else { return };
-                tracing::info!(status, "terminal: shell exited, respawning");
                 ui.host.set(ShellState::Exited);
                 *ui.cwd.borrow_mut() = None;
                 ui.stale.set(false);
-                ui.feed_display(
-                    format!("\r\n{}\r\n", tr("[process exited — restarting shell]")).as_bytes(),
-                );
-                ui.spawn_now();
+                ui.line_dirty.set(false);
+                let looping = ui.guard.borrow_mut().record_exit(std::time::Instant::now());
+                if looping {
+                    tracing::warn!(status, "terminal: shell keeps exiting, respawn stopped");
+                    ui.halted.set(true);
+                    ui.feed_display(
+                        format!(
+                            "\r\n{}\r\n",
+                            tr("[shell keeps exiting — press any key or Ctrl+O to try again]")
+                        )
+                        .as_bytes(),
+                    );
+                } else {
+                    tracing::info!(status, "terminal: shell exited, respawning");
+                    ui.feed_display(
+                        format!("\r\n{}\r\n", tr("[process exited — restarting shell]")).as_bytes(),
+                    );
+                    ui.spawn_now();
+                }
             });
         }
 
@@ -171,6 +198,18 @@ impl TerminalUi {
                 let Some(ui) = weak.upgrade() else { return };
                 let title = term.window_title().filter(|t| !t.is_empty());
                 ui.window.set_title(title.as_deref());
+            });
+        }
+
+        // Window gone: remove the per-session wrapper directory (off the main thread).
+        {
+            let weak = self.weak();
+            self.window.connect_destroy(move |_| {
+                if let Some(ui) = weak.upgrade()
+                    && let Some(dir) = ui.wrapper_dir.borrow_mut().take()
+                {
+                    shell::remove_session_dir_async(dir);
+                }
             });
         }
     }
@@ -204,6 +243,11 @@ impl TerminalUi {
             let Some(chord) = keys::chord_from_event(keyval, keycode, state) else {
                 return glib::Propagation::Proceed;
             };
+            if ui.halted.get() {
+                // A real key (not a bare modifier) after the respawn loop was stopped.
+                ui.restart_if_halted();
+                return glib::Propagation::Stop;
+            }
             use ofm_core::{Key, Mods};
             let Mods {
                 ctrl: true,
@@ -255,10 +299,12 @@ impl TerminalUi {
                 .map(|s| s.to_string_lossy().into_owned())
                 .as_deref(),
         );
+        // Known from the start so names typed before the spawn finished are quoted right.
+        self.kind.set(ShellKind::of_path(&shell_path));
         *self.shell.borrow_mut() = shell_path;
-        let dir = shell::session_dir();
+        let base = shell::session_base();
         let rx = wiring::run_on_pool(&ctx.services.pool, move |tx| {
-            let prepared = shell::write_wrappers(&dir);
+            let prepared = shell::write_wrappers(&base);
             let host = shell::hostname();
             let _ = tx.send_blocking((prepared, host));
         });
@@ -289,7 +335,8 @@ impl TerminalUi {
         self.kind.set(kind);
         let wrapper_dir = self.wrapper_dir.borrow().clone();
         let argv = shell::build_argv(&self.shell.borrow(), kind, wrapper_dir.as_deref());
-        let envv = shell::build_env(kind, wrapper_dir.as_deref());
+        let orig_zdotdir = std::env::var("ZDOTDIR").ok();
+        let envv = shell::build_env(kind, wrapper_dir.as_deref(), orig_zdotdir.as_deref());
         let cwd = match ctx.active_controller().location() {
             Location::Local(p) => p,
             _ => PathBuf::from("/"),
@@ -303,7 +350,8 @@ impl TerminalUi {
             cwd.to_str(),
             &argv,
             &envv,
-            glib::SpawnFlags::empty(),
+            // `terminal.shell = "fish"` (no slash) must be found on $PATH.
+            glib::SpawnFlags::SEARCH_PATH,
             || {},
             -1,
             None::<&gio::Cancellable>,
@@ -313,11 +361,13 @@ impl TerminalUi {
                     tracing::error!(error = %e, "terminal: could not start the shell");
                     if let Some(ui) = weak.upgrade() {
                         ui.host.set(ShellState::Exited);
+                        // Retry on the next terminal toggle / keypress.
+                        ui.halted.set(true);
                         ui.feed_display(
                             format!(
                                 "\r\n{}\r\n",
                                 tr(
-                                    "[could not start the shell — check the terminal.shell setting]"
+                                    "[could not start the shell — check the terminal.shell setting; press any key or Ctrl+O to try again]"
                                 )
                             )
                             .as_bytes(),
@@ -343,6 +393,7 @@ impl TerminalUi {
             return;
         }
         *self.cwd.borrow_mut() = Some(dir.clone());
+        self.line_dirty.set(false); // a fresh prompt: any half-typed line is gone
         self.host.set(ShellState::Idle);
         if self.stale.replace(false) {
             // The panel moved while the shell was busy: the panel wins (ADR-0003).
@@ -374,16 +425,27 @@ impl TerminalUi {
             self.host.get(),
             self.kind.get().sync_capable(),
             ctx.cmdline_has_text(),
+            self.line_dirty.get(),
             dir.as_deref(),
             self.cwd.borrow().as_deref(),
         ) {
             SyncDecision::FeedCd => {
                 // `FeedCd` is only reachable with a local panel directory.
                 let target = dir.unwrap_or_else(|| PathBuf::from("/"));
-                tracing::debug!(dir = %target.display(), "terminal: feeding a cd sync");
                 self.stale.set(false);
-                self.feed_child_bytes(&cd_command(&target));
-                self.host.set(ShellState::Busy);
+                // `None`: the directory name holds control bytes the line editor would act
+                // on (Ctrl-U, Ctrl-C, …) even inside quotes — never feed those.
+                match cd_command_for(self.kind.get().quote_style(), &target) {
+                    Some(line) => {
+                        tracing::debug!(dir = %target.display(), "terminal: feeding a cd sync");
+                        self.feed_child_bytes(&line);
+                        self.host.set(ShellState::Busy);
+                    }
+                    None => tracing::debug!(
+                        dir = %target.display(),
+                        "terminal: cd sync skipped, the directory name contains control bytes"
+                    ),
+                }
             }
             SyncDecision::AlreadyThere => self.stale.set(false),
             SyncDecision::Blocked => {}
@@ -418,6 +480,7 @@ impl TerminalUi {
     /// Show the terminal full size by hiding the panels (Ctrl+O / a command started from
     /// the command line). The command line row, menu bar and F-key bar stay (ADR-0003).
     pub(crate) fn show(&self) {
+        self.restart_if_halted();
         self.panels.set_visible(false);
         self.slot.set_visible(true);
         // The terminal was hidden, so the focus is never inside it — it sits on a panel, a
@@ -429,6 +492,20 @@ impl TerminalUi {
             self.term.grab_focus();
         }
         self.maybe_sync();
+    }
+
+    /// Start the shell again after the respawn loop was stopped or a spawn failed.
+    fn restart_if_halted(&self) {
+        if self.halted.replace(false) {
+            tracing::info!("terminal: restarting the shell on request");
+            self.guard.borrow_mut().reset();
+            self.spawn_now();
+        }
+    }
+
+    /// How names have to be quoted for the shell that runs in this terminal.
+    pub(crate) fn quote_style(&self) -> QuoteStyle {
+        self.kind.get().quote_style()
     }
 
     /// Show the panels again over the terminal.

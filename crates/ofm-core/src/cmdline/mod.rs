@@ -1,8 +1,9 @@
 //! Command-line helpers for the shell integration (F11/F12, ADR-0003): pure functions, no I/O,
 //! no GTK (invariant 1). T4.0 froze this API; T4.3 may extend tests, not signatures.
 //!
-//! - `quote`: [`shell_quote`]/[`shell_quote_bytes`] (POSIX single-quote form) and
-//!   [`cd_command`] (the exact ` cd -- '…'\n` bytes OFM feeds to the shell).
+//! - `quote`: [`shell_quote_for`]/[`shell_quote_bytes`] (POSIX and fish quoting, control bytes
+//!   escaped) and [`cd_command_for`] (the exact ` cd -- '…'\n` bytes OFM feeds to the shell;
+//!   `None` for paths with control bytes).
 //! - `osc7`: [`osc7_encode`]/[`osc7_parse`] — the `file://host/percent-encoded-path` cwd
 //!   protocol the injected rc snippets emit on every prompt.
 //! - `cd`: [`parse_cd`]/[`parse_cd_target`] — where a typed `cd` goes (pure parsing).
@@ -20,7 +21,10 @@ mod proptests;
 pub use cd::{CdTarget, parse_cd, parse_cd_target};
 pub use complete::{Completion, common_prefix, complete_in};
 pub use osc7::{osc7_encode, osc7_parse, osc7_to_path};
-pub use quote::{cd_command, shell_quote, shell_quote_bytes};
+pub use quote::{
+    QuoteStyle, cd_command, cd_command_for, fish_quote_bytes, has_control_bytes, shell_quote,
+    shell_quote_bytes, shell_quote_for,
+};
 
 use std::borrow::Cow;
 use std::collections::VecDeque;

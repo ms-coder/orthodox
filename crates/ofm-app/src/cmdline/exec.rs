@@ -37,10 +37,28 @@ pub fn decide_execute(text: &str, loc: &Location, home: &Path) -> ExecuteAction 
     }
 }
 
+/// Whether an executed line is remembered (in-memory ring and `history.toml`): like the
+/// shells' `ignorespace`, a line starting with a space is deliberately kept out of the history
+/// (it may hold a secret), and blank lines never count.
+pub fn records_history(text: &str) -> bool {
+    !text.starts_with(' ') && !text.trim().is_empty()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn space_prefixed_and_blank_lines_stay_out_of_the_history() {
+        assert!(records_history("ls -l"));
+        assert!(records_history("cd /tmp "));
+        assert!(!records_history(" export TOKEN=hunter2"));
+        assert!(!records_history("  ls"));
+        assert!(!records_history(""));
+        assert!(!records_history("   "));
+        assert!(!records_history("\t")); // blank
+    }
 
     fn local() -> Location {
         Location::Local("/work/proj".into())
