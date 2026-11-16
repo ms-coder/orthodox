@@ -447,18 +447,26 @@ impl TerminalUi {
         !self.panels.is_visible()
     }
 
-    /// The command line entry, if T4.2 has built one in `cmdline_slot` yet (shallow scan —
-    /// the slot sits directly in the window column).
+    /// The command line entry, if T4.2 has built one inside `cmdline_slot` (it sits one or two
+    /// levels down, in the prompt row, so the whole subtree is searched).
     fn cmdline_entry(&self) -> Option<gtk::Entry> {
-        let mut child = self.cmdline_slot.first_child();
-        while let Some(w) = child {
-            if let Some(entry) = w.downcast_ref::<gtk::Entry>() {
-                return Some(entry.clone());
-            }
-            child = w.next_sibling();
-        }
-        None
+        find_entry(self.cmdline_slot.upcast_ref())
     }
+}
+
+/// First `gtk::Entry` in the subtree of `w` (depth first).
+fn find_entry(w: &gtk::Widget) -> Option<gtk::Entry> {
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if let Some(entry) = c.downcast_ref::<gtk::Entry>() {
+            return Some(entry.clone());
+        }
+        if let Some(found) = find_entry(&c) {
+            return Some(found);
+        }
+        child = c.next_sibling();
+    }
+    None
 }
 
 /// Per-side wiring for shell-follows-panel (the frozen `install_panel_view` hook): tab
