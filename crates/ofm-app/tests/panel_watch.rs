@@ -18,6 +18,11 @@ use ofm_testkit::tree::{FileSpec, TreeSpec};
 /// Run `body` with a private main context as the thread default.
 fn with_loop(body: impl FnOnce(&glib::MainContext)) {
     let ctx = glib::MainContext::new();
+    // Leak one reference on purpose: a watcher thread can still wake a task of this context
+    // after the test ends, and if that wake held the last reference glib would finalize the
+    // thread-bound task source on the watcher thread and abort the whole test binary (seen as a
+    // ~1-in-7 flake). The real app uses the never-freed default context, so it cannot hit this.
+    std::mem::forget(ctx.clone());
     ctx.with_thread_default(|| body(&ctx)).unwrap();
 }
 
