@@ -4,7 +4,7 @@ The lead keeps this file current after every task. A fresh session must be able 
 
 ## Current state
 
-- Milestone: M3 (File operations) — **waiting for Igor at gate G2** (tag m3-done). All of T3.0–T3.7 merged, check.sh green. Reviews: T3.5 BLOCK -> T3.6 fixes -> re-review SIGN OFF WITH CONDITIONS -> T3.7 (N1 default ACL, N2 FAT unstable inodes, N3 chmod restore) merged and verified by the lead (reviewer's N1 repro now clean).
+- Milestone: M4 done (tag m4-done); next M5 UI. M3 (File operations) — **waiting for Igor at gate G2** (tag m3-done). All of T3.0–T3.7 merged, check.sh green. Reviews: T3.5 BLOCK -> T3.6 fixes -> re-review SIGN OFF WITH CONDITIONS -> T3.7 (N1 default ACL, N2 FAT unstable inodes, N3 chmod restore) merged and verified by the lead (reviewer's N1 repro now clean).
 - Next step: read Igor's G2 feedback into the "Gate feedback log", fix what he finds, then M4 (command line & terminal; T4.0 architect design first). GLM quota resets 2026-11-16 09:31 (server time); until then use Sonnet sparingly (Igor: save tokens), no Opus unless extremely important.
 
 ### G2: trust the copy engine — please try this (ONLY ON COPIES OF YOUR DATA)
@@ -35,7 +35,7 @@ Tell me anything odd: slowness, wrong dialog wording (own-output collisions say 
 | M1 | Core foundations | done | m1-done | |
 | M2 | UI shell (G1) | done | m2-done | | |
 | M3 | File operations (G2) | waiting for Igor | m3-done | | |
-| M4 | Command line & terminal | not started | | |
+| M4 | Command line & terminal | done | m4-done | review BLOCK -> T4.5 fixes, verified by lead |
 | M5 | Viewer & quick view | not started | | |
 | M6 | Archives | not started | | |
 | M7 | Search & panelize | not started | | |
@@ -159,3 +159,8 @@ Deferred to M9: N4 NFS retransmitted link() EEXIST can leave moved item at sourc
 - T4.1 (terminal) and T4.2 (cmdline) merged; T5.0+T5.1 (viewer backend) merged. Lead fix a3635cf: terminal UI looked for the cmdline entry only among direct children of `cmdline_slot`; now searches the subtree. check.sh green (incl. `terminal_real` 4 e2e: Ctrl+O toggle, panel->shell cwd, shell cd->panel, typed command).
 - T4.3 considered covered by existing tests (cmdline proptests in ofm-core, `cmdline_real` incl. history persistence over quit/restart, `terminal_real`). No separate task.
 - T4.4 lean Sonnet review running; on SIGN OFF fix findings, tag `m4-done`, then M5 UI (T5.2+). Leftover worktrees ../orthodox-wt-T4.1, T4.2, T5.1 and their merged branches can be removed after the review.
+
+## 2026-11-16 — M4 closed
+- T4.4 review (Sonnet): BLOCK — fish injection via POSIX quoting in cd sync (reproduced by lead: `touch` ran), control bytes in fed line, plus 5 should-fix. T4.5 (ui-engineer, Sonnet) fixed all with real bash/zsh/fish round-trip tests (`crates/ofm-core/tests/quote_real_shells.rs`); merged, check.sh green. No second review (token policy); lead re-verified with the tests.
+- Flake found while merging: `panel_watch` aborted ~1 in 7 runs (glib ThreadGuard: watcher thread woke a task after the test's private MainContext was dropped). Test-only; fixed by leaking one context ref in `with_loop`; 30/30 clean. App uses the default context, unaffected.
+- Open from M4 review (-> M9 unless noted): (a) verify VTE emits `current-directory-uri-changed` for two identical consecutive URIs (else shell stays Busy after `ls` in same dir and sync stalls) — worth a quick manual check at G3; (b) `send_line` (Enter in cmdline) is not guarded against a half-typed terminal line; (c) when a panel move is blocked by a dirty terminal line it is not re-synced until the next panel change; (d) wrapper-dir cleanup is on a detached thread and can be cut short at process exit (files in $XDG_RUNTIME_DIR, cleared at logout); (e) program output can fake OSC 7 (documented in ADR-0003).
