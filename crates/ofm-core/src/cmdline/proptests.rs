@@ -7,7 +7,10 @@ use std::path::PathBuf;
 
 use proptest::prelude::*;
 
-use super::quote::{shell_quote, shell_quote_bytes};
+use super::quote::{
+    QuoteStyle, cd_command_for, fish_quote_bytes, has_control_bytes, shell_quote,
+    shell_quote_bytes, shell_quote_for,
+};
 
 fn arb_bytes() -> impl Strategy<Value = Vec<u8>> {
     proptest::collection::vec(any::<u8>(), 0..64)
@@ -93,6 +96,51 @@ fn reference_unquote(quoted: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
+/// Reference un-quoter for the fish forms: `'…'` runs (`\\` and `\'` escapes) concatenated with
+/// bare `\xNN` escapes.
+fn fish_reference_unquote(quoted: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < quoted.len() {
+        match quoted[i] {
+            b'\'' => {
+                i += 1;
+                loop {
+                    match *quoted.get(i)? {
+                        b'\'' => {
+                            i += 1;
+                            break;
+                        }
+                        b'\\' => {
+                            let n = *quoted.get(i + 1)?;
+                            if n != b'\\' && n != b'\'' {
+                                return None;
+                            }
+                            out.push(n);
+                            i += 2;
+                        }
+                        b => {
+                            out.push(b);
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            b'\\' => {
+                if quoted.get(i + 1) != Some(&b'x') {
+                    return None;
+                }
+                let h = quoted.get(i + 2..i + 4)?;
+                let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+                out.push(hex(h[0])? * 16 + hex(h[1])?);
+                i += 4;
+            }
+            _ => return None,
+        }
+    }
+    if quoted.is_empty() { None } else { Some(out) }
+}
+
 proptest! {
     #[test]
     fn shell_quote_bytes_roundtrips_any_bytes(bytes in arb_bytes()) {
@@ -110,14 +158,46 @@ proptest! {
     }
 
     #[test]
+    fn shell_quote_is_always_printable(bytes in arb_bytes()) {
+        let name = os(&bytes);
+        for style in [QuoteStyle::Posix, QuoteStyle::Fish] {
+            let q = shell_quote_for(style, &name);
+            prop_assert!(!has_control_bytes(q.as_bytes()), "{style:?}: {q:?}");
+        }
+    }
+
+    #[test]
+    fn fish_quote_roundtrips_any_bytes(bytes in arb_bytes()) {
+        let quoted = fish_quote_bytes(&bytes);
+        prop_assert_eq!(fish_reference_unquote(&quoted), Some(bytes));
+    }
+
+    #[test]
+    fn fish_shell_quote_roundtrips_any_bytes(bytes in arb_bytes()) {
+        let quoted = shell_quote_for(QuoteStyle::Fish, &os(&bytes));
+        prop_assert_eq!(fish_reference_unquote(quoted.as_bytes()), Some(bytes));
+    }
+
+    #[test]
     fn cd_command_roundtrips_through_unquote(path_bytes in arb_bytes()) {
         // NUL is the one byte a path can never contain.
         let path_bytes: Vec<u8> = path_bytes.into_iter().filter(|&b| b != 0).collect();
         let path = PathBuf::from(os(&path_bytes));
-        let cmd = super::cd_command(&path);
-        let rest = cmd.strip_prefix(b" cd -- ").unwrap_or(cmd.as_slice());
-        let quoted = rest.strip_suffix(b"\n").unwrap_or(rest);
-        prop_assert_eq!(reference_unquote(quoted), Some(path_bytes));
+        for style in [QuoteStyle::Posix, QuoteStyle::Fish] {
+            let cmd = cd_command_for(style, &path);
+            if has_control_bytes(&path_bytes) {
+                prop_assert_eq!(cmd, None);
+                continue;
+            }
+            let cmd = cmd.unwrap_or_default();
+            let rest = cmd.strip_prefix(b" cd -- ").unwrap_or(cmd.as_slice());
+            let quoted = rest.strip_suffix(b"\n").unwrap_or(rest);
+            let got = match style {
+                QuoteStyle::Posix => reference_unquote(quoted),
+                QuoteStyle::Fish => fish_reference_unquote(quoted),
+            };
+            prop_assert_eq!(got, Some(path_bytes.clone()));
+        }
     }
 
     #[test]

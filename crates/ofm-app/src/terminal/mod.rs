@@ -128,6 +128,16 @@ impl TerminalHandle {
         self.ui.borrow().as_ref().is_some_and(|ui| ui.is_visible())
     }
 
+    /// How names inserted into the command line must be quoted for the running shell (fish
+    /// differs from POSIX); POSIX before the terminal exists.
+    pub fn quote_style(&self) -> ofm_core::cmdline::QuoteStyle {
+        self.ui
+            .borrow()
+            .as_ref()
+            .map(|ui| ui.quote_style())
+            .unwrap_or_default()
+    }
+
     /// Current shell phase (same value as [`shell_host`]'s `get`).
     pub fn shell_state(&self) -> ShellState {
         self.host.get()

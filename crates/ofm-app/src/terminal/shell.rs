@@ -10,11 +10,19 @@ use std::path::{Path, PathBuf};
 pub const BASH_RC: &str = include_str!("../../resources/shell/bashrc.sh");
 /// The embedded zsh rc wrapper (the `.zshrc` of the per-session `ZDOTDIR`, see ADR-0003).
 pub const ZSH_RC: &str = include_str!("../../resources/shell/zshrc.zsh");
+/// The embedded zsh `.zshenv` passthrough (sources the user's `.zshenv`, keeps the wrapper dir).
+pub const ZSH_ENV: &str = include_str!("../../resources/shell/zshenv.zsh");
+/// The embedded zsh `.zprofile` passthrough (sources the user's `.zprofile`).
+pub const ZSH_PROFILE: &str = include_str!("../../resources/shell/zprofile.zsh");
 /// The embedded fish init snippet (fed via `fish --init-command`, see ADR-0003).
 pub const FISH_INIT: &str = include_str!("../../resources/shell/fish_init.fish");
 
 /// File name the zsh wrapper is written under inside the session directory.
 pub const ZSH_RC_NAME: &str = ".zshrc";
+/// File name of the zsh `.zshenv` passthrough inside the session directory.
+pub const ZSH_ENV_NAME: &str = ".zshenv";
+/// File name of the zsh `.zprofile` passthrough inside the session directory.
+pub const ZSH_PROFILE_NAME: &str = ".zprofile";
 /// File name the bash wrapper is written under inside the session directory.
 pub const BASH_RC_NAME: &str = "ofm.bashrc";
 
@@ -25,7 +33,8 @@ pub const BASH_RC_NAME: &str = "ofm.bashrc";
 pub enum ShellKind {
     /// `bash` — spawned with `--rcfile <wrapper>`.
     Bash,
-    /// `zsh` — spawned with `ZDOTDIR=<session dir>` holding the wrapper `.zshrc`.
+    /// `zsh` — spawned with `ZDOTDIR=<session dir>` holding the wrapper `.zshenv`,
+    /// `.zprofile` and `.zshrc` (each sources the user's file from `$OFM_ORIG_ZDOTDIR`/`$HOME`).
     Zsh,
     /// `fish` — spawned with `--init-command <snippet>`.
     Fish,
@@ -38,6 +47,15 @@ impl ShellKind {
     /// Whether OFM injects a `cd` into this shell (needs the OSC 7 wrapper for idle detection).
     pub fn sync_capable(self) -> bool {
         !matches!(self, ShellKind::Plain)
+    }
+
+    /// How names must be quoted for this shell (fish is not POSIX, see
+    /// [`ofm_core::cmdline::QuoteStyle`]).
+    pub fn quote_style(self) -> ofm_core::cmdline::QuoteStyle {
+        match self {
+            ShellKind::Fish => ofm_core::cmdline::QuoteStyle::Fish,
+            _ => ofm_core::cmdline::QuoteStyle::Posix,
+        }
     }
 
     /// Detect the kind from a shell path's basename. Version suffixes (e.g. `bash5`) and any
@@ -88,13 +106,21 @@ pub fn build_argv(shell: &Path, kind: ShellKind, wrapper_dir: Option<&Path>) -> 
 }
 
 /// Extra environment entries for the shell child (VTE adds them to the inherited
-/// environment): `TERM=xterm-256color` always, plus `ZDOTDIR` for zsh.
-pub fn build_env(kind: ShellKind, wrapper_dir: Option<&Path>) -> Vec<String> {
+/// environment): `TERM=xterm-256color` always, plus for zsh `ZDOTDIR=<wrapper dir>` and
+/// `OFM_ORIG_ZDOTDIR=<the user's own ZDOTDIR, or empty>` (`orig_zdotdir`) — zsh reads
+/// `.zshenv`/`.zprofile`/`.zshrc` from `ZDOTDIR`, so the wrapper files source the user's
+/// from `${OFM_ORIG_ZDOTDIR:-$HOME}` and restore `ZDOTDIR` before the user's `.zshrc` runs.
+pub fn build_env(
+    kind: ShellKind,
+    wrapper_dir: Option<&Path>,
+    orig_zdotdir: Option<&str>,
+) -> Vec<String> {
     let mut envv = vec!["TERM=xterm-256color".to_owned()];
     if kind == ShellKind::Zsh
         && let Some(dir) = wrapper_dir
     {
         envv.push(format!("ZDOTDIR={}", dir.to_string_lossy()));
+        envv.push(format!("OFM_ORIG_ZDOTDIR={}", orig_zdotdir.unwrap_or("")));
     }
     envv
 }
@@ -117,21 +143,24 @@ pub enum SyncDecision {
     /// Shell and panel already agree (or cwd unknown): nothing to do, stale flag cleared.
     AlreadyThere,
     /// A precondition blocks the sync (not idle, not sync-capable, command line in use,
-    /// non-local panel). Never inject then; a blocked *location change* marks the shell stale.
+    /// half-typed terminal line, non-local panel). Never inject then; a blocked *location change* marks the shell stale.
     Blocked,
 }
 
 /// Decide whether OFM may feed a sync `cd` for a panel at `panel_dir` into a shell whose
 /// last OSC 7 cwd is `shell_cwd` (ADR-0003 preconditions, pure so it is unit-testable).
+/// `terminal_line_dirty`: the user typed something into the terminal itself that has not been
+/// submitted (see [`line_dirty_after`]); a fed `cd` would be appended to that half-typed line.
 pub fn should_sync(
     state: super::ShellState,
     sync_capable: bool,
     cmdline_has_text: bool,
+    terminal_line_dirty: bool,
     panel_dir: Option<&Path>,
     shell_cwd: Option<&Path>,
 ) -> SyncDecision {
     use super::ShellState;
-    if state != ShellState::Idle || !sync_capable || cmdline_has_text {
+    if state != ShellState::Idle || !sync_capable || cmdline_has_text || terminal_line_dirty {
         return SyncDecision::Blocked;
     }
     let (Some(dir), Some(cwd)) = (panel_dir, shell_cwd) else {
@@ -144,37 +173,160 @@ pub fn should_sync(
     }
 }
 
-/// The per-session wrapper directory for this OFM process:
-/// `$XDG_RUNTIME_DIR/ofm/terminal-<pid>`, falling back to the temp dir (ADR-0003).
-/// Created and populated on a worker thread (invariant 2).
-pub fn session_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    base.join("ofm")
-        .join(format!("terminal-{}", std::process::id()))
+/// Whether the user's half-typed terminal line may still hold text after the VTE widget
+/// committed `committed` to the child (`prev` = state before). Set by anything other than a
+/// bare Enter; cleared by Enter (`\r`, the line is submitted) and Ctrl-C (`\x03`, the line is
+/// abandoned). The next OSC 7 (a fresh prompt) clears it too — done by the caller.
+pub fn line_dirty_after(prev: bool, committed: &str) -> bool {
+    if committed.contains('\r') || committed.contains('\x03') {
+        false
+    } else if committed.is_empty() {
+        prev
+    } else {
+        true
+    }
 }
 
-/// Write the rc wrappers into `dir` and return it (best effort, worker thread only).
-/// Failure is logged and returns `None` — the shell then spawns plainly without sync.
+/// How fast and how often the shell may exit before OFM stops respawning it (ADR-0003):
+/// [`RespawnGuard::MAX_EXITS`] exits within [`RespawnGuard::WINDOW`] means the shell cannot
+/// start (broken rc, bad `terminal.shell`), and a respawn loop would spin the CPU.
+#[derive(Debug, Default)]
+pub struct RespawnGuard {
+    exits: Vec<std::time::Instant>,
+}
+
+impl RespawnGuard {
+    /// Number of exits inside [`RespawnGuard::WINDOW`] that halts respawning.
+    pub const MAX_EXITS: usize = 3;
+    /// The sliding window.
+    pub const WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// Record a shell exit at `now`. `true` = too many exits in too short a time: stop
+    /// respawning (the history is cleared, so the next manual restart starts fresh).
+    pub fn record_exit(&mut self, now: std::time::Instant) -> bool {
+        self.exits
+            .retain(|t| now.saturating_duration_since(*t) <= Self::WINDOW);
+        self.exits.push(now);
+        if self.exits.len() >= Self::MAX_EXITS {
+            self.exits.clear();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Forget the history (a manual restart).
+    pub fn reset(&mut self) {
+        self.exits.clear();
+    }
+}
+
+/// Base directory for session directories: `$XDG_RUNTIME_DIR/ofm` (per-user, mode 0700,
+/// tmpfs), falling back to the shared temp dir when it is unset (ADR-0003).
+pub fn session_base() -> PathBuf {
+    match std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+        Some(d) => PathBuf::from(d).join("ofm"),
+        None => std::env::temp_dir(),
+    }
+}
+
+/// A process-unique, hard-to-guess suffix for session directory names.
+fn unique_suffix() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
+    h.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos()),
+    );
+    format!("{:016x}", h.finish())
+}
+
+/// Create a fresh session directory under `base` (mkdtemp style): mode 0700, a name nobody can
+/// predict, created with a plain `mkdir` so a pre-existing entry — including a symlink planted
+/// in a shared temp dir — makes it fail and retry with another name instead of being followed.
 #[allow(clippy::disallowed_methods)] // worker thread, not the GTK main thread
-pub fn write_wrappers(dir: &Path) -> Option<PathBuf> {
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
-    let write_one = |p: &Path, content: &str| -> std::io::Result<()> {
-        fs::write(p, content)?;
-        fs::set_permissions(p, fs::Permissions::from_mode(0o600))
+pub fn create_session_dir(base: &Path) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    // The base itself (`$XDG_RUNTIME_DIR/ofm`) may be new; the temp dir always exists.
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(base)?;
+    let mut last = None;
+    for _ in 0..32 {
+        let dir = base.join(format!(
+            "ofm-terminal-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("no free session directory name")))
+}
+
+/// Create a new file `path` (mode 0600, `O_EXCL`, `O_NOFOLLOW`) holding `content`; never
+/// follows or overwrites anything that already exists there.
+pub fn write_private_file(path: &Path, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    f.write_all(content.as_bytes())?;
+    f.sync_all()
+}
+
+/// Create a session directory under `base` and write the rc wrappers into it (best effort,
+/// worker thread only). Failure is logged, the half-written directory removed, and `None`
+/// returned — the shell then spawns plainly without sync.
+#[allow(clippy::disallowed_methods)] // worker thread, not the GTK main thread
+pub fn write_wrappers(base: &Path) -> Option<PathBuf> {
+    let dir = match create_session_dir(base) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(base = %base.display(), error = %e, "terminal: creating the session directory failed");
+            return None;
+        }
     };
-    let res = fs::create_dir_all(dir)
-        .and_then(|()| fs::set_permissions(dir, fs::Permissions::from_mode(0o700)))
-        .and_then(|()| write_one(&dir.join(BASH_RC_NAME), BASH_RC))
-        .and_then(|()| write_one(&dir.join(ZSH_RC_NAME), ZSH_RC));
+    let res = write_private_file(&dir.join(BASH_RC_NAME), BASH_RC)
+        .and_then(|()| write_private_file(&dir.join(ZSH_ENV_NAME), ZSH_ENV))
+        .and_then(|()| write_private_file(&dir.join(ZSH_PROFILE_NAME), ZSH_PROFILE))
+        .and_then(|()| write_private_file(&dir.join(ZSH_RC_NAME), ZSH_RC));
     match res {
-        Ok(()) => Some(dir.to_owned()),
+        Ok(()) => Some(dir),
         Err(e) => {
             tracing::warn!(dir = %dir.display(), error = %e, "terminal: writing shell wrappers failed");
+            let _ = std::fs::remove_dir_all(&dir);
             None
         }
+    }
+}
+
+/// Remove a session directory on a detached thread (invariant 2: never on the main thread).
+/// Best effort: the wrappers are only read at shell start, and a leftover lives in
+/// `$XDG_RUNTIME_DIR`, which the system clears at logout.
+pub fn remove_session_dir_async(dir: PathBuf) {
+    let spawned = std::thread::Builder::new()
+        .name("ofm-term-cleanup".into())
+        .spawn(move || {
+            #[allow(clippy::disallowed_methods)] // dedicated worker thread
+            if let Err(e) = std::fs::remove_dir_all(&dir) {
+                tracing::debug!(dir = %dir.display(), error = %e, "terminal: removing the session directory failed");
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::debug!(error = %e, "terminal: could not start the cleanup thread");
     }
 }
 
@@ -262,21 +414,34 @@ mod tests {
             ]
         );
         assert_eq!(
-            build_env(ShellKind::Bash, Some(dir)),
+            build_env(ShellKind::Bash, Some(dir), None),
             vec!["TERM=xterm-256color"]
         );
 
         let zsh = build_argv(Path::new("/bin/zsh"), ShellKind::Zsh, Some(dir));
         assert_eq!(zsh, vec!["/bin/zsh".to_owned()]);
         assert_eq!(
-            build_env(ShellKind::Zsh, Some(dir)),
+            build_env(ShellKind::Zsh, Some(dir), None),
             vec![
                 "TERM=xterm-256color".into(),
-                format!("ZDOTDIR={}", dir.display())
+                format!("ZDOTDIR={}", dir.display()),
+                "OFM_ORIG_ZDOTDIR=".into()
+            ]
+        );
+        // The user's own ZDOTDIR is handed to the wrappers.
+        assert_eq!(
+            build_env(ShellKind::Zsh, Some(dir), Some("/home/u/.config/zsh")),
+            vec![
+                "TERM=xterm-256color".into(),
+                format!("ZDOTDIR={}", dir.display()),
+                "OFM_ORIG_ZDOTDIR=/home/u/.config/zsh".into()
             ]
         );
         // Without a wrapper dir zsh (and bash) degrade to a plain spawn.
-        assert_eq!(build_env(ShellKind::Zsh, None), vec!["TERM=xterm-256color"]);
+        assert_eq!(
+            build_env(ShellKind::Zsh, None, None),
+            vec!["TERM=xterm-256color"]
+        );
 
         let fish = build_argv(Path::new("/usr/bin/fish"), ShellKind::Fish, None);
         assert_eq!(fish.len(), 3);
@@ -315,39 +480,44 @@ mod tests {
         let b = Path::new("/tmp/b");
         // The happy path.
         assert_eq!(
-            should_sync(ShellState::Idle, true, false, Some(a), Some(b)),
+            should_sync(ShellState::Idle, true, false, false, Some(a), Some(b)),
             FeedCd
         );
         assert_eq!(
-            should_sync(ShellState::Idle, true, false, Some(a), Some(a)),
+            should_sync(ShellState::Idle, true, false, false, Some(a), Some(a)),
             AlreadyThere
         );
         // Busy (running command, fed line, or still starting up): never inject.
         assert_eq!(
-            should_sync(ShellState::Busy, true, false, Some(a), Some(b)),
+            should_sync(ShellState::Busy, true, false, false, Some(a), Some(b)),
             Blocked
         );
         assert_eq!(
-            should_sync(ShellState::Exited, true, false, Some(a), Some(b)),
+            should_sync(ShellState::Exited, true, false, false, Some(a), Some(b)),
             Blocked
         );
         // No wrapper (unknown shell): parse-always, inject-never.
         assert_eq!(
-            should_sync(ShellState::Idle, false, false, Some(a), Some(b)),
+            should_sync(ShellState::Idle, false, false, false, Some(a), Some(b)),
             Blocked
         );
         // The user is composing a command: the cd would land in their line.
         assert_eq!(
-            should_sync(ShellState::Idle, true, true, Some(a), Some(b)),
+            should_sync(ShellState::Idle, true, true, false, Some(a), Some(b)),
+            Blocked
+        );
+        // Half-typed line in the terminal itself: the cd would be appended to it.
+        assert_eq!(
+            should_sync(ShellState::Idle, true, false, true, Some(a), Some(b)),
             Blocked
         );
         // Non-local panel (archive/list) or shell cwd not yet known (no OSC 7 seen).
         assert_eq!(
-            should_sync(ShellState::Idle, true, false, None, Some(b)),
+            should_sync(ShellState::Idle, true, false, false, None, Some(b)),
             Blocked
         );
         assert_eq!(
-            should_sync(ShellState::Idle, true, false, Some(a), None),
+            should_sync(ShellState::Idle, true, false, false, Some(a), None),
             Blocked
         );
     }
@@ -361,15 +531,249 @@ mod tests {
         assert!(
             BASH_RC.contains("PROMPT_COMMAND=\"__ofm_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"")
         );
-        // zsh: user rc, HIST_IGNORE_SPACE, precmd/chpwd hooks.
+        // zsh: user rc from the original ZDOTDIR/HOME, ZDOTDIR restored, HIST_IGNORE_SPACE,
+        // precmd/chpwd hooks; .zshenv/.zprofile passthrough.
         assert!(ZSH_RC.contains("[[ -o interactive ]] || return 0"));
-        assert!(ZSH_RC.contains("[ -r \"$HOME/.zshrc\" ] && . \"$HOME/.zshrc\""));
+        assert!(ZSH_RC.contains("__ofm_home=${OFM_ORIG_ZDOTDIR:-$HOME}"));
+        assert!(ZSH_RC.contains("[ -r \"$__ofm_home/.zshrc\" ] && . \"$__ofm_home/.zshrc\""));
+        assert!(ZSH_ENV.contains("${OFM_ORIG_ZDOTDIR:-$HOME}/.zshenv"));
+        assert!(ZSH_PROFILE.contains("${OFM_ORIG_ZDOTDIR:-$HOME}/.zprofile"));
         assert!(ZSH_RC.contains("setopt HIST_IGNORE_SPACE"));
         assert!(ZSH_RC.contains("precmd_functions+=(__ofm_osc7)"));
         assert!(ZSH_RC.contains("chpwd_functions+=(__ofm_osc7)"));
         // fish: prompt wrap and PWD hook.
         assert!(FISH_INIT.contains("functions -c fish_prompt __ofm_ofm_prompt"));
         assert!(FISH_INIT.contains("__ofm_osc7_pwd --on-variable PWD"));
+    }
+
+    #[test]
+    fn terminal_line_dirty_tracking() {
+        // Typed text leaves a half-typed line; Enter and Ctrl-C clear it.
+        assert!(line_dirty_after(false, "l"));
+        assert!(line_dirty_after(true, "s"));
+        assert!(line_dirty_after(false, "\x1b[A")); // history recall
+        assert!(!line_dirty_after(true, "\r"));
+        assert!(!line_dirty_after(true, "ls\r"));
+        assert!(!line_dirty_after(true, "\x03"));
+        assert!(!line_dirty_after(false, "\r"));
+        // An empty commit changes nothing.
+        assert!(line_dirty_after(true, ""));
+        assert!(!line_dirty_after(false, ""));
+    }
+
+    #[test]
+    fn respawn_guard_stops_a_tight_exit_loop() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let ms = |n: u64| t0 + Duration::from_millis(n);
+        let mut g = RespawnGuard::default();
+        assert!(!g.record_exit(ms(0)));
+        assert!(!g.record_exit(ms(300)));
+        assert!(
+            g.record_exit(ms(600)),
+            "3 exits within 2 s halt the respawns"
+        );
+        // History cleared: a manual restart that exits again starts counting afresh.
+        assert!(!g.record_exit(ms(700)));
+        // Slow exits (a shell the user quits now and then) never trigger it.
+        let mut g = RespawnGuard::default();
+        for i in 0..10 {
+            assert!(!g.record_exit(ms(i * 5_000)), "exit {i}");
+        }
+        // Two quick exits, then a long pause, then one: still fine.
+        let mut g = RespawnGuard::default();
+        assert!(!g.record_exit(ms(0)));
+        assert!(!g.record_exit(ms(100)));
+        assert!(!g.record_exit(ms(10_000)));
+        g.reset();
+        assert!(!g.record_exit(ms(10_100)));
+    }
+
+    #[test]
+    fn quote_style_follows_the_shell() {
+        use ofm_core::cmdline::QuoteStyle;
+        assert_eq!(ShellKind::Fish.quote_style(), QuoteStyle::Fish);
+        for k in [ShellKind::Bash, ShellKind::Zsh, ShellKind::Plain] {
+            assert_eq!(k.quote_style(), QuoteStyle::Posix);
+        }
+    }
+
+    // ---- session directory and wrapper files -------------------------------------------------
+
+    fn mode_of(p: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn session_dirs_are_unique_private_and_hold_all_wrappers() {
+        let base = ofm_testkit::temp::TempDir::in_dir(std::env::temp_dir().as_path()).unwrap();
+        let a = write_wrappers(base.path()).unwrap();
+        let b = write_wrappers(base.path()).unwrap();
+        assert_ne!(a, b, "every session gets its own directory");
+        assert_eq!(mode_of(&a), 0o700);
+        for name in [BASH_RC_NAME, ZSH_ENV_NAME, ZSH_PROFILE_NAME, ZSH_RC_NAME] {
+            assert_eq!(mode_of(&a.join(name)), 0o600, "{name}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(a.join(ZSH_ENV_NAME)).unwrap(),
+            ZSH_ENV
+        );
+        // The name is not the predictable `terminal-<pid>` of the old fallback.
+        let name = a.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("ofm-terminal-"), "{name}");
+        assert_ne!(name, format!("terminal-{}", std::process::id()));
+    }
+
+    #[test]
+    fn a_planted_symlink_is_never_followed() {
+        let base = ofm_testkit::temp::TempDir::in_dir(std::env::temp_dir().as_path()).unwrap();
+        let victim = base.path().join("victim");
+        std::fs::write(&victim, "precious").unwrap();
+        // A file the wrapper writer wants to create, pre-planted as a symlink to the victim.
+        let dir = create_session_dir(base.path()).unwrap();
+        let target = dir.join(BASH_RC_NAME);
+        std::os::unix::fs::symlink(&victim, &target).unwrap();
+        assert!(write_private_file(&target, "overwritten").is_err());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
+        // Same for an existing regular file: create_new, never truncate.
+        assert!(write_private_file(&victim, "x").is_err());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "precious");
+        // A directory name collision is an error for mkdir, not a reuse: simulate by creating
+        // the dir again with the same path.
+        use std::os::unix::fs::DirBuilderExt;
+        assert!(std::fs::DirBuilder::new().mode(0o700).create(&dir).is_err());
+    }
+
+    #[test]
+    fn session_dir_creation_in_a_missing_base_makes_it_private() {
+        let root = ofm_testkit::temp::TempDir::in_dir(std::env::temp_dir().as_path()).unwrap();
+        let base = root.path().join("run/ofm");
+        let dir = create_session_dir(&base).unwrap();
+        assert!(dir.starts_with(&base));
+        assert_eq!(mode_of(&dir), 0o700);
+    }
+
+    #[test]
+    fn session_dir_removal_runs_off_thread_and_deletes() {
+        let base = ofm_testkit::temp::TempDir::in_dir(std::env::temp_dir().as_path()).unwrap();
+        let dir = write_wrappers(base.path()).unwrap();
+        remove_session_dir_async(dir.clone());
+        for _ in 0..200 {
+            if !dir.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("session dir {} still exists", dir.display());
+    }
+
+    // ---- real zsh: passthrough files, ZDOTDIR restore ---------------------------------------------
+
+    /// Run an interactive (optionally login) zsh through the wrapper dir exactly like the spawn
+    /// does (`ZDOTDIR=<wrapper>`, `OFM_ORIG_ZDOTDIR=<orig>`) with a fake `$HOME`, and return its
+    /// stdout.
+    fn run_wrapped_zsh(
+        wrapper: &Path,
+        home: &Path,
+        orig: Option<&Path>,
+        login: bool,
+        cmd: &str,
+    ) -> String {
+        let mut c = std::process::Command::new("zsh");
+        if login {
+            c.arg("-l");
+        }
+        let out = c
+            .args(["-i", "-c", cmd])
+            .env_remove("ZDOTDIR")
+            .env("HOME", home)
+            .env("ZDOTDIR", wrapper)
+            .env(
+                "OFM_ORIG_ZDOTDIR",
+                orig.map(Path::as_os_str).unwrap_or_default(),
+            )
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    #[test]
+    fn zsh_wrapper_sources_the_users_files_and_restores_zdotdir() {
+        if !have("zsh") {
+            eprintln!("skipping: zsh not installed");
+            return;
+        }
+        let t = ofm_testkit::temp::TempDir::in_dir(std::env::temp_dir().as_path()).unwrap();
+        let wrapper = write_wrappers(t.path()).unwrap();
+        let w = |dir: &Path, name: &str, content: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(name), content).unwrap();
+        };
+
+        // 1. No ZDOTDIR of their own: all three user files under $HOME run, ZDOTDIR is gone
+        //    again and the OFM hooks are installed.
+        let home = t.path().join("home");
+        w(&home, ".zshenv", "export U_ENV=1\n");
+        w(&home, ".zprofile", "export U_PROFILE=1\n");
+        w(&home, ".zshrc", "export U_RC=1 U_RC_ZD=${ZDOTDIR-unset}\n");
+        let out = run_wrapped_zsh(
+            &wrapper,
+            &home,
+            None,
+            true,
+            "print -r -- \"env=$U_ENV profile=$U_PROFILE rc=$U_RC zd=${ZDOTDIR-unset} orig=${OFM_ORIG_ZDOTDIR-unset} hook=${precmd_functions[(r)__ofm_osc7]}\"",
+        );
+        assert!(
+            out.contains("env=1 profile=1 rc=1 zd=unset orig=unset hook=__ofm_osc7"),
+            "{out:?}"
+        );
+        // The user's .zshrc already saw their own (unset) ZDOTDIR, not the wrapper dir.
+        let out = run_wrapped_zsh(&wrapper, &home, None, false, "print -r -- $U_RC_ZD");
+        assert!(out.trim().ends_with("unset"), "{out:?}");
+
+        // 2. The user's own ZDOTDIR from the environment (OFM_ORIG_ZDOTDIR).
+        let zd = t.path().join("zd");
+        w(&zd, ".zshenv", "export U_ENV=2\n");
+        w(&zd, ".zprofile", "export U_PROFILE=2\n");
+        w(&zd, ".zshrc", "export U_RC=2\n");
+        let out = run_wrapped_zsh(
+            &wrapper,
+            &home,
+            Some(&zd),
+            true,
+            "print -r -- \"env=$U_ENV profile=$U_PROFILE rc=$U_RC zd=$ZDOTDIR hook=${precmd_functions[(r)__ofm_osc7]}\"",
+        );
+        assert!(
+            out.contains(&format!(
+                "env=2 profile=2 rc=2 zd={} hook=__ofm_osc7",
+                zd.display()
+            )),
+            "{out:?}"
+        );
+
+        // 3. The user's ~/.zshenv sets ZDOTDIR itself (very common): still our .zshrc runs
+        //    and theirs is read from the new location.
+        let cfg = t.path().join("cfg");
+        let home3 = t.path().join("home3");
+        w(
+            &home3,
+            ".zshenv",
+            &format!("export ZDOTDIR={}\n", cfg.display()),
+        );
+        w(&cfg, ".zshrc", "export U_RC=3\n");
+        let out = run_wrapped_zsh(
+            &wrapper,
+            &home3,
+            None,
+            false,
+            "print -r -- \"rc=$U_RC zd=$ZDOTDIR hook=${precmd_functions[(r)__ofm_osc7]}\"",
+        );
+        assert!(
+            out.contains(&format!("rc=3 zd={} hook=__ofm_osc7", cfg.display())),
+            "{out:?}"
+        );
     }
 
     // ---- real shells: the wrappers must emit exactly osc7_encode("", path) ------------------------

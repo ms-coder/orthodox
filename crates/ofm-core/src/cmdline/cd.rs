@@ -50,6 +50,8 @@ pub fn parse_cd(line: &str) -> CdTarget {
         "-" => CdTarget::Previous,
         "~" => CdTarget::Home,
         _ if op.starts_with("~/") => CdTarget::HomeRelative(PathBuf::from(&op[2..])),
+        // `~user`, `~+`, `~-`, `~1`, …: tilde expansion only the shell can do.
+        _ if op.starts_with('~') => CdTarget::NotCd,
         _ if op.starts_with('/') => CdTarget::Absolute(PathBuf::from(op)),
         _ if op.starts_with('-') => CdTarget::NotCd, // cd option (e.g. -P): let the shell do it
         _ => CdTarget::Relative(PathBuf::from(op)),
@@ -185,6 +187,21 @@ mod tests {
         assert_eq!(parse_cd("cd -P /tmp"), CdTarget::NotCd);
         assert_eq!(parse_cd("cd $HOME"), CdTarget::NotCd);
         assert_eq!(parse_cd("cd ~/a$b"), CdTarget::NotCd);
+        // Other tilde forms are the shell's business (`~user`, `~+`, `~-`, `~1`).
+        for line in [
+            "cd ~root",
+            "cd ~+",
+            "cd ~-",
+            "cd ~1",
+            "cd ~root/x",
+            "cd -- ~bob",
+        ] {
+            assert_eq!(parse_cd(line), CdTarget::NotCd, "{line}");
+        }
+        assert_eq!(
+            parse_cd_target("cd ~root", Path::new("/a"), Path::new("/h")),
+            None
+        );
         assert_eq!(parse_cd("cd a b"), CdTarget::NotCd);
         assert_eq!(parse_cd("cd x; rm -rf /"), CdTarget::NotCd);
         assert_eq!(parse_cd("cd x && make"), CdTarget::NotCd);

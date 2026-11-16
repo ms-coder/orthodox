@@ -78,13 +78,14 @@ impl History {
     pub fn load(paths: &ConfigPaths) -> (History, Vec<Warning>) {
         io::load_toml(&paths.history_file())
     }
-    /// Save atomically (lists are trimmed to [`MAX_HISTORY`]).
+    /// Save atomically with mode `0600` (command lines may contain secrets); lists are trimmed
+    /// to [`MAX_HISTORY`].
     pub fn save(&self, paths: &ConfigPaths) -> Result<(), ConfigError> {
         let mut h = self.clone();
         for l in [&mut h.commands, &mut h.masks, &mut h.targets] {
             l.truncate(MAX_HISTORY);
         }
-        io::save_toml(&paths.history_file(), &h)
+        io::save_toml_private(&paths.history_file(), &h)
     }
 }
 
@@ -119,6 +120,24 @@ mod tests {
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(back, h);
         assert_eq!(back.hotlist[1].path_buf(), Some(raw));
+    }
+
+    #[test]
+    fn history_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let p = ConfigPaths::with_dirs(d.path().join("c"), d.path().join("s"));
+        let h = History {
+            commands: vec!["echo secret".into()],
+            ..History::default()
+        };
+        h.save(&p).unwrap();
+        let mode = std::fs::metadata(p.history_file())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
     }
 
     #[test]
