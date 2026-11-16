@@ -13,10 +13,12 @@
 //! - `window`, `theme`, `chrome`: T2.2
 //! - `navigation`, `dialogs::mask`, `dialogs::hotlist`: T2.3
 //! - `jobs`, `dialogs::{copy,conflict,delete,mkdir,link,properties}`: T3.3
+//! - `terminal`: T4.1 (ADR-0003), `cmdline`: T4.2 (ADR-0003)
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod app;
 pub mod chrome;
+pub mod cmdline;
 pub mod context;
 pub mod dialogs;
 pub mod dispatch;
@@ -27,6 +29,7 @@ pub mod keys;
 pub mod navigation;
 pub mod panel;
 pub mod signal;
+pub mod terminal;
 pub mod theme;
 pub mod widgets;
 pub mod window;

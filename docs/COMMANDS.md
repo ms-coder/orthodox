@@ -112,7 +112,7 @@ Note: Ctrl+X is Cut (not command-history-next, as in Far); history-next is Ctrl+
 | `cmdline.insert_right_path` | panels | Insert right panel path | `Ctrl+]` | = | = |
 | `cmdline.execute` | cmdline | Execute command line | `Enter` | = | = |
 | `cmdline.clear` | cmdline | Clear command line | `Esc` | = | = |
-| `cmdline.complete` | cmdline | Complete path | `Ctrl+Space` | = | = |
+| `cmdline.complete` | cmdline | Complete path | `Ctrl+Space`, `Tab` | = | = |
 | `viewer.close` | viewer | Close viewer | `Esc`, `F10` | = | = |
 | `viewer.toggle_hex` | viewer | Toggle hex mode | `F4` | = | = |
 | `viewer.encoding` | viewer | Choose encoding | `F8` | = | = |

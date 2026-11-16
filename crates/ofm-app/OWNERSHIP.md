@@ -174,3 +174,54 @@ capture controller never sees them. Therefore `modal::present` calls
   per widget (named controller `ofm-dispatch`).
 - Tests: `tests/real_binary_fileops.rs` presses real keys inside dialogs (Enter, F2, Ctrl+A, Del,
   Ctrl+J); synthetic tests that call `ctx.execute` cannot catch a broken key path.
+
+---
+
+# M4 (command line & terminal): ownership and hooks
+
+T4.0 froze the skeletons and interfaces below (ADR-0003 holds the full rules). Same rules as the
+M2/M3 sections: edit only your own paths; cross-module wiring only through `src/hooks.rs`
+(already calling `terminal::*` and `cmdline::*` for all four hooks — no shared file needs
+editing). Pure logic lives in `ofm-core::cmdline` (also frozen; T4.3 extends its tests only).
+
+| Owner | Paths |
+|---|---|
+| **T4.1** terminal | `src/terminal/**`, `crates/ofm-app/resources/shell/**` (rc wrappers) |
+| **T4.2** command line | `src/cmdline/**` |
+| **T4.3** tests | new `tests/cmdline_*.rs`, `tests/terminal_*.rs`; extend `crates/ofm-core/src/cmdline/proptests.rs` |
+| Frozen (lead) | everything above, `src/{lib,hooks}.rs`, `Cargo.toml`, `crates/ofm-config/**`, keymap presets |
+
+## Hook table (M4)
+
+| Hook | T4.1 (`terminal`) | T4.2 (`cmdline`) |
+|---|---|---|
+| `install_commands` | `app.terminal_toggle` | the ten `cmdline.*` ids (currently debug-log stubs) |
+| `install_state` | `ShellHost` + `TerminalHandle` in `ctx.ext` (done) | `CmdlineState` in `ctx.ext` (done) |
+| `install_panel_view` | per-tab `PanelEvent::Location` → cd sync | reserved |
+| `install_ui` | VTE widget in `win.terminal_slot`, shell spawn, OSC 7 wiring, respawn | entry in `win.cmdline_slot`, history, typing-mode routing |
+
+## Command ownership (M4)
+
+- **T4.1**: `app.terminal_toggle`.
+- **T4.2**: `cmdline.history_prev`, `cmdline.history_next`, `cmdline.history_list`,
+  `cmdline.insert_name`, `cmdline.insert_fullpath`, `cmdline.insert_left_path`,
+  `cmdline.insert_right_path`, `cmdline.execute`, `cmdline.clear`, `cmdline.complete`.
+
+## The T4.1 ↔ T4.2 interface (frozen; defined in `src/terminal/mod.rs`)
+
+- `terminal::handle(ctx) -> Option<Rc<TerminalHandle>>`: `send_line(&[u8])` (appends `\n` if
+  missing; flips the shell to Busy), `show()` / `hide()` (Ctrl+O view), `is_visible()`,
+  `shell_state()`. The command line fetches it lazily inside its handlers — no `install_state`
+  ordering dependency.
+- `terminal::shell_host(ctx) -> Option<Rc<ShellHost>>`: `ShellState` (`Idle | Busy | Exited`) +
+  `changed: Signal<ShellState>`; the command line shows a busy hint from it.
+- The command line keeps `AppContext::set_cmdline_has_text` updated; the terminal reads
+  `cmdline_has_text()` before sending a sync `cd`.
+- Never spawn shells or touch VTE from `cmdline/`; never edit widgets in `cmdline_slot` from
+  `terminal/` (chrome already put the slot CSS there).
+
+## M4 lead follow-ups (before T4.1/T4.2 start; ADR-0003 "Consequences")
+
+1. `dispatch.rs`: resolve chords in `Global` only while a `vte::Terminal` has focus (the VTE is a
+   text-entry-like surface; otherwise panel cursor keys would fire while typing in the terminal).
+2. `ofm-config`: `[terminal] return_to_panels` (bool, default `false`) + `defaults/config.toml`.
