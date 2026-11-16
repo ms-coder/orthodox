@@ -154,3 +154,8 @@ Deferred to M9: N4 NFS retransmitted link() EEXIST can leave moved item at sourc
 - T4.1 terminal and T4.2 command line running in parallel on GLM (worktrees orthodox-wt-T4.1/T4.2). Then T4.3 tests, T4.4 lean review, tag m4-done.
 - Still open from G2: USB-stick results, retest of jobs-view cancel, Alt+F2 shortcut inhibition on real Wayland, F10-quit leaves no `.ofm-part`.
 - 2026-11-17: GLM weekly limit exhausted (resets 2026-11-21 16:18). Kimi Code (K2.8 Preview, `kimi-for-coding`, `scripts/kimi.sh`, key `KIMI_API_KEY` in ~/.bashrc) is now the offload target. T4.1/T4.2 continue on Kimi from GLM's uncommitted partial work; T5.0+T5.1 (ofm-viewer backend + ADR-0007) runs on Kimi in parallel.
+
+## 2026-11-16 — M4 integration state (resumed session)
+- T4.1 (terminal) and T4.2 (cmdline) merged; T5.0+T5.1 (viewer backend) merged. Lead fix a3635cf: terminal UI looked for the cmdline entry only among direct children of `cmdline_slot`; now searches the subtree. check.sh green (incl. `terminal_real` 4 e2e: Ctrl+O toggle, panel->shell cwd, shell cd->panel, typed command).
+- T4.3 considered covered by existing tests (cmdline proptests in ofm-core, `cmdline_real` incl. history persistence over quit/restart, `terminal_real`). No separate task.
+- T4.4 lean Sonnet review running; on SIGN OFF fix findings, tag `m4-done`, then M5 UI (T5.2+). Leftover worktrees ../orthodox-wt-T4.1, T4.2, T5.1 and their merged branches can be removed after the review.
