@@ -153,3 +153,4 @@ Deferred to M9: N4 NFS retransmitted link() EEXIST can leave moved item at sourc
 - Lead follow-ups done (54ecbcd): `AppContext::terminal_focused` (dispatch uses only `global` chords while VTE has focus), `[terminal] return_to_panels`.
 - T4.1 terminal and T4.2 command line running in parallel on GLM (worktrees orthodox-wt-T4.1/T4.2). Then T4.3 tests, T4.4 lean review, tag m4-done.
 - Still open from G2: USB-stick results, retest of jobs-view cancel, Alt+F2 shortcut inhibition on real Wayland, F10-quit leaves no `.ofm-part`.
+- 2026-11-17: GLM weekly limit exhausted (resets 2026-11-21 16:18). Kimi Code (K2.8 Preview, `kimi-for-coding`, `scripts/kimi.sh`, key `KIMI_API_KEY` in ~/.bashrc) is now the offload target. T4.1/T4.2 continue on Kimi from GLM's uncommitted partial work; T5.0+T5.1 (ofm-viewer backend + ADR-0007) runs on Kimi in parallel.
