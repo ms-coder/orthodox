@@ -27,6 +27,10 @@ ofm-jobs = { path = "../ofm-jobs" }
 ofm-vfs = { path = "../ofm-vfs" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# Embedded terminal (ADR-0003). 0.10 pairs with the gtk4 0.11 above (same gtk4-sys 0.11.x,
+# glib 0.22.x); feature level v0_76 = the minimum system VTE of Ubuntu 24.04 LTS (CLAUDE.md
+# Stack) — do not raise without an ADR.
+vte4 = { version = "0.10", features = ["v0_76"] }
 
 [dev-dependencies]
 ofm-testkit = { path = "../ofm-testkit" }

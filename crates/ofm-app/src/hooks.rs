@@ -13,7 +13,7 @@ use std::rc::Rc;
 use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
 use crate::window::{MainWindow, PanelView};
-use crate::{chrome, dialogs, jobs, navigation, widgets, window};
+use crate::{chrome, cmdline, dialogs, jobs, navigation, terminal, widgets, window};
 
 /// Register command handlers. Every module registers only commands it owns (OWNERSHIP.md);
 /// duplicates are detected by a test.
@@ -24,6 +24,8 @@ pub fn install_commands(reg: &mut CommandRegistry) {
     navigation::install_commands(reg); // T2.3: go_*, history, tabs, select.*, quicksearch, ...
     dialogs::install_commands(reg); // T2.3: mask + hotlist dialogs' commands
     jobs::install_commands(reg); // T3.3: file.copy/move/delete/..., app.jobs, jobs.*
+    terminal::install_commands(reg); // T4.1: app.terminal_toggle
+    cmdline::install_commands(reg); // T4.2: cmdline.*
 }
 
 /// Create module-owned state and store it with `ctx.ext.insert(Rc::new(..))`.
@@ -33,12 +35,16 @@ pub fn install_state(ctx: &Rc<AppContext>) {
     navigation::install_state(ctx); // T2.3
     dialogs::install_state(ctx); // T2.3
     jobs::install_state(ctx); // T3.3: JobsController in ctx.ext
+    terminal::install_state(ctx); // T4.1: ShellHost + TerminalHandle in ctx.ext
+    cmdline::install_state(ctx); // T4.2: CmdlineState in ctx.ext
 }
 
 /// Decorate one panel view right after it is built (tab bar, quick-search popover, ...).
 pub fn install_panel_view(ctx: &Rc<AppContext>, view: &PanelView) {
     window::install_panel_view(ctx, view); // T2.2
     navigation::install_panel_view(ctx, view); // T2.3
+    terminal::install_panel_view(ctx, view); // T4.1: per-tab cd sync
+    cmdline::install_panel_view(ctx, view); // T4.2: reserved
 }
 
 /// Fill window regions once the whole `MainWindow` exists (menu bar, F-key bar, status line).
@@ -47,6 +53,8 @@ pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
     chrome::install_ui(ctx, win); // T2.2
     navigation::install_ui(ctx, win); // T2.3
     jobs::install_ui(ctx, win); // T3.3: jobs view, progress in status line
+    terminal::install_ui(ctx, win); // T4.1: VTE widget in terminal_slot, shell spawn
+    cmdline::install_ui(ctx, win); // T4.2: entry in cmdline_slot
 }
 
 #[cfg(test)]

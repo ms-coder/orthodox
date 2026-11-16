@@ -115,6 +115,7 @@ typing = "command_line"   # command_line | quick_search
 "Enter" = "cmdline.execute"
 "Esc" = "cmdline.clear"
 "Ctrl+Space" = "cmdline.complete"
+"Tab" = "cmdline.complete" # only while the line has text; empty line -> panels -> panel.switch
 
 [viewer]
 "Esc" = "viewer.close"
