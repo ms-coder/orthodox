@@ -23,18 +23,18 @@
 //! - Keys: while the VTE widget has focus only the `global` keymap section is consulted
 //!   (see OWNERSHIP.md "M4 lead follow-ups"); everything else goes to the shell.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-// The VTE bindings are T4.1's to use; this keeps the dependency referenced until then
-// (cargo warns about unused crate dependencies).
 use ofm_core::cmd;
-use vte4 as _;
 
 use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
 use crate::signal::Signal;
 use crate::window::{MainWindow, PanelView};
+
+mod shell;
+mod ui;
 
 /// Phase of the window's shell (ADR-0003; published as [`ShellHost`] in `ctx.ext`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -80,37 +80,52 @@ impl ShellHost {
 /// How other modules drive the embedded shell: the command line (Enter, insert-name), cd sync
 /// and F4 terminal editors. Stored in `ctx.ext` by [`install_state`]; fetch with
 /// [`handle`] — lazily, not during `install_state` (no startup ordering constraints).
-/// T4.1 implements the bodies (currently no-ops that log).
+/// The bodies delegate to the terminal UI once [`install_ui`] has built it (before that,
+/// calls are logged and dropped).
 pub struct TerminalHandle {
     host: Rc<ShellHost>,
+    /// Set by [`install_ui`] (the VTE widget needs the window); `None` in headless tests.
+    ui: RefCell<Option<Rc<ui::TerminalUi>>>,
 }
 
 impl TerminalHandle {
     /// Wrap a [`ShellHost`] (the terminal keeps both in `ctx.ext`).
     pub fn new(host: Rc<ShellHost>) -> Self {
-        TerminalHandle { host }
+        TerminalHandle {
+            host,
+            ui: RefCell::new(None),
+        }
     }
 
     /// Feed exactly one input line to the shell: appends `b"\n"` unless the bytes already end
     /// with one, then writes them to the terminal child (VTE `feed_child`). Flips the shell to
     /// [`ShellState::Busy`] until its next OSC 7. No shell/no sync support: logged, dropped.
-    pub fn send_line(&self, _bytes: &[u8]) {
-        tracing::debug!("terminal: send_line not implemented yet (T4.1)");
+    pub fn send_line(&self, bytes: &[u8]) {
+        match self.ui.borrow().as_ref() {
+            Some(ui) => ui.send_line(bytes),
+            None => tracing::debug!("terminal: send_line dropped (no terminal installed)"),
+        }
     }
 
     /// Show the terminal full size (hide the panels — what Ctrl+O or running a command does).
     pub fn show(&self) {
-        tracing::debug!("terminal: show not implemented yet (T4.1)");
+        match self.ui.borrow().as_ref() {
+            Some(ui) => ui.show(),
+            None => tracing::debug!("terminal: show dropped (no terminal installed)"),
+        }
     }
 
     /// Show the panels again over the terminal.
     pub fn hide(&self) {
-        tracing::debug!("terminal: hide not implemented yet (T4.1)");
+        match self.ui.borrow().as_ref() {
+            Some(ui) => ui.hide(),
+            None => tracing::debug!("terminal: hide dropped (no terminal installed)"),
+        }
     }
 
     /// Whether the terminal (not the panels) is currently shown full size.
     pub fn is_visible(&self) -> bool {
-        false
+        self.ui.borrow().as_ref().is_some_and(|ui| ui.is_visible())
     }
 
     /// Current shell phase (same value as [`shell_host`]'s `get`).
@@ -129,11 +144,19 @@ pub fn shell_host(ctx: &AppContext) -> Option<Rc<ShellHost>> {
     ctx.ext.get::<ShellHost>()
 }
 
-/// Register `app.terminal_toggle` (Ctrl+O). Stub until T4.1; follows the project convention
-/// that unimplemented commands log at debug level.
+/// Register `app.terminal_toggle` (Ctrl+O): toggle the panels area, keep the command line
+/// row, menu bar and F-key bar (ADR-0003 semantics live in `ui::TerminalUi::{show,hide}`).
 pub fn install_commands(reg: &mut CommandRegistry) {
-    reg.register(cmd::APP_TERMINAL_TOGGLE, |_ctx| {
-        tracing::debug!("app.terminal_toggle: not implemented yet (T4.1)");
+    reg.register(cmd::APP_TERMINAL_TOGGLE, |ctx| {
+        let Some(h) = handle(ctx) else {
+            tracing::debug!("app.terminal_toggle: no terminal installed");
+            return;
+        };
+        if h.is_visible() {
+            h.hide();
+        } else {
+            h.show();
+        }
     });
 }
 
@@ -150,10 +173,22 @@ pub fn install_state(ctx: &Rc<AppContext>) {
 /// Per-tab wiring for shell-follows-panel: subscribe to `PanelEvent::Location` of every tab and
 /// to panel/tab switches (`PanelHost::active_changed`, `AppContext::active_changed`), then feed
 /// [`ofm_core::cmdline::cd_command`] while the shell is idle and the command line is empty
-/// (`AppContext::cmdline_has_text`). Reserved for T4.1.
-pub fn install_panel_view(_ctx: &Rc<AppContext>, _view: &PanelView) {}
+/// (`AppContext::cmdline_has_text`).
+pub fn install_panel_view(ctx: &Rc<AppContext>, view: &PanelView) {
+    ui::install_panel_view(ctx, view.side);
+}
 
 /// Build the VTE widget into `win.terminal_slot`, spawn the shell with the injected rc
 /// wrapper, wire OSC 7 (`current-directory-uri-changed`) → [`ShellHost`] + panel navigation,
-/// `child-exited` → respawn, and implement `app.terminal_toggle`. Reserved for T4.1.
-pub fn install_ui(_ctx: &Rc<AppContext>, _win: &MainWindow) {}
+/// `child-exited` → respawn, and implement `app.terminal_toggle`.
+pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
+    let Some(host) = shell_host(ctx) else {
+        tracing::error!("terminal: install_state did not run before install_ui");
+        return;
+    };
+    let term = ui::TerminalUi::new(ctx, win, host);
+    if let Some(h) = ctx.ext.get::<TerminalHandle>() {
+        *h.ui.borrow_mut() = Some(Rc::clone(&term));
+    }
+    ctx.ext.insert(term);
+}

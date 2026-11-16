@@ -1,0 +1,523 @@
+//! The VTE terminal widget and the shell runtime of one window (ADR-0003, T4.1):
+//! widget construction and spawning, OSC 7 wiring (`ShellState` transitions, panel
+//! navigation, panel→shell `cd` sync with stale coalescing), Ctrl+O view toggling, focus
+//! tracking and the terminal-internal clipboard keys. Created by [`super::install_ui`];
+//! the frozen `mod.rs` API ([`super::TerminalHandle`]) delegates here.
+
+use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
+use std::rc::{Rc, Weak};
+
+use gtk::gio;
+use gtk::glib;
+use gtk::prelude::*;
+use ofm_core::Location;
+use ofm_core::cmdline::{cd_command, osc7_parse};
+use vte4::prelude::{TerminalExt, TerminalExtManual};
+
+use super::ShellState;
+use super::shell::{self, ShellKind, SyncDecision};
+use crate::context::AppContext;
+use crate::i18n::tr;
+use crate::keys;
+use crate::navigation::goto::navigate;
+use crate::panel::{PanelController, PanelEvent, PanelHost, Side};
+use crate::signal::SignalId;
+use crate::widgets::file_list::FileList;
+use crate::window::MainWindow;
+use crate::wiring;
+
+/// Everything the live terminal of a window needs. Stored in `ctx.ext` by
+/// [`super::install_ui`] (after the window exists); holds only `Weak<AppContext>` so the
+/// context owns the terminal, never the other way round.
+pub(crate) struct TerminalUi {
+    ctx: Weak<AppContext>,
+    /// Own weak self, for callbacks on the widget's signals (set right after construction).
+    self_weak: RefCell<Weak<TerminalUi>>,
+    /// The VTE widget (always in `win.terminal_slot`, alive whether or not it is shown).
+    term: vte4::Terminal,
+    host: Rc<super::ShellHost>,
+    window: adw::ApplicationWindow,
+    panels: gtk::Paned,
+    slot: gtk::Box,
+    cmdline_slot: gtk::Box,
+    lists: [FileList; 2],
+    /// Resolved shell path (set when the spawn is prepared).
+    shell: RefCell<PathBuf>,
+    kind: Cell<ShellKind>,
+    /// Per-session wrapper directory (`None` until written, or forever after a write error:
+    /// the shell then runs plainly without sync).
+    wrapper_dir: RefCell<Option<PathBuf>>,
+    /// Machine hostname for OSC 7 acceptance, fetched once on the I/O pool.
+    hostname: RefCell<Option<String>>,
+    /// Last accepted OSC 7 directory (the shell's known cwd); `None` until the first OSC 7.
+    cwd: RefCell<Option<PathBuf>>,
+    /// A panel location change arrived while the shell was Busy: re-sync at the next OSC 7
+    /// (ADR-0003 "rapid switches coalesce"); it also suppresses shell→panel navigation for
+    /// that OSC 7 so a panel navigation is never undone.
+    stale: Cell<bool>,
+}
+
+impl TerminalUi {
+    /// Build the widget, wire every signal, prepare the session dir and spawn the shell.
+    pub(crate) fn new(
+        ctx: &Rc<AppContext>,
+        win: &MainWindow,
+        host: Rc<super::ShellHost>,
+    ) -> Rc<Self> {
+        let term = vte4::Terminal::new();
+        {
+            let cfg = ctx.config.borrow();
+            term.set_scrollback_lines(i64::from(cfg.terminal.scrollback));
+            if !cfg.terminal.font.is_empty() {
+                term.set_font(Some(&gtk::pango::FontDescription::from_string(
+                    &cfg.terminal.font,
+                )));
+            }
+        }
+        // Theme colours for text/background (the 256-colour palette stays at VTE defaults).
+        {
+            let palette = ctx.theme.palette();
+            term.set_colors(Some(&palette.panel.fg), Some(&palette.panel.bg), &[]);
+        }
+        term.set_vexpand(true);
+        term.set_hexpand(true);
+        term.add_css_class("ofm-terminal");
+        win.terminal_slot.append(&term);
+        // Collapsed while the panels are up (Ctrl+O / `show()` reveals it); the widget and
+        // the shell keep running hidden — showing is not re-spawning (ADR-0003).
+        win.terminal_slot.set_visible(false);
+
+        let ui = Rc::new(TerminalUi {
+            ctx: Rc::downgrade(ctx),
+            self_weak: RefCell::new(Weak::new()),
+            term: term.clone(),
+            host,
+            window: win.window.clone(),
+            panels: win.panels.clone(),
+            slot: win.terminal_slot.clone(),
+            cmdline_slot: win.cmdline_slot.clone(),
+            lists: [win.left.list.clone(), win.right.list.clone()],
+            shell: RefCell::new(PathBuf::new()),
+            kind: Cell::new(ShellKind::Plain),
+            wrapper_dir: RefCell::new(None),
+            hostname: RefCell::new(None),
+            cwd: RefCell::new(None),
+            stale: Cell::new(false),
+        });
+        *ui.self_weak.borrow_mut() = Rc::downgrade(&ui);
+
+        ui.wire_signals();
+        ui.wire_keys(ctx);
+        ui.wire_panel_switches();
+        ui.prepare_and_spawn();
+        ui
+    }
+
+    fn weak(&self) -> Weak<TerminalUi> {
+        self.self_weak.borrow().clone()
+    }
+
+    // ---- wiring ---------------------------------------------------------------------------
+
+    fn wire_signals(&self) {
+        // OSC 7: the shell reports its working directory.
+        {
+            let weak = self.weak();
+            self.term
+                .connect_current_directory_uri_changed(move |term| {
+                    let Some(ui) = weak.upgrade() else { return };
+                    if let Some(uri) = term.current_directory_uri() {
+                        ui.on_osc7(uri.as_bytes());
+                    }
+                });
+        }
+
+        // The user pressed Enter inside the terminal: a program may now be running, so no
+        // cd sync until the next OSC 7 (ADR-0003).
+        {
+            let weak = self.weak();
+            self.term.connect_commit(move |_, text, _| {
+                if text.contains('\r')
+                    && let Some(ui) = weak.upgrade()
+                    && ui.host.get() != ShellState::Exited
+                {
+                    ui.host.set(ShellState::Busy);
+                }
+            });
+        }
+
+        // Child exit: notice into the scrollback, then respawn (same rules as the first
+        // spawn). Every exit is logged; there is no respawn cap (ADR-0003).
+        {
+            let weak = self.weak();
+            self.term.connect_child_exited(move |_, status| {
+                let Some(ui) = weak.upgrade() else { return };
+                tracing::info!(status, "terminal: shell exited, respawning");
+                ui.host.set(ShellState::Exited);
+                *ui.cwd.borrow_mut() = None;
+                ui.stale.set(false);
+                ui.feed_display(
+                    format!("\r\n{}\r\n", tr("[process exited — restarting shell]")).as_bytes(),
+                );
+                ui.spawn_now();
+            });
+        }
+
+        // Pass the terminal's title through to the window (vim & co. set it).
+        {
+            let weak = self.weak();
+            self.term.connect_window_title_changed(move |term| {
+                let Some(ui) = weak.upgrade() else { return };
+                let title = term.window_title().filter(|t| !t.is_empty());
+                ui.window.set_title(title.as_deref());
+            });
+        }
+    }
+
+    /// Focus tracking (drives key resolution: only `global` chords while the VTE has focus)
+    /// and the terminal-internal clipboard keys — the one sanctioned key controller on a
+    /// widget (text keys, not commands).
+    fn wire_keys(&self, ctx: &Rc<AppContext>) {
+        let weak_ctx = Rc::downgrade(ctx);
+        let focus = gtk::EventControllerFocus::new();
+        focus.connect_enter(move |_| {
+            if let Some(ctx) = weak_ctx.upgrade() {
+                ctx.set_terminal_focused(true);
+            }
+        });
+        let weak_ctx = Rc::downgrade(ctx);
+        focus.connect_leave(move |_| {
+            if let Some(ctx) = weak_ctx.upgrade() {
+                ctx.set_terminal_focused(false);
+            }
+        });
+        self.term.add_controller(focus);
+
+        let weak = self.weak();
+        let key_ctl = gtk::EventControllerKey::new();
+        key_ctl.set_propagation_phase(gtk::PropagationPhase::Bubble);
+        key_ctl.connect_key_pressed(move |_, keyval, keycode, state| {
+            let Some(ui) = weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            let Some(chord) = keys::chord_from_event(keyval, keycode, state) else {
+                return glib::Propagation::Proceed;
+            };
+            use ofm_core::{Key, Mods};
+            let Mods {
+                ctrl: true,
+                shift: true,
+                alt: false,
+                super_: false,
+                ..
+            } = chord.mods
+            else {
+                return glib::Propagation::Proceed;
+            };
+            let is = |k: char| matches!(chord.key, Key::Char(c) if c.eq_ignore_ascii_case(&k));
+            if is('c') {
+                ui.term.emit_copy_clipboard();
+                glib::Propagation::Stop
+            } else if is('v') {
+                ui.term.paste_clipboard();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        self.term.add_controller(key_ctl);
+    }
+
+    /// Left/right panel switches change which directory is "the panel directory".
+    fn wire_panel_switches(&self) {
+        let Some(ctx) = self.ctx.upgrade() else {
+            return;
+        };
+        let weak_ctx = Rc::downgrade(&ctx);
+        ctx.active_changed
+            .connect(move |_| maybe_sync_from_ctx(&weak_ctx));
+    }
+
+    // ---- spawning -------------------------------------------------------------------------
+
+    /// Resolve the shell, write the rc wrappers on the I/O pool (invariant 2), fetch the
+    /// hostname on the way, then spawn. The shell is `Busy` from now on (ADR-0003), so a
+    /// panel navigation during start-up is coalesced instead of injected into the rc phase.
+    fn prepare_and_spawn(&self) {
+        self.host.set(ShellState::Busy);
+        let Some(ctx) = self.ctx.upgrade() else {
+            return;
+        };
+        let shell_path = shell::resolve_shell(
+            &ctx.config.borrow().terminal.shell,
+            std::env::var_os("SHELL")
+                .map(|s| s.to_string_lossy().into_owned())
+                .as_deref(),
+        );
+        *self.shell.borrow_mut() = shell_path;
+        let dir = shell::session_dir();
+        let rx = wiring::run_on_pool(&ctx.services.pool, move |tx| {
+            let prepared = shell::write_wrappers(&dir);
+            let host = shell::hostname();
+            let _ = tx.send_blocking((prepared, host));
+        });
+        let weak = self.weak();
+        wiring::attach(
+            rx,
+            move |(prepared, hostname)| {
+                if let Some(ui) = weak.upgrade() {
+                    *ui.wrapper_dir.borrow_mut() = prepared;
+                    *ui.hostname.borrow_mut() = hostname;
+                    ui.spawn_now();
+                }
+                std::ops::ControlFlow::Continue(())
+            },
+            || {},
+        );
+    }
+
+    /// Spawn the shell in the active panel's directory (ADR-0003). Non-UTF-8 directories
+    /// cannot be passed through `spawn_async`; the shell starts elsewhere and the first
+    /// OSC 7 plus cd sync aligns it (for sync-capable shells).
+    fn spawn_now(&self) {
+        let Some(ctx) = self.ctx.upgrade() else {
+            return;
+        };
+        self.host.set(ShellState::Busy);
+        let kind = ShellKind::of_path(&self.shell.borrow());
+        self.kind.set(kind);
+        let wrapper_dir = self.wrapper_dir.borrow().clone();
+        let argv = shell::build_argv(&self.shell.borrow(), kind, wrapper_dir.as_deref());
+        let envv = shell::build_env(kind, wrapper_dir.as_deref());
+        let cwd = match ctx.active_controller().location() {
+            Location::Local(p) => p,
+            _ => PathBuf::from("/"),
+        };
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let envv: Vec<&str> = envv.iter().map(String::as_str).collect();
+        let weak = self.weak();
+        tracing::debug!(shell = %self.shell.borrow().display(), ?kind, "terminal: spawning shell");
+        self.term.spawn_async(
+            vte4::PtyFlags::DEFAULT,
+            cwd.to_str(),
+            &argv,
+            &envv,
+            glib::SpawnFlags::empty(),
+            || {},
+            -1,
+            None::<&gio::Cancellable>,
+            move |res| match res {
+                Ok(_) => tracing::debug!("terminal: shell started"),
+                Err(e) => {
+                    tracing::error!(error = %e, "terminal: could not start the shell");
+                    if let Some(ui) = weak.upgrade() {
+                        ui.host.set(ShellState::Exited);
+                        ui.feed_display(
+                            format!(
+                                "\r\n{}\r\n",
+                                tr(
+                                    "[could not start the shell — check the terminal.shell setting]"
+                                )
+                            )
+                            .as_bytes(),
+                        );
+                    }
+                }
+            },
+        );
+    }
+
+    // ---- OSC 7 and cd sync ----------------------------------------------------------------
+
+    fn on_osc7(&self, uri: &[u8]) {
+        if self.host.get() == ShellState::Exited {
+            return; // respawn in flight
+        }
+        let Some((host, dir)) = osc7_parse(uri) else {
+            tracing::debug!("terminal: ignoring a non-file OSC 7");
+            return;
+        };
+        if !shell::accept_host(&host, self.hostname.borrow().as_deref()) {
+            tracing::debug!(host = %host, "terminal: ignoring OSC 7 for another host");
+            return;
+        }
+        *self.cwd.borrow_mut() = Some(dir.clone());
+        self.host.set(ShellState::Idle);
+        if self.stale.replace(false) {
+            // The panel moved while the shell was busy: the panel wins (ADR-0003).
+            self.maybe_sync();
+        } else if let Some(ctx) = self.ctx.upgrade() {
+            let ctrl = ctx.active_controller();
+            if ctrl.location() != Location::Local(dir.clone()) {
+                tracing::debug!(dir = %dir.display(), "terminal: shell moved, following with the panel");
+                navigate(&ctx, &ctrl, Location::Local(dir), None);
+            }
+        }
+    }
+
+    /// Consider a panel→shell `cd` sync (called on panel location changes, panel/tab
+    /// switches and when the terminal becomes visible; ADR-0003).
+    pub(crate) fn maybe_sync(&self) {
+        let Some(ctx) = self.ctx.upgrade() else {
+            return;
+        };
+        if matches!(self.host.get(), ShellState::Busy | ShellState::Exited) {
+            self.stale.set(true);
+            return;
+        }
+        let dir = match ctx.active_controller().location() {
+            Location::Local(p) => Some(p),
+            _ => None,
+        };
+        match shell::should_sync(
+            self.host.get(),
+            self.kind.get().sync_capable(),
+            ctx.cmdline_has_text(),
+            dir.as_deref(),
+            self.cwd.borrow().as_deref(),
+        ) {
+            SyncDecision::FeedCd => {
+                // `FeedCd` is only reachable with a local panel directory.
+                let target = dir.unwrap_or_else(|| PathBuf::from("/"));
+                tracing::debug!(dir = %target.display(), "terminal: feeding a cd sync");
+                self.stale.set(false);
+                self.feed_child_bytes(&cd_command(&target));
+                self.host.set(ShellState::Busy);
+            }
+            SyncDecision::AlreadyThere => self.stale.set(false),
+            SyncDecision::Blocked => {}
+        }
+    }
+
+    // ---- feeding and view toggling --------------------------------------------------------
+
+    /// [`super::TerminalHandle::send_line`]: exactly one input line, then Busy.
+    pub(crate) fn send_line(&self, bytes: &[u8]) {
+        if self.host.get() == ShellState::Exited {
+            tracing::debug!("terminal: send_line dropped, the shell exited");
+            return;
+        }
+        let mut line = bytes.to_vec();
+        if !line.ends_with(b"\n") {
+            line.push(b'\n');
+        }
+        self.feed_child_bytes(&line);
+        self.host.set(ShellState::Busy);
+    }
+
+    fn feed_child_bytes(&self, bytes: &[u8]) {
+        self.term.feed_child(bytes);
+    }
+
+    /// Display-only text (not sent to the child): the exit notice lands in the scrollback.
+    fn feed_display(&self, bytes: &[u8]) {
+        self.term.feed(bytes);
+    }
+
+    /// Show the terminal full size by hiding the panels (Ctrl+O / a command started from
+    /// the command line). The command line row, menu bar and F-key bar stay (ADR-0003).
+    pub(crate) fn show(&self) {
+        self.panels.set_visible(false);
+        self.slot.set_visible(true);
+        // The terminal was hidden, so the focus is never inside it — it sits on a panel, a
+        // chrome widget (menu/F-key buttons) or nowhere: Far keeps typing possible, so move
+        // it to the command line entry (T4.2) if one exists, else the terminal.
+        if let Some(entry) = self.cmdline_entry() {
+            entry.grab_focus();
+        } else {
+            self.term.grab_focus();
+        }
+        self.maybe_sync();
+    }
+
+    /// Show the panels again over the terminal.
+    pub(crate) fn hide(&self) {
+        let focus = gtk::prelude::GtkWindowExt::focus(&self.window);
+        let focus_in_terminal = focus.is_some_and(|f| f.is_ancestor(&self.term));
+        self.slot.set_visible(false);
+        self.panels.set_visible(true);
+        if focus_in_terminal && let Some(ctx) = self.ctx.upgrade() {
+            self.lists[ctx.active_side()].grab_focus();
+        }
+    }
+
+    /// Whether the terminal (not the panels) is currently shown full size.
+    pub(crate) fn is_visible(&self) -> bool {
+        !self.panels.is_visible()
+    }
+
+    /// The command line entry, if T4.2 has built one in `cmdline_slot` yet (shallow scan —
+    /// the slot sits directly in the window column).
+    fn cmdline_entry(&self) -> Option<gtk::Entry> {
+        let mut child = self.cmdline_slot.first_child();
+        while let Some(w) = child {
+            if let Some(entry) = w.downcast_ref::<gtk::Entry>() {
+                return Some(entry.clone());
+            }
+            child = w.next_sibling();
+        }
+        None
+    }
+}
+
+/// Per-side wiring for shell-follows-panel (the frozen `install_panel_view` hook): tab
+/// switches and `PanelEvent::Location` of the active tab trigger a cd sync consideration.
+/// Runs before [`TerminalUi`] exists (the views are built first), so the handlers look it
+/// up in `ctx.ext` at event time.
+pub(crate) fn install_panel_view(ctx: &Rc<AppContext>, side: Side) {
+    let host = Rc::clone(ctx.host(side));
+    let last: TabWatch = Rc::default();
+    bind_active_tab(ctx, &host, &last);
+    let weak_ctx = Rc::downgrade(ctx);
+    let host2 = Rc::clone(&host);
+    host.active_changed.connect(move |ctrl| {
+        if let Some(ctx) = weak_ctx.upgrade() {
+            bind_active_tab(&ctx, &host2, &last);
+            maybe_sync_from_event(&ctx, ctrl);
+        }
+    });
+}
+
+/// The currently subscribed active tab of one side (weak: a closed tab simply disappears).
+type TabWatch = Rc<RefCell<Option<(Weak<PanelController>, SignalId)>>>;
+
+/// Subscribe to `Location` events of `host`'s active tab; the subscription follows the
+/// active tab (the old one is disconnected, so switching back and forth does not pile up).
+fn bind_active_tab(ctx: &Rc<AppContext>, host: &Rc<PanelHost>, last: &TabWatch) {
+    let ctrl = host.active();
+    if let Some((prev, id)) = last.borrow().as_ref()
+        && let Some(prev) = prev.upgrade()
+    {
+        if Rc::ptr_eq(&prev, &ctrl) {
+            return; // still bound
+        }
+        prev.changed.disconnect(*id);
+    }
+    let weak_ctx = Rc::downgrade(ctx);
+    let weak_ctrl = Rc::downgrade(&ctrl);
+    let id = ctrl.changed.connect(move |ev| {
+        if matches!(ev, PanelEvent::Location)
+            && let (Some(ctx), Some(ctrl)) = (weak_ctx.upgrade(), weak_ctrl.upgrade())
+        {
+            maybe_sync_from_event(&ctx, &ctrl);
+        }
+    });
+    *last.borrow_mut() = Some((Rc::downgrade(&ctrl), id));
+}
+
+fn maybe_sync_from_event(ctx: &Rc<AppContext>, ctrl: &Rc<PanelController>) {
+    // Only the active tab of the active side drives the shell directory.
+    let active = ctx.active_controller();
+    if Rc::ptr_eq(ctrl, &active) {
+        maybe_sync_from_ctx(&Rc::downgrade(ctx));
+    }
+}
+
+fn maybe_sync_from_ctx(weak_ctx: &Weak<AppContext>) {
+    if let Some(ctx) = weak_ctx.upgrade()
+        && let Some(ui) = ctx.ext.get::<TerminalUi>()
+    {
+        ui.maybe_sync();
+    }
+}
