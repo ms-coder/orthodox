@@ -6,6 +6,8 @@
 #         OFM_SHOT_THEME        theme id written to a temp config (far-blue | commander-light | adwaita)
 #         OFM_SHOT_VIEW         panel view written to a temp config (brief | full | custom)
 #         OFM_SHOT_FIXTURE=1    when no ofm-args are given, open two generated fixture directories
+#         OFM_SHOT_KEYS         space-separated xdotool keys sent (to the newest ofm window) before capturing,
+#                               e.g. "Down F3 F4" (opens the viewer on the first file and toggles hex)
 #         Any of the three also isolates XDG_CONFIG/STATE/DATA_HOME in a temp dir (never touches $HOME).
 # Set:    scripts/screenshot.sh g1   -> target/screenshots/g1-{far,light,adwaita}-{full,brief}.png
 set -euo pipefail
@@ -27,6 +29,25 @@ if [[ "${1:-}" == "--" ]]; then shift; fi
 mkdir -p target/screenshots
 export OFM_SHOT_OUT="$PWD/target/screenshots/$name.png"
 export OFM_SHOT_DELAY="${OFM_SCREENSHOT_DELAY:-3}"
+export OFM_SHOT_KEYS="${OFM_SHOT_KEYS:-}"
+# Key presses through XTest: "F3", "Down", "ctrl+t" (same helper as the real-binary tests).
+export OFM_SHOT_XKEY='
+import ctypes, sys
+x = ctypes.CDLL("libX11.so.6"); t = ctypes.CDLL("libXtst.so.6")
+x.XOpenDisplay.restype = ctypes.c_void_p
+x.XStringToKeysym.restype = ctypes.c_ulong
+x.XKeysymToKeycode.restype = ctypes.c_ubyte
+x.XKeysymToKeycode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+t.XTestFakeKeyEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+d = x.XOpenDisplay(None)
+M = {"ctrl": "Control_L", "alt": "Alt_L", "shift": "Shift_L"}
+for chord in sys.argv[1:]:
+    codes = [x.XKeysymToKeycode(d, x.XStringToKeysym(M.get(p.lower(), p).encode())) for p in chord.split("+")]
+    for c in codes: t.XTestFakeKeyEvent(d, c, 1, 0)
+    for c in reversed(codes): t.XTestFakeKeyEvent(d, c, 0, 0)
+    x.XFlush(d)
+x.XSync(d, 0)
+'
 
 if [[ -n "${OFM_SHOT_THEME:-}${OFM_SHOT_VIEW:-}${OFM_SHOT_FIXTURE:-}" ]]; then
   iso="$(mktemp -d)"
@@ -59,6 +80,16 @@ xvfb-run -a -s "-screen 0 1600x1000x24" bash -c '
   "$OFM_SHOT_BIN" "$@" &
   pid=$!
   sleep "$OFM_SHOT_DELAY"
+  if [[ -n "$OFM_SHOT_KEYS" ]]; then
+    for k in $OFM_SHOT_KEYS; do
+      # Focus the newest visible ofm window first (a viewer is a second toplevel; no window manager here).
+      wid=$(xdotool search --onlyvisible --class ofm | tail -1)
+      [[ -n "$wid" ]] && xdotool windowfocus "$wid" 2>/dev/null
+      # XTest (not `xdotool key`, which GTK ignores for F-keys under bare Xvfb).
+      python3 -I -c "$OFM_SHOT_XKEY" "$k"
+      sleep 1
+    done
+  fi
   import -window root "$OFM_SHOT_OUT"
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true

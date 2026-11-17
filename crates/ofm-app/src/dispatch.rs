@@ -137,6 +137,9 @@ pub fn resolve(ctx: &AppContext, kind: WindowKind, chord: KeyChord) -> Option<Co
         // The VTE terminal is a text surface: only `global` chords (Ctrl+O, F10, Ctrl+J, ...).
         WindowKind::Main if ctx.terminal_focused() => keymap.resolve_in(KeyContext::Global, chord),
         WindowKind::Main => keymap.resolve_main(chord, ctx.cmdline_has_text()),
+        // A dialog over the viewer window (search, go to, encoding): with an older libadwaita the
+        // window's controller sees the dialog's keys first, so resolve them as dialog keys.
+        WindowKind::Viewer if ctx.modal_open() => keymap.resolve_in(KeyContext::Dialog, chord),
         WindowKind::Viewer => keymap.resolve_in(KeyContext::Viewer, chord),
         WindowKind::Dialog => keymap.resolve_in(KeyContext::Dialog, chord),
     }

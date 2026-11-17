@@ -13,7 +13,7 @@ use std::rc::Rc;
 use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
 use crate::window::{MainWindow, PanelView};
-use crate::{chrome, cmdline, dialogs, jobs, navigation, terminal, widgets, window};
+use crate::{chrome, cmdline, dialogs, jobs, navigation, terminal, viewer, widgets, window};
 
 /// Register command handlers. Every module registers only commands it owns (OWNERSHIP.md);
 /// duplicates are detected by a test.
@@ -26,6 +26,7 @@ pub fn install_commands(reg: &mut CommandRegistry) {
     jobs::install_commands(reg); // T3.3: file.copy/move/delete/..., app.jobs, jobs.*
     terminal::install_commands(reg); // T4.1: app.terminal_toggle
     cmdline::install_commands(reg); // T4.2: cmdline.*
+    viewer::install_commands(reg); // T5.2a: file.view, viewer.*
 }
 
 /// Create module-owned state and store it with `ctx.ext.insert(Rc::new(..))`.
@@ -37,6 +38,7 @@ pub fn install_state(ctx: &Rc<AppContext>) {
     jobs::install_state(ctx); // T3.3: JobsController in ctx.ext
     terminal::install_state(ctx); // T4.1: ShellHost + TerminalHandle in ctx.ext
     cmdline::install_state(ctx); // T4.2: CmdlineState in ctx.ext
+    viewer::install_state(ctx); // T5.2a: ViewerHost in ctx.ext
 }
 
 /// Decorate one panel view right after it is built (tab bar, quick-search popover, ...).

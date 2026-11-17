@@ -186,7 +186,12 @@ pub fn find_next(
     let from = from.min(doc.len());
     match scan(doc, needle, from, doc.len(), cancel)? {
         Some(m) => Ok(Some(m)),
-        None if opts.wrap && from > 0 => scan(doc, needle, 0, from, cancel),
+        // The wrapped part also covers a match that starts before `from` and runs past it
+        // (e.g. repeating "next" on the only hit of the file).
+        None if opts.wrap && from > 0 => {
+            let hi = (from + overlap_for(needle) as u64).min(doc.len());
+            scan(doc, needle, 0, hi, cancel)
+        }
         None => Ok(None),
     }
 }
@@ -412,6 +417,23 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn wrap_finds_a_match_that_straddles_the_start_offset() {
+        // Searching from inside the only hit must find that same hit after wrapping.
+        let doc = doc_with(b"xx needle yy");
+        let n = Needle::Text("needle".into())
+            .prepare(Encoding::Utf8, &SearchOptions::strict())
+            .unwrap();
+        let opts = SearchOptions {
+            case_sensitive: true,
+            wrap: true,
+        };
+        let m = find_next(&doc, &n, 4, &opts, &CancelToken::new())
+            .unwrap()
+            .unwrap();
+        assert_eq!((m.offset, m.len), (3, 6));
     }
 
     #[test]

@@ -1139,13 +1139,16 @@ dependencies = [
  "gtk4",
  "libadwaita",
  "libc",
+ "memchr",
  "ofm-config",
  "ofm-core",
  "ofm-jobs",
  "ofm-testkit",
  "ofm-vfs",
+ "ofm-viewer",
  "tracing",
  "tracing-subscriber",
+ "unicode-width",
  "vte4",
 ]
 
