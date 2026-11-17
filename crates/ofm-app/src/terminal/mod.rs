@@ -18,8 +18,9 @@
 //!   (that is the fixed point that stops the sync loop).
 //! - `app.terminal_toggle` (Ctrl+O) hides/shows `win.panels`; the command line row, menu bar
 //!   and F-key bar stay visible; the terminal area expands into the panels' space.
-//! - Terminal editors from F4 (M5, `editor.terminal_editors`) run here through
-//!   [`TerminalHandle::send_line`].
+//! - Terminal editors from F4 (M5, `editor.terminal_editors`) run through
+//!   [`TerminalHandle::run_program`]: their own VTE widget and child process with the exact
+//!   argv (no line typed into the shell, so it works for every shell, quoting-free).
 //! - Keys: while the VTE widget has focus only the `global` keymap section is consulted
 //!   (see OWNERSHIP.md "M4 lead follow-ups"); everything else goes to the shell.
 
@@ -33,6 +34,7 @@ use crate::dispatch::CommandRegistry;
 use crate::signal::Signal;
 use crate::window::{MainWindow, PanelView};
 
+mod program;
 mod shell;
 mod ui;
 
@@ -104,6 +106,24 @@ impl TerminalHandle {
         match self.ui.borrow().as_ref() {
             Some(ui) => ui.send_line(bytes),
             None => tracing::debug!("terminal: send_line dropped (no terminal installed)"),
+        }
+    }
+
+    /// Run `argv` as its own program (exact words, never typed into the shell, so no quoting
+    /// and no shell-idle requirement) in a fresh terminal view that replaces the shell view
+    /// and the panels until the program exits; then the panels come back. This is how F4 runs
+    /// terminal editors. `cwd` is the working directory (non-UTF-8: inherited). `on_error`
+    /// receives the message if the program cannot be started (after this call returned
+    /// `Ok`). Errors: no terminal, or another program already running.
+    pub fn run_program(
+        &self,
+        argv: &[std::ffi::OsString],
+        cwd: Option<&std::path::Path>,
+        on_error: impl Fn(String) + 'static,
+    ) -> Result<(), String> {
+        match self.ui.borrow().as_ref() {
+            Some(ui) => ui.run_program(argv, cwd, Box::new(on_error)),
+            None => Err(crate::i18n::tr("The terminal is not available.").to_owned()),
         }
     }
 

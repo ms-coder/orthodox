@@ -8,11 +8,10 @@
 //! Launching: GUI editors are spawned detached through GIO (`gio::Subprocess`, the child is
 //! reaped by the main loop; the argument vector is exact bytes, so non-UTF-8 names work).
 //! Terminal editors (decided by `terminal = true/false` in config, else by the configured and
-//! built-in lists of well-known terminal editors) run inside the embedded terminal: one input
-//! line, every word quoted with [`ofm_core::cmdline::shell_quote_for`]; the panels come back by
-//! themselves when the shell is at its prompt again.
+//! built-in lists of well-known terminal editors) run inside the embedded terminal as their own
+//! child process with the exact argument vector (`TerminalHandle::run_program`, no line is typed
+//! into the shell); the panels come back when the editor exits.
 
-use std::cell::Cell;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
@@ -21,7 +20,6 @@ use std::rc::Rc;
 use gtk::gio;
 use gtk::prelude::*;
 use ofm_config::config::EditorSection;
-use ofm_core::cmdline::{QuoteStyle, shell_quote_for};
 use ofm_core::mask::{Mask, MaskOpts};
 use ofm_core::{EntryKind, Location, TargetKind, cmd};
 
@@ -29,7 +27,7 @@ use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
 use crate::i18n::tr;
 use crate::jobs::ui;
-use crate::terminal::{self, ShellState};
+use crate::terminal;
 
 /// Editors that need a terminal even when the user's list does not name them.
 pub const BUILTIN_TERMINAL_EDITORS: &[&str] = &[
@@ -258,19 +256,6 @@ pub fn argv(words: &[String], path: &Path) -> Vec<OsString> {
     out
 }
 
-/// The line to type into the shell for a terminal editor: a leading space (kept out of the
-/// history), every argument quoted for `style`, newline added by the terminal.
-pub fn terminal_line(style: QuoteStyle, argv: &[OsString]) -> Vec<u8> {
-    let mut line = String::from(" ");
-    for (i, a) in argv.iter().enumerate() {
-        if i > 0 {
-            line.push(' ');
-        }
-        line.push_str(&shell_quote_for(style, a));
-    }
-    line.into_bytes()
-}
-
 // ---- commands ---------------------------------------------------------------------------------
 
 /// Register `file.edit` (F4). `file.new_file` (Shift+F4) is registered by [`super::newfile`].
@@ -379,74 +364,22 @@ fn launch_gnome_text_editor(path: &Path) -> Result<(), String> {
         })
 }
 
-/// Run a terminal editor in the embedded terminal: type the quoted line, show the terminal and
-/// give it the keyboard focus; when the shell is at its prompt again, bring the panels back.
+/// Run a terminal editor in the embedded terminal as its own child process (exact argv, no
+/// line typed into the shell: no quoting, no half-typed-line or shell-idle problems, every
+/// shell kind works). The panels come back when the editor exits.
 fn run_in_terminal(ctx: &Rc<AppContext>, argv: &[OsString]) -> Result<(), String> {
     let handle =
         terminal::handle(ctx).ok_or_else(|| tr("The terminal is not available.").to_owned())?;
-    match handle.shell_state() {
-        ShellState::Idle => {}
-        ShellState::Busy => {
-            return Err(tr(
-                "The terminal is busy. Finish the running command first (Ctrl+O shows it).",
-            )
-            .to_owned());
-        }
-        ShellState::Exited => return Err(tr("The shell has exited.").to_owned()),
-    }
-    let line = terminal_line(handle.quote_style(), argv);
-    handle.send_line(&line);
-    handle.show();
-    focus_terminal(ctx);
-    if let Some(host) = terminal::shell_host(ctx) {
-        // One-shot: the next transition to Idle is the editor having exited (send_line made the
-        // shell Busy before we connected, so that change is not seen here).
-        let weak = Rc::downgrade(ctx);
-        let id = Rc::new(Cell::new(None));
-        let id2 = Rc::clone(&id);
-        let host2 = Rc::clone(&host);
-        let conn = host.changed.connect(move |state| {
-            if *state != ShellState::Idle {
-                return;
-            }
-            if let Some(i) = id2.take() {
-                host2.changed.disconnect(i);
-            }
-            if let Some(ctx) = weak.upgrade()
-                && let Some(h) = terminal::handle(&ctx)
-                && h.is_visible()
-            {
-                h.hide();
-            }
-        });
-        id.set(Some(conn));
-    }
-    Ok(())
-}
-
-/// Move the keyboard focus into the VTE widget (the terminal module focuses the command line
-/// entry on `show()`, which is wrong while a full-screen editor runs).
-fn focus_terminal(ctx: &AppContext) {
-    let Some(win) = ctx.window() else {
-        return;
+    let cwd = match ctx.active_controller().location() {
+        Location::Local(p) => Some(p),
+        _ => None,
     };
-    if let Some(term) = find_terminal(win.terminal_slot.upcast_ref()) {
-        term.grab_focus();
-    }
-}
-
-fn find_terminal(w: &gtk::Widget) -> Option<vte4::Terminal> {
-    let mut child = w.first_child();
-    while let Some(c) = child {
-        if let Some(t) = c.downcast_ref::<vte4::Terminal>() {
-            return Some(t.clone());
+    let weak = Rc::downgrade(ctx);
+    handle.run_program(argv, cwd.as_deref(), move |msg| {
+        if let Some(ctx) = weak.upgrade() {
+            ui::message(&ctx, tr("Edit"), &msg);
         }
-        if let Some(found) = find_terminal(&c) {
-            return Some(found);
-        }
-        child = c.next_sibling();
-    }
-    None
+    })
 }
 
 #[cfg(test)]
@@ -601,29 +534,5 @@ mod tests {
         let raw = Path::new(OsStr::from_bytes(b"/d/\xff\xfe.txt"));
         let a = argv(&w("ed"), raw);
         assert_eq!(a[1].as_bytes(), b"/d/\xff\xfe.txt");
-    }
-
-    #[test]
-    fn terminal_line_quotes_every_word() {
-        let a = argv(&split_words("vim -p"), Path::new("/d/it's a file"));
-        let line = terminal_line(QuoteStyle::Posix, &a);
-        assert_eq!(
-            String::from_utf8(line).unwrap(),
-            " 'vim' '-p' '/d/it'\\''s a file'"
-        );
-        let line = terminal_line(QuoteStyle::Fish, &a);
-        assert_eq!(
-            String::from_utf8(line).unwrap(),
-            " 'vim' '-p' '/d/it\\'s a file'"
-        );
-    }
-
-    #[test]
-    fn terminal_line_never_carries_raw_control_bytes() {
-        let evil = Path::new(OsStr::from_bytes(b"/d/a\x15b\nc"));
-        let line = terminal_line(QuoteStyle::Posix, &argv(&split_words("vim"), evil));
-        assert!(!line.iter().any(|&b| b < 0x20), "{line:?}");
-        let line = terminal_line(QuoteStyle::Fish, &argv(&split_words("vim"), evil));
-        assert!(!line.iter().any(|&b| b < 0x20), "{line:?}");
     }
 }

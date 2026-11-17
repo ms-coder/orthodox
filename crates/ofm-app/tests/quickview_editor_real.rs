@@ -264,3 +264,64 @@ fn terminal_editor_runs_in_the_embedded_terminal() {
         "the panels did not come back after the terminal editor exited"
     );
 }
+
+/// F4 with a terminal editor on the file under the cursor (a.txt): the editor must get exactly
+/// that path and the panels must be back afterwards. `typed` is typed into the terminal first.
+fn terminal_editor_gets_the_exact_path(shell: &str, typed: &[&str]) {
+    let tools = TempDir::new().unwrap();
+    let (script, marker) = marker_editor(tools.path());
+    let config = format!(
+        "[terminal]\nshell = \"{shell}\"\n[editor]\ncommand = \"{} %f\"\nterminal = true\n",
+        script.display()
+    );
+    let s = launch(&config, &[]);
+    s.keys(&["ctrl+o"]);
+    std::thread::sleep(Duration::from_millis(2500));
+    if !typed.is_empty() {
+        // Ctrl+O focuses the command line entry; a click puts the focus into the VTE itself.
+        let shot = s.shot();
+        let (cx, cy) = ((shot.w / 2).to_string(), (shot.h / 2).to_string());
+        s.x("xdotool", &["mousemove", &cx, &cy, "click", "1"]);
+        std::thread::sleep(Duration::from_millis(300));
+        s.keys(typed);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    s.keys(&["ctrl+o"]);
+    let panels = s.shot();
+    s.keys(&["Down", "Down"]); // a.txt
+    s.keys(&["F4"]);
+    assert!(
+        wait_until(Duration::from_secs(20), || marker.exists()
+            && std::fs::read(&marker).is_ok_and(|b| !b.is_empty())),
+        "the terminal editor did not run ({shell})"
+    );
+    assert_eq!(
+        std::fs::read(&marker).unwrap(),
+        s.left.join("a.txt").as_os_str().as_encoded_bytes()
+    );
+    let back = wait_until(Duration::from_secs(10), || {
+        s.shot().distinct_colors() >= panels.distinct_colors().saturating_sub(4)
+    });
+    assert!(back, "the panels did not come back ({shell})");
+}
+
+/// A shell without idle detection (plain `sh`) never reports a prompt; F4 must still work.
+#[test]
+fn terminal_editor_works_with_a_plain_shell() {
+    if !tools_available() || !real_support::have("sh") {
+        return;
+    }
+    terminal_editor_gets_the_exact_path("/bin/sh", &[]);
+}
+
+/// A half-typed terminal line (`rm -rf `) must never swallow the editor command.
+#[test]
+fn terminal_editor_ignores_a_half_typed_shell_line() {
+    if !tools_available() || !real_support::have("bash") {
+        return;
+    }
+    terminal_editor_gets_the_exact_path(
+        "/bin/bash",
+        &["r", "m", "space", "minus", "r", "f", "space"],
+    );
+}

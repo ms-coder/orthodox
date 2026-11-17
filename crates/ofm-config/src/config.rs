@@ -232,7 +232,7 @@ impl Default for EditorSection {
     fn default() -> Self {
         EditorSection {
             command: String::new(),
-            terminal_editors: ["vim", "nvim", "nano", "mcedit", "emacs", "micro", "hx"]
+            terminal_editors: ["vim", "nvim", "nano", "mcedit", "micro", "hx"]
                 .map(String::from)
                 .to_vec(),
             terminal: None,
@@ -333,6 +333,13 @@ mod tests {
 
     fn paths(d: &tempfile::TempDir) -> ConfigPaths {
         ConfigPaths::with_dirs(d.path().join("c"), d.path().join("s"))
+    }
+
+    #[test]
+    fn emacs_is_not_a_default_terminal_editor() {
+        // GUI emacs must not be forced into the terminal (`emacs -nw` is detected by flag).
+        let d = Config::default();
+        assert!(!d.editor.terminal_editors.iter().any(|e| e == "emacs"));
     }
 
     #[test]

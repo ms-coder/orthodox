@@ -36,6 +36,10 @@ const MAX_LINE_CHARS: usize = 400;
 const SNIFF_LEN: usize = 8192;
 /// Larger image files are not decoded (information table instead).
 const MAX_IMAGE_FILE: u64 = 256 * 1024 * 1024;
+/// Images with more pixels than this are not decoded (a tiny file can declare a huge canvas).
+const MAX_IMAGE_PIXELS: u64 = 100_000_000;
+/// Images wider or taller than this are not decoded.
+const MAX_IMAGE_SIDE: i32 = 30_000;
 /// Running totals of a directory walk are reported at most this often.
 const PROGRESS_EVERY: Duration = Duration::from_millis(120);
 
@@ -370,11 +374,46 @@ fn text_preview(t: &Target, view: ViewBox, cancel: &CancelToken) -> Option<Previ
     }
 }
 
+/// Whether an image of `w` x `h` pixels may be decoded (header values, before any decoding).
+pub fn image_dims_ok(w: i32, h: i32) -> bool {
+    w > 0
+        && h > 0
+        && w <= MAX_IMAGE_SIDE
+        && h <= MAX_IMAGE_SIDE
+        && u64::from(w.unsigned_abs()) * u64::from(h.unsigned_abs()) <= MAX_IMAGE_PIXELS
+}
+
+/// Size of the file as seen through an opened handle (not the listing: for a symlink the
+/// listing holds the link's own size). `None` when it cannot be opened or is not a regular file.
+fn opened_file_size(path: &Path) -> Option<u64> {
+    use std::os::unix::fs::OpenOptionsExt;
+    // O_NONBLOCK: a FIFO swapped in after the listing must not block this worker on open.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    meta.is_file().then_some(meta.len())
+}
+
 fn image_preview(t: &Target, view: ViewBox, fmt: &StatusFormat) -> Option<Preview> {
-    if t.size > MAX_IMAGE_FILE {
-        return None;
-    }
+    let size = opened_file_size(&t.path)?;
+    // Header only: nothing is decoded before the declared dimensions pass the cap.
     let (format, w, h) = Pixbuf::file_info(&t.path)?;
+    let format_name = format
+        .name()
+        .map(|n| n.to_ascii_uppercase())
+        .unwrap_or_default();
+    if size > MAX_IMAGE_FILE || !image_dims_ok(w, h) {
+        let real = Target { size, ..t.clone() };
+        let mut rows = info_rows(&real, format!("{format_name} {}", tr("image")), fmt);
+        rows.push(Row::new(tr("Dimensions"), format!("{w} \u{d7} {h}")));
+        return Some(Preview::Info {
+            rows,
+            note: Some(tr("Image too large to preview").to_owned()),
+        });
+    }
     let (max_w, max_h) = (view.width.max(64), view.height.max(64));
     let pixbuf = if w <= max_w && h <= max_h {
         Pixbuf::from_file(&t.path).ok()?
@@ -384,11 +423,8 @@ fn image_preview(t: &Target, view: ViewBox, fmt: &StatusFormat) -> Option<Previe
     let pixbuf = pixbuf.apply_embedded_orientation().unwrap_or(pixbuf);
     let caption = format!(
         "{w} \u{d7} {h} \u{b7} {} \u{b7} {}",
-        format
-            .name()
-            .map(|n| n.to_ascii_uppercase())
-            .unwrap_or_default(),
-        format_size(t.size, fmt.size)
+        format_name,
+        format_size(size, fmt.size)
     );
     Some(Preview::Image(ImageData {
         width: pixbuf.width(),
@@ -724,6 +760,49 @@ mod tests {
             Preview::Info { .. } => {}
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn image_dimension_cap() {
+        assert!(image_dims_ok(4000, 3000));
+        assert!(image_dims_ok(10_000, 10_000));
+        assert!(!image_dims_ok(60_000, 60_000));
+        assert!(!image_dims_ok(30_001, 1));
+        assert!(!image_dims_ok(11_000, 10_000));
+        assert!(!image_dims_ok(0, 5));
+    }
+
+    /// A PNG whose IHDR declares 60000x60000: only the header exists, so a decode attempt
+    /// would fail with an error preview instead of the information table with the dimensions.
+    #[test]
+    fn huge_declared_png_shows_info_with_dimensions() {
+        let mut png = vec![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13];
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&60_000u32.to_be_bytes());
+        png.extend_from_slice(&60_000u32.to_be_bytes());
+        png.extend_from_slice(&[8, 2, 0, 0, 0, 0, 0, 0, 0]);
+        let d = TempDir::new().unwrap();
+        let t = target(d.path(), "huge.png", &png);
+        let Preview::Info { rows, note } = run(&t) else {
+            panic!("expected an information table");
+        };
+        // Needs the gdk-pixbuf PNG loader (present wherever the decode test above yields an image).
+        if Pixbuf::file_info(&t.path).is_some() {
+            let dims = rows.iter().find(|r| r.label == tr("Dimensions")).unwrap();
+            assert!(dims.value.contains("60000"), "{}", dims.value);
+            assert_eq!(note.as_deref(), Some(tr("Image too large to preview")));
+        }
+    }
+
+    #[test]
+    fn symlinked_image_uses_the_opened_files_size() {
+        let d = TempDir::new().unwrap();
+        let real = d.path().join("real.dat");
+        std::fs::write(&real, vec![0u8; 5000]).unwrap();
+        let link = d.path().join("l.png");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(opened_file_size(&link), Some(5000));
+        assert_eq!(opened_file_size(d.path()), None);
     }
 
     #[test]
