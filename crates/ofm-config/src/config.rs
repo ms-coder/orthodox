@@ -114,6 +114,10 @@ pub struct EditorSection {
     pub command: String,
     /// Editors that run inside the embedded terminal.
     pub terminal_editors: Vec<String>,
+    /// Force how `command` is run: `true` = inside the embedded terminal, `false` = detached GUI
+    /// program, unset = decided by `terminal_editors` and the built-in list of terminal editors.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<bool>,
     /// Per-mask overrides, first match wins.
     pub rule: Vec<EditorRule>,
 }
@@ -126,6 +130,9 @@ pub struct EditorRule {
     pub mask: String,
     /// Command template.
     pub command: String,
+    /// Same meaning as `[editor] terminal`, for this rule's `command`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<bool>,
 }
 
 /// `[terminal]`.
@@ -228,9 +235,11 @@ impl Default for EditorSection {
             terminal_editors: ["vim", "nvim", "nano", "mcedit", "emacs", "micro", "hx"]
                 .map(String::from)
                 .to_vec(),
+            terminal: None,
             rule: vec![EditorRule {
                 mask: "*.md;*.txt".into(),
                 command: String::new(),
+                terminal: None,
             }],
         }
     }
@@ -395,6 +404,7 @@ mod tests {
         c.editor.rule.push(EditorRule {
             mask: "*.rs".into(),
             command: "code %f".into(),
+            terminal: Some(false),
         });
         c.terminal.scrollback = 5;
         c.save(&p).unwrap();

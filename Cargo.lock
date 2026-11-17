@@ -1144,6 +1144,7 @@ dependencies = [
  "ofm-jobs",
  "ofm-testkit",
  "ofm-vfs",
+ "ofm-viewer",
  "tracing",
  "tracing-subscriber",
  "vte4",
