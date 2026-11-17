@@ -192,6 +192,17 @@ impl Running {
     /// Like [`Running::launch_with`], with the panel directories created under `base` (for
     /// tests that need a real disk instead of a tmpfs `/tmp`).
     pub fn launch_in(config: &str, base: &Path, left: &TreeSpec, right: &TreeSpec) -> Running {
+        Running::launch_env(config, base, left, right, &[])
+    }
+
+    /// Like [`Running::launch_in`] with extra environment variables for the app (`EDITOR`, ...).
+    pub fn launch_env(
+        config: &str,
+        base: &Path,
+        left: &TreeSpec,
+        right: &TreeSpec,
+        env: &[(&str, &std::ffi::OsStr)],
+    ) -> Running {
         let x = Xvfb::start();
         let xdg = TreeSpec::new().build_temp().unwrap();
         let mk = |spec: &TreeSpec| {
@@ -226,6 +237,7 @@ impl Running {
             // No session bus: GApplication is then not single-instance, so a developer's running
             // OFM (or a leftover one) can never swallow our launch.
             .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+            .envs(env.iter().copied())
             // Debugging aid: OFM_E2E_LOG=<file> captures the app's tracing output (stdout) and
             // GTK warnings (stderr); combine with RUST_LOG=debug.
             .stdout(log_sink())

@@ -13,7 +13,9 @@ use std::rc::Rc;
 use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
 use crate::window::{MainWindow, PanelView};
-use crate::{chrome, cmdline, dialogs, jobs, navigation, terminal, widgets, window};
+use crate::{
+    chrome, cmdline, desktop, dialogs, jobs, navigation, quickview, terminal, widgets, window,
+};
 
 /// Register command handlers. Every module registers only commands it owns (OWNERSHIP.md);
 /// duplicates are detected by a test.
@@ -26,6 +28,8 @@ pub fn install_commands(reg: &mut CommandRegistry) {
     jobs::install_commands(reg); // T3.3: file.copy/move/delete/..., app.jobs, jobs.*
     terminal::install_commands(reg); // T4.1: app.terminal_toggle
     cmdline::install_commands(reg); // T4.2: cmdline.*
+    desktop::install_commands(reg); // T5.2b: file.edit, file.new_file
+    quickview::install_commands(reg); // T5.2b: panel.toggle_quickview
 }
 
 /// Create module-owned state and store it with `ctx.ext.insert(Rc::new(..))`.
@@ -37,6 +41,7 @@ pub fn install_state(ctx: &Rc<AppContext>) {
     jobs::install_state(ctx); // T3.3: JobsController in ctx.ext
     terminal::install_state(ctx); // T4.1: ShellHost + TerminalHandle in ctx.ext
     cmdline::install_state(ctx); // T4.2: CmdlineState in ctx.ext
+    quickview::install_state(ctx); // T5.2b: QuickView in ctx.ext
 }
 
 /// Decorate one panel view right after it is built (tab bar, quick-search popover, ...).
@@ -45,6 +50,7 @@ pub fn install_panel_view(ctx: &Rc<AppContext>, view: &PanelView) {
     navigation::install_panel_view(ctx, view); // T2.3
     terminal::install_panel_view(ctx, view); // T4.1: per-tab cd sync
     cmdline::install_panel_view(ctx, view); // T4.2: reserved
+    quickview::install_panel_view(ctx, view); // T5.2b: preview pane over the file list
 }
 
 /// Fill window regions once the whole `MainWindow` exists (menu bar, F-key bar, status line).
