@@ -674,7 +674,7 @@ fn growing_file_while_open_reads_via_pread() {
     let p = dir.path().join("growing.txt");
     std::fs::write(&p, b"abc").unwrap();
     let doc = Document::open(&p).unwrap();
-    assert_eq!(doc.source_kind(), SourceKind::Mapped);
+    assert_eq!(doc.source_kind(), SourceKind::File);
     assert_eq!(doc.len(), 3);
 
     // Another process/appends: the mapping stays, the file grows.
@@ -778,7 +778,7 @@ fn sparse_10gb_first_screen_and_cancellable_search() {
     let t0 = Instant::now();
     let doc = Document::open(&p).unwrap();
     let open_ms = t0.elapsed().as_millis();
-    assert_eq!(doc.source_kind(), SourceKind::Mapped);
+    assert_eq!(doc.source_kind(), SourceKind::File);
     assert_eq!(doc.len(), SPARSE_LEN);
     assert!(open_ms < 500, "open took {open_ms} ms (spec: instant)");
 
@@ -841,13 +841,96 @@ fn unreadable_file_returns_open_error() {
 }
 
 // ---------------------------------------------------------------------------
-// Known bugs (reported, do not pass yet)
+// Concurrency: concurrent truncate/extend vs reads and search (SIGBUS regression)
+// ---------------------------------------------------------------------------
+
+const STRESS_SIZE: u64 = 64 * 1024 * 1024; // 64 MiB
+const STRESS_SECONDS: u64 = 3;
+
+/// Spawn a thread that loops `set_len(0)` / `set_len(STRESS_SIZE)` until `stop` is set.
+/// Returns the join handle and the shared stop flag.
+fn truncate_loop(
+    path: std::path::PathBuf,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+            f.set_len(0).unwrap();
+            f.set_len(STRESS_SIZE).unwrap();
+        }
+    })
+}
+
+#[test]
+fn concurrent_truncate_and_read_at_never_faults() {
+    // One thread loops read_at over 1 MiB windows, another loops set_len(0)/set_len(size).
+    // With the old mmap fast path this process dies with SIGBUS within seconds.
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("race.bin");
+    {
+        let f = std::fs::File::create(&p).unwrap();
+        f.set_len(STRESS_SIZE).unwrap();
+    }
+    let doc = Document::open(&p).unwrap();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hammer = truncate_loop(p.clone(), stop.clone());
+
+    let deadline = Instant::now() + std::time::Duration::from_secs(STRESS_SECONDS);
+    let mut buf = vec![0u8; 1024 * 1024];
+    let mut total_read: u64 = 0;
+    while Instant::now() < deadline {
+        for off in (0..STRESS_SIZE).step_by(buf.len()) {
+            // Must never crash; short reads (possibly 0 past the truncated end) are fine.
+            total_read += doc.read_at(off, &mut buf).unwrap() as u64;
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    hammer.join().unwrap();
+    eprintln!("concurrent truncate/read_at: {total_read} MiB read in {STRESS_SECONDS}s");
+}
+
+#[test]
+fn concurrent_truncate_and_search_never_faults() {
+    // Same race, but through the search path: scanning reads chunk windows via read_at and
+    // must survive the file shrinking underneath (short/empty reads, no SIGBUS, no error).
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("race-search.bin");
+    {
+        let mut f = std::fs::File::create(&p).unwrap();
+        // "needle" repeated: something to find when the file is extended.
+        let line = b"needle line\n";
+        for _ in 0..(STRESS_SIZE as usize / line.len()) {
+            f.write_all(line).unwrap();
+        }
+    }
+    let doc = Document::open(&p).unwrap();
+    let needle = prepared(
+        Needle::Text("needle".into()),
+        Encoding::Utf8,
+        &SearchOptions::strict(),
+    );
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hammer = truncate_loop(p.clone(), stop.clone());
+
+    let deadline = Instant::now() + std::time::Duration::from_secs(STRESS_SECONDS);
+    let cancel = CancelToken::new();
+    let mut scans = 0u64;
+    while Instant::now() < deadline {
+        // Any outcome is fine (hit, miss, cancel); only a crash or a hard error is a bug.
+        let _ = find_next(&doc, &needle, 0, &SearchOptions::strict(), &cancel);
+        scans += 1;
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    hammer.join().unwrap();
+    eprintln!("concurrent truncate/search: {scans} scans in {STRESS_SECONDS}s");
+}
+
+// ---------------------------------------------------------------------------
+// Previews: line-break rules agree with the viewer (lone CR)
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "BUG: TextPreviewProvider splits lines with str::lines (LF/CRLF only) and \
-            merges lone-CR-separated lines; the viewer's LineIndex breaks on lone CR \
-            per MC semantics, so quick-view line counts disagree with F3 for such files"]
 fn preview_counts_lone_cr_lines_like_the_viewer() {
     // "alpha\rbeta\n" is two viewer lines (lone CR breaks) but one str::lines entry.
     let dir = tempfile::tempdir().unwrap();

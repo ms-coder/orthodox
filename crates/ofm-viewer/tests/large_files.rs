@@ -38,7 +38,7 @@ fn sparse_10gib_opens_and_reads_first_screen_fast() {
     let t0 = Instant::now();
     let doc = Document::open(&p).unwrap();
     let open_ms = t0.elapsed().as_millis();
-    assert_eq!(doc.source_kind(), SourceKind::Mapped);
+    assert_eq!(doc.source_kind(), SourceKind::File);
     assert_eq!(doc.len(), SPARSE_LEN);
     assert!(
         open_ms < 500,

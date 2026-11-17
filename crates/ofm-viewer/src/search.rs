@@ -10,6 +10,12 @@
 //! Capitalized, UPPER); Unicode folding is not byte-compatible with arbitrary encodings, so
 //! it is out of scope for v1.0. Case-insensitive *regex* search delegates to the regex engine
 //! and is Unicode-aware when the pattern is valid UTF-8.
+//!
+//! UTF-16 alignment: in UTF-16LE/BE modes every reported match (text, hex, or regex) must
+//! start at an even byte offset — a code-unit boundary. A needle whose encoded bytes happen
+//! to appear across two adjacent code units (e.g. "a" = `61 00` inside U+6100 U+4E00) is a
+//! false positive and is skipped; the scan continues at offset+1. The parity of the BOM
+//! length (2 for UTF-16) means absolute file offsets can be checked directly.
 
 use ofm_core::CancelToken;
 use regex::bytes::RegexBuilder;
@@ -83,12 +89,32 @@ pub enum SearchError {
 }
 
 /// A needle ready for scanning.
+///
+/// Carries the code-unit alignment of the document's encoding: in UTF-16 modes every
+/// reported match is checked to start on an even byte offset (code-unit boundary) so a
+/// needle's encoded bytes cannot match across two adjacent code units (e.g. searching for
+/// "a" in a file containing U+6100). Build via [`Needle::prepare`].
 #[derive(Debug, Clone)]
-pub enum PreparedNeedle {
+pub struct PreparedNeedle {
+    kind: PreparedKind,
+    /// 1 for byte-oriented encodings, 2 for UTF-16 (matches must start at even offsets).
+    unit_align: usize,
+}
+
+#[derive(Debug, Clone)]
+enum PreparedKind {
     /// Literal byte variants (memmem), searched in order; the minimum offset wins.
     Bytes(Vec<Vec<u8>>),
     /// Compiled byte regex.
     Regex(regex::bytes::Regex),
+}
+
+impl PreparedNeedle {
+    /// Byte alignment matches must honour: 2 in UTF-16 modes (matches may only start at
+    /// even offsets), 1 otherwise.
+    pub fn unit_align(&self) -> usize {
+        self.unit_align
+    }
 }
 
 impl Needle {
@@ -98,22 +124,23 @@ impl Needle {
         encoding: Encoding,
         opts: &SearchOptions,
     ) -> Result<PreparedNeedle, SearchError> {
-        match self {
+        let unit_align = match encoding {
+            Encoding::Utf16Le | Encoding::Utf16Be => 2,
+            _ => 1,
+        };
+        let kind = match self {
             Needle::Text(s) => {
                 if s.is_empty() {
                     return Err(SearchError::EmptyNeedle);
                 }
                 let raw = encode_text(&s, encoding);
-                Ok(PreparedNeedle::Bytes(byte_variants(
-                    &raw,
-                    opts.case_sensitive,
-                )))
+                PreparedKind::Bytes(byte_variants(&raw, opts.case_sensitive))
             }
             Needle::Hex(v) => {
                 if v.is_empty() {
                     return Err(SearchError::EmptyNeedle);
                 }
-                Ok(PreparedNeedle::Bytes(vec![v]))
+                PreparedKind::Bytes(vec![v])
             }
             Needle::Regex(p) => {
                 if p.is_empty() {
@@ -122,9 +149,10 @@ impl Needle {
                 let re = RegexBuilder::new(&p)
                     .case_insensitive(!opts.case_sensitive)
                     .build()?;
-                Ok(PreparedNeedle::Regex(re))
+                PreparedKind::Regex(re)
             }
-        }
+        };
+        Ok(PreparedNeedle { kind, unit_align })
     }
 }
 
@@ -168,9 +196,9 @@ fn byte_variants(raw: &[u8], case_sensitive: bool) -> Vec<Vec<u8>> {
 }
 
 fn overlap_for(needle: &PreparedNeedle) -> usize {
-    match needle {
-        PreparedNeedle::Bytes(vs) => vs.iter().map(Vec::len).max().unwrap_or(1).saturating_sub(1),
-        PreparedNeedle::Regex(_) => MIN_OVERLAP,
+    match &needle.kind {
+        PreparedKind::Bytes(vs) => vs.iter().map(Vec::len).max().unwrap_or(1).saturating_sub(1),
+        PreparedKind::Regex(_) => MIN_OVERLAP,
     }
     .max(1)
 }
@@ -213,6 +241,9 @@ pub fn find_prev(
 }
 
 /// Scan `[lo, hi)` forward for the first match.
+///
+/// In UTF-16 modes a candidate match at an odd absolute offset is a false positive (the
+/// needle's bytes span two code units); it is skipped and the scan continues at offset+1.
 fn scan(
     doc: &Document,
     needle: &PreparedNeedle,
@@ -231,23 +262,29 @@ fn scan(
         if buf.is_empty() {
             return Ok(None);
         }
-        let m = find_in(&buf, needle, false);
-        match m {
-            Some((rel, mlen)) if rel < SEARCH_CHUNK || buf.len() < want => {
+        // Walk candidates, skipping misaligned (odd-offset) matches in UTF-16 modes.
+        let mut base = 0usize;
+        while let Some((rel, mlen)) = find_in(&buf[base..], needle, false) {
+            let rel = base + rel;
+            let abs = pos + rel as u64;
+            if needle.unit_align == 2 && !abs.is_multiple_of(2) {
+                base = rel + 1;
+                continue;
+            }
+            if rel < SEARCH_CHUNK || buf.len() < want {
                 return Ok(Some(Match {
-                    offset: pos + rel as u64,
+                    offset: abs,
                     len: mlen,
                 }));
             }
-            Some(_) | None => {
-                // Match fully inside the overlap tail (or none): advance one chunk; the tail
-                // region is re-read by the next window.
-                if buf.len() < want {
-                    return Ok(None); // EOF
-                }
-                pos += SEARCH_CHUNK as u64;
-            }
+            // Match fully inside the overlap tail: fall through and advance one chunk; the
+            // tail region is re-read by the next window.
+            break;
         }
+        if buf.len() < want {
+            return Ok(None); // EOF
+        }
+        pos += SEARCH_CHUNK as u64;
     }
     Ok(None)
 }
@@ -275,14 +312,14 @@ fn scan_back(
         let start = read_end - want;
         let buf = doc.read_range(start, want as usize)?;
         // Walk matches from the back; skip any starting at/after `hi` (they belong to the
-        // forward side of `from`).
+        // forward side of `from`) and any misaligned match in UTF-16 modes.
         let mut limit = buf.len();
         let mut found = None;
         while limit > 0 {
             match find_in(&buf[..limit], needle, true) {
                 Some((rel, mlen)) => {
                     let abs = start + rel as u64;
-                    if abs < hi {
+                    if abs < hi && (needle.unit_align != 2 || abs.is_multiple_of(2)) {
                         found = Some((abs, mlen));
                         break;
                     }
@@ -307,8 +344,8 @@ fn scan_back(
 
 /// First/last match of `needle` in `buf` as `(rel_offset, len)`.
 fn find_in(buf: &[u8], needle: &PreparedNeedle, back: bool) -> Option<(usize, usize)> {
-    match needle {
-        PreparedNeedle::Bytes(vs) => {
+    match &needle.kind {
+        PreparedKind::Bytes(vs) => {
             let mut best: Option<(usize, usize)> = None;
             for v in vs {
                 let found = if back {
@@ -332,7 +369,7 @@ fn find_in(buf: &[u8], needle: &PreparedNeedle, back: bool) -> Option<(usize, us
             }
             best
         }
-        PreparedNeedle::Regex(re) => {
+        PreparedKind::Regex(re) => {
             if back {
                 re.find_iter(buf)
                     .last()
@@ -545,6 +582,151 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn utf16_alignment_rejects_unit_straddling_matches() {
+        // U+6100 U+4E00 U+4E00 contains no "a", but the UTF-16LE encoding of "a" (61 00)
+        // appears at odd offsets where code units meet. Both endians, with and without BOM,
+        // forward and backward must reject those.
+        let no_cancel = CancelToken::new();
+        let strict = SearchOptions::strict();
+        for (enc, le) in [(Encoding::Utf16Le, true), (Encoding::Utf16Be, false)] {
+            for bom in [false, true] {
+                let mut data = Vec::new();
+                if bom {
+                    data.extend_from_slice(if le { &[0xFF, 0xFE] } else { &[0xFE, 0xFF] });
+                }
+                for u in [0x6100u16, 0x4E00, 0x4E00] {
+                    let unit = if le { u.to_le_bytes() } else { u.to_be_bytes() };
+                    data.extend_from_slice(&unit);
+                }
+                let doc = doc_with(&data);
+                let n = Needle::Text("a".into()).prepare(enc, &strict).unwrap();
+                assert!(
+                    find_next(&doc, &n, 0, &strict, &no_cancel)
+                        .unwrap()
+                        .is_none(),
+                    "forward false positive enc={enc:?} bom={bom}"
+                );
+                assert!(
+                    find_prev(&doc, &n, doc.len(), &strict, &no_cancel)
+                        .unwrap()
+                        .is_none(),
+                    "backward false positive enc={enc:?} bom={bom}"
+                );
+                assert_eq!(n.unit_align(), 2);
+            }
+        }
+        // A real "a" after the CJK run is found at its even offset, forward and backward.
+        let mut data: Vec<u8> = [0x6100u16, 0x4E00]
+            .iter()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        data.extend_from_slice(&0x0061u16.to_le_bytes()); // "a"
+        let doc = doc_with(&data);
+        let n = Needle::Text("a".into())
+            .prepare(Encoding::Utf16Le, &strict)
+            .unwrap();
+        let m = find_next(&doc, &n, 0, &strict, &no_cancel)
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.offset, 4);
+        let m = find_prev(&doc, &n, doc.len(), &strict, &no_cancel)
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.offset, 4);
+        // Starting from inside the match, the next search (no wrap) finds nothing.
+        assert!(
+            find_next(&doc, &n, 5, &strict, &no_cancel)
+                .unwrap()
+                .is_none()
+        );
+        // Byte-oriented encodings never filter.
+        let n = Needle::Text("a".into())
+            .prepare(Encoding::Utf8, &strict)
+            .unwrap();
+        assert_eq!(n.unit_align(), 1);
+        let doc = doc_with(&[0x61, 0x00, 0x62]);
+        let m = find_next(&doc, &n, 0, &strict, &no_cancel)
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.offset, 0); // 00 62 is not "a"; only offset 0 matches
+    }
+
+    #[test]
+    fn utf16_alignment_applies_to_hex_and_regex_needles() {
+        // Hex and regex needles in UTF-16 mode must honour unit alignment as well.
+        let no_cancel = CancelToken::new();
+        let strict = SearchOptions::strict();
+        // U+6100 U+6100 U+0061: bytes 00 61 | 00 61 | 61 00 — the hex needle `61 00`
+        // appears misaligned at offset 1 and aligned (a real "a") at offset 4.
+        let data = [0x6100u16, 0x6100, 0x0061]
+            .iter()
+            .flat_map(|u| u.to_le_bytes())
+            .collect::<Vec<u8>>();
+        let doc = doc_with(&data);
+
+        let n = Needle::Hex(vec![0x61, 0x00])
+            .prepare(Encoding::Utf16Le, &strict)
+            .unwrap();
+        assert_eq!(n.unit_align(), 2);
+        let m = find_next(&doc, &n, 0, &strict, &no_cancel)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (m.offset, m.len),
+            (4, 2),
+            "hex needle must skip the misaligned hit at offset 1"
+        );
+        let m = find_prev(&doc, &n, doc.len(), &strict, &no_cancel)
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.offset, 4);
+
+        // U+6100 U+6200 U+0062: bytes 00 61 | 00 62 | 62 00 — regex "b" (byte 0x62) matches
+        // misaligned at offset 3 (the low byte of U+6200) and aligned at offset 4 ('b').
+        let data = [0x6100u16, 0x6200, 0x0062]
+            .iter()
+            .flat_map(|u| u.to_le_bytes())
+            .collect::<Vec<u8>>();
+        let doc = doc_with(&data);
+        let n = Needle::Regex(r"b".into())
+            .prepare(Encoding::Utf16Le, &strict)
+            .unwrap();
+        let m = find_next(&doc, &n, 0, &strict, &no_cancel)
+            .unwrap()
+            .unwrap();
+        assert_eq!((m.offset, m.len), (4, 1), "'b' is the aligned match");
+        let m = find_prev(&doc, &n, doc.len(), &strict, &no_cancel)
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.offset, 4);
+    }
+
+    #[test]
+    fn utf16_alignment_straddling_chunk_boundary() {
+        // A misaligned candidate right at the 1 MiB search-chunk boundary must be rejected
+        // and the scan must continue into the next window, finding the aligned hit.
+        let no_cancel = CancelToken::new();
+        let strict = SearchOptions::strict();
+        let mut data = vec![0u8; 2 * SEARCH_CHUNK + 16];
+        // Real "a" (61 00) 2 bytes past the boundary.
+        data[SEARCH_CHUNK + 2] = 0x61;
+        // Misaligned 61 00 straddling the boundary (offset SEARCH_CHUNK-1).
+        data[SEARCH_CHUNK - 1] = 0x61;
+        let doc = doc_with(&data);
+        let n = Needle::Text("a".into())
+            .prepare(Encoding::Utf16Le, &strict)
+            .unwrap();
+        let m = find_next(&doc, &n, 0, &strict, &no_cancel)
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.offset, SEARCH_CHUNK as u64 + 2);
+        let m = find_prev(&doc, &n, doc.len(), &strict, &no_cancel)
+            .unwrap()
+            .unwrap();
+        assert_eq!(m.offset, SEARCH_CHUNK as u64 + 2);
     }
 
     #[test]

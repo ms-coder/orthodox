@@ -99,14 +99,22 @@ impl PreviewProvider for TextPreviewProvider {
         let bytes = doc.read_range(detection.bom_len as u64, want)?;
         let text = decode_range(encoding, &bytes);
 
-        // Count lines in the decoded head; the total is exact only if the whole file fit.
+        // Count lines with the viewer's line rules (LF, CRLF, lone CR) so quick-view line
+        // counts agree with F3; str::lines() would miss lone-CR breaks. Line ranges fall on
+        // ASCII terminator bytes (or the text edges), so they are always char boundaries.
+        let mut index = crate::line_index::LineIndex::new();
+        index.index_chunk(text.as_bytes());
+        index.finish();
         let fully_read = detection.bom_len as u64 + bytes.len() as u64 >= doc.len();
-        let all_count = text.lines().count();
+        let all_count = index.line_count();
         let total_lines = (fully_read && all_count <= self.max_lines).then_some(all_count);
-        let lines: Vec<String> = text
-            .lines()
-            .take(self.max_lines)
-            .map(str::to_owned)
+        let lines: Vec<String> = (0..index.line_count().min(self.max_lines))
+            .filter_map(|n| {
+                index
+                    .line_range(n)
+                    .and_then(|r| text.get(r.start as usize..r.end as usize))
+                    .map(str::to_owned)
+            })
             .collect();
         Ok(Preview::Text {
             lines,

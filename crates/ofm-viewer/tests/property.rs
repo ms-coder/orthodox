@@ -9,7 +9,7 @@ use ofm_core::CancelToken;
 use ofm_viewer::encoding::{Encoding, align_down_to_boundary, align_up_to_boundary, decode_range};
 use ofm_viewer::hex::hex_rows;
 use ofm_viewer::line_index::{CHUNK_SIZE, LineIndex};
-use ofm_viewer::search::{Needle, PreparedNeedle, SearchOptions, find_next, find_prev};
+use ofm_viewer::search::{Needle, SearchOptions, find_next, find_prev};
 use ofm_viewer::{Document, SourceKind};
 use proptest::prelude::*;
 
@@ -77,8 +77,10 @@ proptest! {
             let _ = idx.line_range(n);
         }
         let (_dir, doc) = doc_from(&data);
-        let needle_len = cut.min(4).min(data.len());
-        let needle = PreparedNeedle::Bytes(vec![data[..needle_len].to_vec()]);
+        let needle_len = cut.min(4).min(data.len()).max(1); // keep the needle non-empty
+        let needle = Needle::Hex(data[..needle_len].to_vec())
+            .prepare(enc, &SearchOptions::strict())
+            .unwrap();
         let _ = find_next(&doc, &needle, 0, &SearchOptions::strict(), &CancelToken::new());
     }
 
@@ -149,5 +151,5 @@ fn empty_document_is_mapped_or_buffered_but_never_panics() {
 #[test]
 fn source_kind_is_sane() {
     let (_dir, doc) = doc_from(b"hello");
-    assert_eq!(doc.source_kind(), SourceKind::Mapped);
+    assert_eq!(doc.source_kind(), SourceKind::File);
 }
