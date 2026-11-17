@@ -33,6 +33,7 @@ pub mod quickview;
 pub mod signal;
 pub mod terminal;
 pub mod theme;
+pub mod viewer;
 pub mod widgets;
 pub mod window;
 pub mod wiring;
