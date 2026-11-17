@@ -18,9 +18,11 @@ directory and shell cwd staying in sync. Running each command in a fresh subproc
   itself, and the next panel→shell sync aligns the shell. `cd -` and anything not resolvable
   purely (`cd -P x`, variables) goes to the shell; its OSC 7 reply moves the panel.
 - Quoting for inserted names (Ctrl+Enter, Ctrl+F) uses `shell_quote` on bytes.
-- Terminal editors (`vim`, `nano`, `mcedit`, F4 with `editor.terminal_editors`) run inside this
-  terminal: feed `"<editor> -- <shell_quote path>\n"` through `TerminalHandle::send_line`, then
-  `show()`; the shell is Busy until the editor exits (M5 wires F4 to this).
+- Terminal editors (`vim`, `nano`, `mcedit`, F4 with `editor.terminal_editors`) run inside the
+  terminal area but NOT through the shell (changed in T5.5b after the M5 review): the editor is
+  spawned as its own VTE child with an exact argv via `TerminalHandle::run_program`, replacing the
+  shell view until it exits, then the panels return. Nothing is typed into the shell, so there is
+  no quoting, half-typed-line or Idle-detection problem and it works for every shell kind.
 
 ### Spawning and rc injection (OSC 7 emission)
 

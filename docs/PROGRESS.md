@@ -4,7 +4,7 @@ The lead keeps this file current after every task. A fresh session must be able 
 
 ## Current state
 
-- Milestone: M4 done (tag m4-done); next M5 UI. M3 (File operations) — **waiting for Igor at gate G2** (tag m3-done). All of T3.0–T3.7 merged, check.sh green. Reviews: T3.5 BLOCK -> T3.6 fixes -> re-review SIGN OFF WITH CONDITIONS -> T3.7 (N1 default ACL, N2 FAT unstable inodes, N3 chmod restore) merged and verified by the lead (reviewer's N1 repro now clean).
+- Milestone: M5 done (tag m5-done); next M6 archives (not started - Igor stopped the session here to continue later). M4 done (m4-done). M3 (File operations) — **waiting for Igor at gate G2** (tag m3-done). All of T3.0–T3.7 merged, check.sh green. Reviews: T3.5 BLOCK -> T3.6 fixes -> re-review SIGN OFF WITH CONDITIONS -> T3.7 (N1 default ACL, N2 FAT unstable inodes, N3 chmod restore) merged and verified by the lead (reviewer's N1 repro now clean).
 - Next step: read Igor's G2 feedback into the "Gate feedback log", fix what he finds, then M4 (command line & terminal; T4.0 architect design first). GLM quota resets 2026-11-16 09:31 (server time); until then use Sonnet sparingly (Igor: save tokens), no Opus unless extremely important.
 
 ### G2: trust the copy engine — please try this (ONLY ON COPIES OF YOUR DATA)
@@ -36,7 +36,7 @@ Tell me anything odd: slowness, wrong dialog wording (own-output collisions say 
 | M2 | UI shell (G1) | done | m2-done | | |
 | M3 | File operations (G2) | waiting for Igor | m3-done | | |
 | M4 | Command line & terminal | done | m4-done | review BLOCK -> T4.5 fixes, verified by lead |
-| M5 | Viewer & quick view | not started | | |
+| M5 | Viewer & quick view | done | m5-done | review SIGN OFF WITH CONDITIONS -> T5.5a/b fixes, verified by lead |
 | M6 | Archives | not started | | |
 | M7 | Search & panelize | not started | | |
 | M8 | Power features & desktop (G3) | not started | | |
@@ -178,3 +178,9 @@ Deferred to M9: N4 NFS retransmitted link() EEXIST can leave moved item at sourc
 - #1 SIGBUS reachable: `Document::read_at` copies from the mmap after a stat; truncate in between kills the process (reviewer reproduced in 20 s with a truncate loop; Kimi's tests truncate before reading so missed it). Fix: always pread. #2 UTF-16 search returns odd-offset (misaligned) matches. #3 quick view image: no pixel cap (decompression bomb). #4 terminal-editor launch: appends to a half-typed terminal line (`rm -rf ` + F4), plain shells never become Idle so F4 always says busy, `emacs` in default terminal_editors hides panels for GUI emacs. Also: lone-CR preview, FIFO swap hang in Document::open (O_NONBLOCK + fstat), LineIndex UTF-16.
 - Running: T5.5a (Kimi, ofm-viewer: #1 #2 lone-CR FIFO LineIndex) branch m5/T5.5a-viewer-fixes in ../orthodox-wt-T5.5a; T5.5b (ui-engineer Sonnet: #3 #4 + stale preview header) branch m5/T5.5b-ui-fixes. Then merge, check, tag m5-done.
 - Backlog (M9): dir summary walk does not stop at mount points (cursor on `/` walks /proc,/sys until cursor moves); walk thread not cancelled on window close; harness should dump OFM_E2E_LOG + exit status/signal when "ofm exited during start-up" fires (flake evidence); cosmetic 1-px specks.
+
+## 2026-11-17 — M5 closed (session stopped here by Igor; resume with M6)
+- T5.5a (Kimi, ofm-viewer): reads are pread only (no mmap) so a concurrent truncate cannot SIGBUS; stress tests `concurrent_truncate_and_{read_at,search}_never_faults`; UTF-16 search is unit-aligned; Document::open is O_NONBLOCK+fstat (FIFOs/devices/dirs rejected); lone-CR preview fixed (test un-ignored); LineIndex documented/fixed. T5.5b (Sonnet): quick-view pixel cap (100 MP / 30000 px, header via Pixbuf::file_info) and size from the opened fd; F4 terminal editors now run via `TerminalHandle::run_program` (own VTE child, exact argv, works for all shells, immune to half-typed lines) — ADR-0003 updated; `emacs` removed from default terminal_editors. check.sh green on merged main.
+- Flake notes: `real_binary_fileops::shift_f6_renames_in_place` timed out once (15 s) while another agent ran a full test suite concurrently; 4/4 pass alone, full check green when idle. E2E tests are load-sensitive: do not run two check.sh at once (agents running check.sh in parallel with the lead can cause these).
+- Open (M8/M9): quick view preview side keeps stale status line ("Up one level"); a "Quick view" header attempt made `quick_view_follows_the_cursor_and_restores_the_panel` fail with a 4-px diff after the 2nd Ctrl+Q (reverted; look at that screenshot diff); 1-px specks in Adwaita/Commander-light dir previews; dir-summary walk crosses mount points; viewer: no file name in status line, no selection/copy, ASCII-only case folding; harness should log OFM_E2E_LOG + exit status on "ofm exited during start-up".
+- Igor can try M4+M5 features now (cargo run -p ofm-app): Ctrl+O/F12 terminal, F11 command line, F3 viewer (F4 hex, F2 wrap, F7 search, F8 encoding, Alt+F8 goto), Ctrl+Q quick view, F4/Shift+F4 editor. Unverified by hand: VTE duplicate-URI cwd sync after `ls` twice in the same dir. Still open from G2: USB stick results, jobs-view cancel retest, Alt+F2 on Wayland, F10-quit leaves no .ofm-part.
