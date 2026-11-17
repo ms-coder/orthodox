@@ -1220,6 +1220,7 @@ dependencies = [
  "memchr",
  "memmap2",
  "ofm-core",
+ "ofm-testkit",
  "proptest",
  "regex",
  "tempfile",
