@@ -9,9 +9,11 @@
 //!
 //! A viewer session looks like this:
 //!
-//! 1. [`Document::open`] maps (or buffers) a file. It never reads data at open time, so a 10 GB
-//!    sparse file opens instantly. All heavy calls take `&self`, are `Send + Sync`, and accept an
-//!    [`ofm_core::CancelToken`].
+//! 1. [`Document::open`] opens the file `O_NONBLOCK` and fstats the fd: anything that is not
+//!    a regular file (directory, FIFO, device, socket) is rejected with a clear error, so a
+//!    path swapped after listing can never hang the calling thread. No data is read at open
+//!    time, so a 10 GB sparse file opens in microseconds. All heavy calls take `&self`, are
+//!    `Send + Sync`, and accept an [`ofm_core::CancelToken`].
 //! 2. [`detect_encoding`] picks UTF-8 / UTF-16LE/BE / windows-1251 / IBM866 / KOI8-R / ISO-8859-1
 //!    (BOM → UTF-8 validity of the first 64 KiB → chardetng).
 //! 3. [`index_document`] builds a [`LineIndex`] lazily in 4 MiB chunks on a worker; the UI can
@@ -34,10 +36,8 @@
 //! - Case-insensitive text search folds ASCII only (upper/lower/title byte variants).
 //! - Regex search runs [`regex::bytes`] on raw bytes; build the pattern from the needle encoded
 //!   in the current encoding for non-UTF-8 files.
-//! - If a mapped file is truncated by another process, reads beyond the new end can SIGBUS. This
-//!   crate guards every access with a current file-size check and falls back to `pread`, which
-//!   short-reads instead of faulting; a true TOCTOU race on the last byte of a shrinking file
-//!   can still fault — reopen the document in that (rare) case.
+//! - All document reads are `pread`, never mmap: a file truncated by another process
+//!   short-reads instead of SIGBUS, with no size-check race at all.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod document;

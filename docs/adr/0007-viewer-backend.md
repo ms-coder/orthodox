@@ -13,13 +13,19 @@ from the GTK main thread.
 
 - `ofm-viewer` has **no gtk/glib/gio**. It reuses `ofm_core::CancelToken`; every heavy call
   takes `&self` + `&CancelToken`, is `Send + Sync`, and is safe to run on a worker thread.
-- `Document`: `memmap2` for regular files (open reads nothing; first screen = page faults);
-  buffered fallback capped at 64 MiB for pipes/`/proc`. Every read re-checks the current file
-  size and falls back to `pread` so a concurrent truncation short-reads instead of SIGBUS
-  (TOCTOU on the very last byte is documented in the crate docs).
+- `Document`: **no mmap** — every read is `pread` on the open fd, so a file truncated by
+  another process short-reads instead of SIGBUS, with no size-check TOCTOU window at all
+  (T5.5a; the original mmap fast path could SIGBUS between the stat and the page-in and
+  has been removed). Open uses `O_NONBLOCK` plus an fstat regular-file check, so a path
+  swapped for a FIFO/socket/device after a directory listing fails open with a clear error
+  instead of blocking the thread forever; size-0 regular files (`/proc`) fall back to a
+  buffered read capped at 64 MiB. A 10 GB sparse file still opens in microseconds (no data
+  is read at open) and the first screen reads in < 100 ms.
 - `LineIndex`: caller-fed 4 MiB chunks; `\n`, `\r\n`, and lone `\r` all break lines (MC
   semantics); no phantom line after a trailing newline; `index_document` publishes progress
-  through a caller-owned `AtomicU64`.
+  through a caller-owned `AtomicU64`. Byte-oriented, ASCII-compatible encodings only —
+  raw UTF-16 miscounts (CRLF = two breaks, offsets mid-unit); the GTK UI does its own
+  encoding-aware scanning and does not use it in v1.0.
 - Encodings via `encoding_rs` (UTF-8, UTF-16LE/BE, windows-1251, IBM866, KOI8-R,
   ISO-8859-1=windows-1252 superset). Detection: BOM → valid UTF-8 in first 64 KiB (rejected
   if it is NUL/control-heavy — Cyrillic UTF-16LE bytes are "valid UTF-8" controls) → NUL-parity
@@ -30,7 +36,9 @@ from the GTK main thread.
 - Search: needle encoded in the current encoding, `memchr::memmem` over 1 MiB windows with a
   needle-length overlap; case-insensitive text = up to 4 ASCII byte variants (as-is/lower/
   Capitalized/UPPER); regex = `regex::bytes` on raw bytes (boundary-spanning matches longer
-  than 64 KiB may be missed). Forward/backward, optional wrap, results as byte offsets.
+  than 64 KiB may be missed). Forward/backward, optional wrap, results as byte offsets. In
+  UTF-16LE/BE modes every match (text, hex, regex) must start on an even byte offset; hits at
+  odd offsets are unit-straddling false positives and are skipped (T5.5a).
 - Wrap/hex: `unicode-width` columns (wide=2, combining=0, tab stops configurable); hex rows
   are 16 bytes: offset, hex, ASCII text column.
 - `PreviewProvider` trait (`can_preview`/`preview`) + `TextPreviewProvider` (first N lines);

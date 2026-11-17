@@ -1,8 +1,19 @@
 //! Lazy, incremental line index.
 //!
-//! A [`LineIndex`] is built by feeding raw chunks ([`LineIndex::index_chunk`]); the UI drives it
-//! from a worker in [`CHUNK_SIZE`] pieces so the first screen renders before indexing finishes.
-//! Progress is observable through the atomics the caller passes to [`index_document`].
+//! **Byte-oriented: ASCII-compatible encodings only.** The index splits on raw `\r` and `\n`
+//! bytes. In UTF-16 those appear as `0D 00` / `0A 00`, so a CRLF pair would be counted as
+//! two breaks and line offsets would land mid-unit — indexing raw UTF-16 bytes is *not
+//! supported* and silently miscounts. Callers viewing UTF-16 must feed decoded text (all
+//! offsets then refer to the decoded byte stream, not the file). The GTK viewer UI does its
+//! own encoding-aware scanning and does not use this type in v1.0.
+//!
+//! Memory: the index keeps a `Vec` of every line start (16 bytes per line), which is fine
+//! for typical logs but grows with line count on huge files.
+//!
+//! A [`LineIndex`] is built by feeding raw chunks ([`LineIndex::index_chunk`]); the UI drives
+//! it from a worker in [`CHUNK_SIZE`] pieces so the first screen renders before indexing
+//! finishes. Progress is observable through the atomics the caller passes to
+//! [`index_document`].
 //!
 //! Line breaks: `\n`, `\r\n`, and lone `\r` each terminate a line (Midnight Commander
 //! semantics). A file whose last line has no terminator still counts that line. A trailing
@@ -22,6 +33,9 @@ pub const CHUNK_SIZE: usize = 4 * 1024 * 1024;
 pub struct IndexCancelled;
 
 /// Incremental index of line start offsets.
+///
+/// Byte-oriented, ASCII-compatible encodings only — see the module docs; raw UTF-16 bytes
+/// miscount (CRLF becomes two breaks). Stores one entry per line.
 #[derive(Debug, Default, Clone)]
 pub struct LineIndex {
     /// Byte offset where each line starts. `starts[0] == 0` for non-empty input.
