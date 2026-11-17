@@ -5,7 +5,8 @@
 //! the frozen `mod.rs` API ([`super::TerminalHandle`]) delegates here.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
 use gtk::gio;
@@ -16,6 +17,7 @@ use ofm_core::cmdline::{QuoteStyle, cd_command_for, osc7_parse};
 use vte4::prelude::{TerminalExt, TerminalExtManual};
 
 use super::ShellState;
+use super::program;
 use super::shell::{self, RespawnGuard, ShellKind, SyncDecision};
 use crate::context::AppContext;
 use crate::i18n::tr;
@@ -64,6 +66,8 @@ pub(crate) struct TerminalUi {
     /// Respawning was stopped (exit loop, or the spawn itself failed); the next terminal
     /// toggle or keypress in the terminal tries again.
     halted: Cell<bool>,
+    /// The widget of a program (terminal editor) running instead of the shell view, if any.
+    program: RefCell<Option<vte4::Terminal>>,
 }
 
 impl TerminalUi {
@@ -74,23 +78,7 @@ impl TerminalUi {
         host: Rc<super::ShellHost>,
     ) -> Rc<Self> {
         let term = vte4::Terminal::new();
-        {
-            let cfg = ctx.config.borrow();
-            term.set_scrollback_lines(i64::from(cfg.terminal.scrollback));
-            if !cfg.terminal.font.is_empty() {
-                term.set_font(Some(&gtk::pango::FontDescription::from_string(
-                    &cfg.terminal.font,
-                )));
-            }
-        }
-        // Theme colours for text/background (the 256-colour palette stays at VTE defaults).
-        {
-            let palette = ctx.theme.palette();
-            term.set_colors(Some(&palette.panel.fg), Some(&palette.panel.bg), &[]);
-        }
-        term.set_vexpand(true);
-        term.set_hexpand(true);
-        term.add_css_class("ofm-terminal");
+        style_terminal(ctx, &term);
         win.terminal_slot.append(&term);
         // Collapsed while the panels are up (Ctrl+O / `show()` reveals it); the widget and
         // the shell keep running hidden — showing is not re-spawning (ADR-0003).
@@ -115,6 +103,7 @@ impl TerminalUi {
             line_dirty: Cell::new(false),
             guard: RefCell::new(RespawnGuard::default()),
             halted: Cell::new(false),
+            program: RefCell::new(None),
         });
         *ui.self_weak.borrow_mut() = Rc::downgrade(&ui);
 
@@ -218,20 +207,7 @@ impl TerminalUi {
     /// and the terminal-internal clipboard keys — the one sanctioned key controller on a
     /// widget (text keys, not commands).
     fn wire_keys(&self, ctx: &Rc<AppContext>) {
-        let weak_ctx = Rc::downgrade(ctx);
-        let focus = gtk::EventControllerFocus::new();
-        focus.connect_enter(move |_| {
-            if let Some(ctx) = weak_ctx.upgrade() {
-                ctx.set_terminal_focused(true);
-            }
-        });
-        let weak_ctx = Rc::downgrade(ctx);
-        focus.connect_leave(move |_| {
-            if let Some(ctx) = weak_ctx.upgrade() {
-                ctx.set_terminal_focused(false);
-            }
-        });
-        self.term.add_controller(focus);
+        track_focus(ctx, &self.term);
 
         let weak = self.weak();
         let key_ctl = gtk::EventControllerKey::new();
@@ -494,6 +470,87 @@ impl TerminalUi {
         self.maybe_sync();
     }
 
+    /// [`super::TerminalHandle::run_program`]: run `argv` (exact words, no shell) in a fresh
+    /// VTE widget that takes the shell view's place until the program exits; the panels come
+    /// back then. `on_error` gets the message when the program cannot be started.
+    pub(crate) fn run_program(
+        &self,
+        argv: &[OsString],
+        cwd: Option<&Path>,
+        on_error: Box<dyn Fn(String)>,
+    ) -> Result<(), String> {
+        let Some(ctx) = self.ctx.upgrade() else {
+            return Err(tr("The terminal is not available.").to_owned());
+        };
+        if argv.is_empty() {
+            return Err(tr("Nothing to run.").to_owned());
+        }
+        if self.program.borrow().is_some() {
+            return Err(tr("A program is already running in the terminal.").to_owned());
+        }
+        let plan = program::spawn_argv(argv);
+        let plan: Vec<&str> = plan.iter().map(String::as_str).collect();
+        let term = vte4::Terminal::new();
+        style_terminal(&ctx, &term);
+        track_focus(&ctx, &term);
+        add_clipboard_keys(&term);
+        *self.program.borrow_mut() = Some(term.clone());
+        self.term.set_visible(false);
+        self.slot.append(&term);
+        self.panels.set_visible(false);
+        self.slot.set_visible(true);
+        term.grab_focus();
+
+        let weak = self.weak();
+        let done_term = term.clone();
+        term.connect_child_exited(move |_, _| {
+            if let Some(ui) = weak.upgrade() {
+                ui.program_finished(&done_term);
+            }
+        });
+        let weak = self.weak();
+        let fail_term = term.clone();
+        let envv = ["TERM=xterm-256color"];
+        term.spawn_async(
+            vte4::PtyFlags::DEFAULT,
+            cwd.and_then(Path::to_str), // a non-UTF-8 directory: inherit ours
+            &plan,
+            &envv,
+            glib::SpawnFlags::SEARCH_PATH,
+            || {},
+            -1,
+            None::<&gio::Cancellable>,
+            move |res| {
+                if let Err(e) = res {
+                    tracing::error!(error = %e, "terminal: could not start the program");
+                    if let Some(ui) = weak.upgrade() {
+                        ui.program_finished(&fail_term);
+                    }
+                    on_error(e.to_string());
+                }
+            },
+        );
+        Ok(())
+    }
+
+    /// The program's widget goes away; the shell view and the panels come back.
+    fn program_finished(&self, term: &vte4::Terminal) {
+        if self.program.borrow().as_ref() != Some(term) {
+            return; // already cleaned up (a failed spawn can also report an exit)
+        }
+        *self.program.borrow_mut() = None;
+        let had_focus = gtk::prelude::GtkWindowExt::focus(&self.window)
+            .is_some_and(|f| f == *term.upcast_ref::<gtk::Widget>() || f.is_ancestor(term));
+        self.slot.remove(term);
+        self.term.set_visible(true);
+        self.slot.set_visible(false);
+        self.panels.set_visible(true);
+        if had_focus && let Some(ctx) = self.ctx.upgrade() {
+            ctx.set_terminal_focused(false);
+            self.lists[ctx.active_side()].grab_focus();
+        }
+    }
+
     /// Start the shell again after the respawn loop was stopped or a spawn failed.
     fn restart_if_halted(&self) {
         if self.halted.replace(false) {
@@ -529,6 +586,79 @@ impl TerminalUi {
     fn cmdline_entry(&self) -> Option<gtk::Entry> {
         find_entry(self.cmdline_slot.upcast_ref())
     }
+}
+
+/// Colours, font, scrollback and layout of a VTE widget of this window.
+fn style_terminal(ctx: &AppContext, term: &vte4::Terminal) {
+    {
+        let cfg = ctx.config.borrow();
+        term.set_scrollback_lines(i64::from(cfg.terminal.scrollback));
+        if !cfg.terminal.font.is_empty() {
+            term.set_font(Some(&gtk::pango::FontDescription::from_string(
+                &cfg.terminal.font,
+            )));
+        }
+    }
+    // Theme colours for text/background (the 256-colour palette stays at VTE defaults).
+    let palette = ctx.theme.palette();
+    term.set_colors(Some(&palette.panel.fg), Some(&palette.panel.bg), &[]);
+    term.set_vexpand(true);
+    term.set_hexpand(true);
+    term.add_css_class("ofm-terminal");
+}
+
+/// Keep `AppContext::terminal_focused` in sync with the focus of a VTE widget (key resolution
+/// consults only the `global` keymap section while it is set).
+fn track_focus(ctx: &Rc<AppContext>, term: &vte4::Terminal) {
+    let weak_ctx = Rc::downgrade(ctx);
+    let focus = gtk::EventControllerFocus::new();
+    focus.connect_enter(move |_| {
+        if let Some(ctx) = weak_ctx.upgrade() {
+            ctx.set_terminal_focused(true);
+        }
+    });
+    let weak_ctx = Rc::downgrade(ctx);
+    focus.connect_leave(move |_| {
+        if let Some(ctx) = weak_ctx.upgrade() {
+            ctx.set_terminal_focused(false);
+        }
+    });
+    term.add_controller(focus);
+}
+
+/// Ctrl+Shift+C / Ctrl+Shift+V on a program's VTE widget (the shell view handles them in
+/// `wire_keys`).
+fn add_clipboard_keys(term: &vte4::Terminal) {
+    let key_ctl = gtk::EventControllerKey::new();
+    key_ctl.set_propagation_phase(gtk::PropagationPhase::Bubble);
+    let t = term.clone();
+    key_ctl.connect_key_pressed(move |_, keyval, keycode, state| {
+        use ofm_core::{Key, Mods};
+        let Some(chord) = keys::chord_from_event(keyval, keycode, state) else {
+            return glib::Propagation::Proceed;
+        };
+        let Mods {
+            ctrl: true,
+            shift: true,
+            alt: false,
+            super_: false,
+            ..
+        } = chord.mods
+        else {
+            return glib::Propagation::Proceed;
+        };
+        let is = |k: char| matches!(chord.key, Key::Char(c) if c.eq_ignore_ascii_case(&k));
+        if is('c') {
+            t.emit_copy_clipboard();
+            glib::Propagation::Stop
+        } else if is('v') {
+            t.paste_clipboard();
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    term.add_controller(key_ctl);
 }
 
 /// First `gtk::Entry` in the subtree of `w` (depth first).

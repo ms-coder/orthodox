@@ -36,7 +36,7 @@ trash = true                    # F14: F8 moves to Trash
 [editor]
 # F23: command template; %f = file. Empty = $VISUAL, then $EDITOR, then GNOME Text Editor.
 command = ""
-terminal_editors = ["vim", "nvim", "nano", "mcedit", "emacs", "micro", "hx"]  # run in the embedded terminal
+terminal_editors = ["vim", "nvim", "nano", "mcedit", "micro", "hx"]  # run in the embedded terminal
 # terminal = true               # force `command` into the embedded terminal (false = detached GUI program)
 [[editor.rule]]                 # first matching mask wins; an empty command = the default editor
 mask = "*.md;*.txt"
