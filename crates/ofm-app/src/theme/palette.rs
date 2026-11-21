@@ -161,6 +161,56 @@ pub fn luminance(c: RGBA) -> f32 {
     0.2126 * c.red() + 0.7152 * c.green() + 0.0722 * c.blue()
 }
 
+/// WCAG 2.x relative luminance (sRGB linearised): 0 black .. 1 white.
+pub fn wcag_luminance(c: RGBA) -> f32 {
+    let lin = |v: f32| {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c.red()) + 0.7152 * lin(c.green()) + 0.0722 * lin(c.blue())
+}
+
+/// WCAG contrast ratio of two colours (1 .. 21).
+pub fn contrast_ratio(a: RGBA, b: RGBA) -> f32 {
+    let (la, lb) = (wcag_luminance(a), wcag_luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// Minimum contrast (WCAG AA, normal text) the chrome guarantees for text on a coloured bar.
+pub const MIN_CONTRAST: f32 = 4.5;
+
+/// `(bg, fg)` adjusted so that the text is readable (contrast >= [`MIN_CONTRAST`]). A pair that is
+/// already readable is returned unchanged. Otherwise the background is first nudged away from the
+/// text colour by up to 20% (keeps the theme's look: Far's teal bar gets a hair lighter); if that
+/// is not enough the text turns black or white, whichever reads better.
+pub fn readable(bg: RGBA, fg: RGBA) -> (RGBA, RGBA) {
+    if contrast_ratio(bg, fg) >= MIN_CONTRAST {
+        return (bg, fg);
+    }
+    let black = RGBA::new(0.0, 0.0, 0.0, 1.0);
+    let white = RGBA::new(1.0, 1.0, 1.0, 1.0);
+    let away = if wcag_luminance(fg) > wcag_luminance(bg) {
+        black
+    } else {
+        white
+    };
+    for step in 1..=20u8 {
+        let nudged = mix(away, bg, f32::from(step) / 100.0);
+        if contrast_ratio(nudged, fg) >= MIN_CONTRAST {
+            return (nudged, fg);
+        }
+    }
+    let best = if contrast_ratio(bg, black) >= contrast_ratio(bg, white) {
+        black
+    } else {
+        white
+    };
+    (bg, best)
+}
+
 /// Panel body colours.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelPalette {
@@ -243,6 +293,16 @@ impl Palette {
         } else {
             family
         };
+        // Bars that carry text (column header / path bar, cursor bar / active path bar) must be
+        // readable whatever the theme says (WCAG AA).
+        let (header_bg, header_fg) = readable(
+            req_or(&colors.panel.header_bg, system.header_bg),
+            req_or(&colors.panel.header_fg, system.header_fg),
+        );
+        let (active_bg, active_fg) = readable(
+            req_or(&colors.cursor.active_bg, system.accent),
+            req_or(&colors.cursor.active_fg, white),
+        );
         Palette {
             panel: PanelPalette {
                 bg: req_or(&colors.panel.bg, system.view_bg),
@@ -252,12 +312,12 @@ impl Palette {
                     .unwrap_or_else(|| req_or(&colors.panel.fg, system.view_fg)),
                 dir_bold: colors.panel.dir_bold,
                 frame: req_or(&colors.panel.frame, system.dim),
-                header_bg: req_or(&colors.panel.header_bg, system.header_bg),
-                header_fg: req_or(&colors.panel.header_fg, system.header_fg),
+                header_bg,
+                header_fg,
             },
             cursor: CursorPalette {
-                active_bg: req_or(&colors.cursor.active_bg, system.accent),
-                active_fg: req_or(&colors.cursor.active_fg, white),
+                active_bg,
+                active_fg,
                 inactive_bg: r(&colors.cursor.inactive_bg),
                 inactive_fg: r(&colors.cursor.inactive_fg),
                 inactive_outline: r(&colors.cursor.inactive_outline),
@@ -314,6 +374,50 @@ mod tests {
     fn over_flattens_alpha() {
         let c = over(RGBA::new(0.0, 0.0, 0.0, 0.5), RGBA::new(1.0, 1.0, 1.0, 1.0));
         assert!((c.red() - 0.5).abs() < 1e-6 && (c.alpha() - 1.0).abs() < 1e-6);
+    }
+
+    fn bars(p: &Palette) -> [(&'static str, RGBA, RGBA); 2] {
+        [
+            ("inactive path bar", p.panel.header_bg, p.panel.header_fg),
+            ("active path bar", p.cursor.active_bg, p.cursor.active_fg),
+        ]
+    }
+
+    #[test]
+    fn path_bars_meet_wcag_aa_in_every_theme() {
+        let systems = [
+            ("fallback", SystemColors::fallback()),
+            ("adwaita light", SystemColors::adwaita(false)),
+            ("adwaita dark", SystemColors::adwaita(true)),
+        ];
+        for id in ofm_config::theme::BUILTIN_THEMES {
+            for (sys_name, sys) in systems {
+                let theme = Theme::builtin(id).expect("builtin theme");
+                let p = Palette::from_theme(Rc::new(theme), sys);
+                for (what, bg, fg) in bars(&p) {
+                    let ratio = contrast_ratio(bg, fg);
+                    assert!(
+                        ratio >= MIN_CONTRAST,
+                        "{id}/{sys_name}: {what} contrast {ratio:.2} < 4.5"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn readable_keeps_good_pairs_and_fixes_bad_ones() {
+        let black = RGBA::new(0.0, 0.0, 0.0, 1.0);
+        let white = RGBA::new(1.0, 1.0, 1.0, 1.0);
+        assert_eq!(readable(white, black), (white, black));
+        // White on orange (Commander Light's cursor) is unreadable: the text turns black.
+        let orange = RGBA::new(242.0 / 255.0, 140.0 / 255.0, 40.0 / 255.0, 1.0);
+        let (bg, fg) = readable(orange, white);
+        assert!(contrast_ratio(bg, fg) >= MIN_CONTRAST);
+        // Grey on grey always ends readable.
+        let grey = RGBA::new(0.5, 0.5, 0.5, 1.0);
+        let (bg, fg) = readable(grey, grey);
+        assert!(contrast_ratio(bg, fg) >= MIN_CONTRAST);
     }
 
     #[test]
