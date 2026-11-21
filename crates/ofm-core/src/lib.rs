@@ -15,6 +15,7 @@ pub mod entry;
 pub mod keychord;
 pub mod location;
 pub mod mask;
+pub mod menu_expand;
 pub mod panel;
 pub mod responder;
 
