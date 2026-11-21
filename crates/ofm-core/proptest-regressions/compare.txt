@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c5a445aba91546a4814c21355141f895f5a79055b4fa6cccf61e4b86b8cec2f2 # shrinks to left = [CompareEntry { name: "", kind: File, size: 0, mtime_ns: 0, link_target: None }], right = [CompareEntry { name: "", kind: File, size: 0, mtime_ns: 0, link_target: None }, CompareEntry { name: "", kind: File, size: 0, mtime_ns: 0, link_target: None }]

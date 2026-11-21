@@ -11,6 +11,7 @@ pub mod cancel;
 pub mod cmdline;
 pub mod command;
 pub mod commands;
+pub mod compare;
 pub mod entry;
 pub mod keychord;
 pub mod location;
