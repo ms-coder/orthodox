@@ -63,6 +63,21 @@ pub struct FrameStats {
     pub total_us: u64,
 }
 
+/// A visible row and where it is drawn (widget coordinates).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RowRect {
+    /// Index into the visible entries of the model.
+    pub index: u32,
+    /// Left edge.
+    pub x: f64,
+    /// Top edge.
+    pub y: f64,
+    /// Width of the row's cell.
+    pub width: f64,
+    /// Height of the row.
+    pub height: f64,
+}
+
 glib::wrapper! {
     /// Custom-drawn list of one panel tab.
     pub struct FileList(ObjectSubclass<imp::FileList>)
@@ -112,6 +127,12 @@ impl FileList {
     /// `(first visible entry, rows per column, columns)` of the current layout.
     pub fn window(&self) -> (u32, u32, u32) {
         self.imp().window()
+    }
+
+    /// The row under (x, y) in widget coordinates (`None` over the header, the frame and the
+    /// empty area below the last entry); used by drop targets.
+    pub fn row_at(&self, x: f64, y: f64) -> Option<RowRect> {
+        self.imp().row_rect(x, y)
     }
 
     /// Replace the drag payload builder: called with the press position, returns the content to

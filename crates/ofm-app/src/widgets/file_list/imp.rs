@@ -440,6 +440,25 @@ impl FileList {
         })
     }
 
+    /// The row under (x, y) and its rectangle (drop targets highlight it).
+    pub(super) fn row_rect(&self, x: f64, y: f64) -> Option<super::RowRect> {
+        let Hit::Row(index) = self.hit(x, y) else {
+            return None;
+        };
+        let geo = self.geo.borrow();
+        let g = geo.as_ref()?;
+        let col = ((x as f32 - g.content.x) / g.cell_w) as u32;
+        let row = ((y as f32 - g.body.y) / g.row_h) as u32;
+        let (ox, oy) = g.cell_origin(col, row);
+        Some(super::RowRect {
+            index,
+            x: f64::from(ox),
+            y: f64::from(oy),
+            width: f64::from(g.cell_w),
+            height: f64::from(g.row_h),
+        })
+    }
+
     pub(super) fn on_press(
         &self,
         button: u32,

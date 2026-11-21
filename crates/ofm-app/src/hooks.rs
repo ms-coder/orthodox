@@ -54,6 +54,7 @@ pub fn install_panel_view(ctx: &Rc<AppContext>, view: &PanelView) {
     terminal::install_panel_view(ctx, view); // T4.1: per-tab cd sync
     cmdline::install_panel_view(ctx, view); // T4.2: reserved
     quickview::install_panel_view(ctx, view); // T5.2b: preview pane over the file list
+    desktop::install_panel_view(ctx, view); // T8.4: file drops
 }
 
 /// Fill window regions once the whole `MainWindow` exists (menu bar, F-key bar, status line).

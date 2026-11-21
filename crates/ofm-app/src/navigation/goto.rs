@@ -6,7 +6,6 @@ use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::gio;
 use ofm_core::{Location, cmd};
 
 use super::modal;
@@ -181,21 +180,9 @@ fn open_cursor(ctx: &Rc<AppContext>, run: bool) {
         _ => None,
     };
     match file {
-        Some(path) => launch_default(path),
+        Some(path) => crate::desktop::open::open_path(ctx, path),
         None => tracing::debug!(name = ?entry.name, "open: not a local file"),
     }
-}
-
-/// Open `path` with the desktop's default application (asynchronously; no blocking on the UI thread).
-fn launch_default(path: PathBuf) {
-    let uri = gio::File::for_path(&path).uri();
-    let launch_ctx = gtk::gdk::Display::default().map(|d| d.app_launch_context());
-    gtk::glib::spawn_future_local(async move {
-        let res = gio::AppInfo::launch_default_for_uri_future(&uri, launch_ctx.as_ref()).await;
-        if let Err(e) = res {
-            tracing::warn!(path = %path.display(), error = %e, "could not open file");
-        }
-    });
 }
 
 fn swap_panels(ctx: &Rc<AppContext>) {

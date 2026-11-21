@@ -260,6 +260,38 @@ impl Running {
         r
     }
 
+    /// Start the app again after it exited (e.g. after [`Running::quit`]): same X server and XDG
+    /// directories, the given directory arguments (none = restore the saved session). Returns
+    /// once the window is mapped, focused and painted.
+    pub fn restart(&mut self, args: &[&Path]) {
+        assert!(
+            self.app.try_wait().unwrap().is_some(),
+            "restart needs the previous instance to have exited"
+        );
+        let config_home = self.paths.config_dir.parent().unwrap().to_owned();
+        let state_home = self.paths.state_dir.parent().unwrap().to_owned();
+        let home = self.data_home.parent().unwrap().to_owned();
+        self.app = Command::new(env!("CARGO_BIN_EXE_ofm"))
+            .args(args)
+            .env("DISPLAY", &self.x.display)
+            .env("GDK_BACKEND", "x11")
+            .env("GSK_RENDERER", "cairo")
+            .env("NO_AT_BRIDGE", "1")
+            .env_remove("WAYLAND_DISPLAY")
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .env("XDG_DATA_HOME", &self.data_home)
+            .env("HOME", &home)
+            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent")
+            .stdout(log_sink())
+            .stderr(log_sink())
+            .spawn()
+            .expect("respawn ofm");
+        let wid = self.wait_for_window();
+        self.x("xdotool", &["windowfocus", &wid]);
+        self.wait_for_content();
+    }
+
     pub fn wait_for_window(&mut self) -> String {
         let end = Instant::now() + Duration::from_secs(20);
         while Instant::now() < end {
