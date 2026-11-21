@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use ofm_core::Location;
 
+pub use crate::rename_batch::{RenameBatchSpec, RollbackSpec};
+
 /// Identifier of a submitted job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct JobId(pub u64);
@@ -132,11 +134,12 @@ pub enum JobSpec {
         /// Destination directory.
         dest_dir: PathBuf,
     },
-    /// Batch rename (F20): validated for conflicts/cycles by the caller; applied atomically per pair.
-    Rename {
-        /// `(from, to)` pairs.
-        pairs: Vec<(PathBuf, PathBuf)>,
-    },
+    /// Batch rename (F20, T8.3b): executes a planner `Plan` step by step with no-replace renames,
+    /// writing the undo log after every step. Never asks questions; stops at the first failure.
+    RenameBatch(RenameBatchSpec),
+    /// Undo executed batch-rename steps from an undo log (undo of the last batch, or rollback of a
+    /// stopped one).
+    RenameRollback(RollbackSpec),
 }
 
 /// Short display name of a location (last component for local paths).
@@ -189,7 +192,22 @@ impl JobSpec {
             JobSpec::Extract {
                 archive, dest_dir, ..
             } => format!("Extract '{}' to {}", path_name(archive), dest_dir.display()),
-            JobSpec::Rename { pairs } => format!("Rename {} items", pairs.len()),
+            JobSpec::RenameBatch(b) => format!(
+                "Rename {} in {}",
+                match b.plan.preview.len() {
+                    1 => "1 item".to_owned(),
+                    n => format!("{n} items"),
+                },
+                b.dir.display()
+            ),
+            JobSpec::RenameRollback(r) => format!(
+                "Undo rename of {} in {}",
+                match r.log.renames.len() {
+                    1 => "1 item".to_owned(),
+                    n => format!("{n} items"),
+                },
+                r.log.dir.display()
+            ),
         }
     }
 

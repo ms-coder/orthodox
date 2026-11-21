@@ -19,6 +19,7 @@ use crate::event::{Outcome, SizeTotals};
 use crate::fs::Fs;
 use crate::move_::run_move;
 use crate::ops;
+use crate::rename_batch::{run_batch, run_rollback};
 use crate::spec::JobSpec;
 
 fn dispatch(spec: &JobSpec, ctx: &mut JobCtx) -> Result<Option<SizeTotals>, JobError> {
@@ -54,7 +55,8 @@ fn dispatch(spec: &JobSpec, ctx: &mut JobCtx) -> Result<Option<SizeTotals>, JobE
             entries,
             dest_dir,
         } => ops::extract::run(ctx, archive, entries, dest_dir)?,
-        JobSpec::Rename { pairs } => ops::rename::run(ctx, pairs)?,
+        JobSpec::RenameBatch(spec) => run_batch(ctx, spec)?,
+        JobSpec::RenameRollback(spec) => run_rollback(ctx, spec)?,
     }
     Ok(None)
 }
@@ -120,7 +122,15 @@ mod tests {
     #[test]
     fn unsupported_variants_fail_cleanly() {
         let (sink, _) = ScriptedSink::refusing();
-        let out = run_sync(&JobSpec::Rename { pairs: vec![] }, Arc::new(RealFs), sink);
+        let out = run_sync(
+            &JobSpec::Extract {
+                archive: "/x.zip".into(),
+                entries: vec![],
+                dest_dir: "/y".into(),
+            },
+            Arc::new(RealFs),
+            sink,
+        );
         assert!(
             matches!(&out, Outcome::Failed { error, .. } if error.contains("not supported")),
             "{out:?}"

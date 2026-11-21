@@ -7,7 +7,8 @@
 //! - T3.1: `engine.rs`, `plan.rs`, `copy.rs`, `move_.rs`, `progress.rs`, `fs/real.rs`
 //! - T3.2: `ops/{delete,mkdir,link,attrs,size,trash}.rs` (+ `trash` dependency in `Cargo.toml`)
 //! - T3.4: `tests/**`
-//! - later: `ops/{rename,extract}.rs`
+//! - T8.3b: `rename_batch.rs` (batch rename + rollback)
+//! - later: `ops/extract.rs`
 //!
 //! Layering: `engine` (threads, queue, events) -> `runner::run_job` -> operation (`copy`, `move_`,
 //! `ops::*`) -> `JobCtx` (checkpoint/progress/questions) -> `Fs`. Operations never see the engine,
@@ -24,6 +25,7 @@ pub mod move_;
 pub mod ops;
 pub mod plan;
 pub mod progress;
+pub mod rename_batch;
 pub mod runner;
 pub mod spec;
 
@@ -39,5 +41,6 @@ pub use event::{
 };
 pub use fs::{FileType, Fs, FsFile, FsStat, RealFs, TrashError};
 pub use progress::{Clock, ManualClock, ProgressTracker, SystemClock};
+pub use rename_batch::{FileId, RenameBatchSpec, RollbackSpec, load_log, snapshot_identities};
 pub use runner::{run_job, run_sync};
 pub use spec::{CopyOpts, JobId, JobSpec, LinkKind, ModeChange, OwnerChange, RunMode};

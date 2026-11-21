@@ -32,7 +32,11 @@ fn faulty_fs_is_usable_from_integration_tests() {
 fn run_sync_wires_spec_fs_and_sink() {
     let (sink, rec) = ScriptedSink::refusing();
     let out = run_sync(
-        &JobSpec::Rename { pairs: vec![] },
+        &JobSpec::Extract {
+            archive: "/x.zip".into(),
+            entries: vec![],
+            dest_dir: "/y".into(),
+        },
         Arc::new(FaultyFs::over_real(FaultPlan::new())),
         sink,
     );
