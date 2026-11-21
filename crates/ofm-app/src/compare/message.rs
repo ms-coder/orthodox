@@ -60,6 +60,15 @@ pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
 
 /// Show `text` for a few seconds (and remember it in [`CompareState::last_message`]).
 pub fn show(ctx: &Rc<AppContext>, text: &str) {
+    show_with(ctx, text, true);
+}
+
+/// Show `text` until the next message replaces it (progress of a running comparison).
+pub fn show_sticky(ctx: &Rc<AppContext>, text: &str) {
+    show_with(ctx, text, false);
+}
+
+fn show_with(ctx: &Rc<AppContext>, text: &str, auto_hide: bool) {
     let Some(state) = ctx.ext.get::<CompareState>() else {
         return;
     };
@@ -72,9 +81,11 @@ pub fn show(ctx: &Rc<AppContext>, text: &str) {
     row.revealer.set_reveal_child(true);
     let serial = row.serial.get().wrapping_add(1);
     row.serial.set(serial);
-    gtk::glib::timeout_add_local_once(SHOWN_FOR, move || {
-        if row.serial.get() == serial {
-            row.revealer.set_reveal_child(false);
-        }
-    });
+    if auto_hide {
+        gtk::glib::timeout_add_local_once(SHOWN_FOR, move || {
+            if row.serial.get() == serial {
+                row.revealer.set_reveal_child(false);
+            }
+        });
+    }
 }

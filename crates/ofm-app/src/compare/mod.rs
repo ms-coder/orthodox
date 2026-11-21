@@ -18,8 +18,6 @@ pub mod message;
 pub mod options;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
-use std::ffi::OsString;
 use std::ops::ControlFlow;
 use std::rc::Rc;
 
@@ -49,6 +47,10 @@ pub struct CompareState {
     last_message: RefCell<Option<String>>,
     /// The message row (once the window exists).
     row: message::RowSlot,
+    /// The running content job, if any.
+    content: RefCell<Option<content::ContentRun>>,
+    /// Bumped per content run; its consumer stops when it no longer matches.
+    content_token: Cell<u64>,
 }
 
 impl CompareState {
@@ -62,9 +64,9 @@ impl CompareState {
         self.last_message.borrow().clone()
     }
 
-    /// Is a comparison running on a worker?
+    /// Is a comparison running (metadata pass on a worker, or the content job)?
     pub fn is_running(&self) -> bool {
-        self.finished.get() < self.generation.get()
+        self.finished.get() < self.generation.get() || self.content.borrow().is_some()
     }
 }
 
@@ -126,6 +128,11 @@ pub fn start(ctx: &Rc<AppContext>, settings: CompareSettings) {
     let (l_entries, r_entries) = (snapshot(&left), snapshot(&right));
     let generation = state.generation.get() + 1;
     state.generation.set(generation);
+    // A newer comparison supersedes a content job still running.
+    if content::cancel_running(ctx) {
+        state.content_token.set(state.content_token.get() + 1);
+        state.content.borrow_mut().take();
+    }
 
     let opts = settings.to_options();
     let rx = wiring::run_on_pool(&ctx.services.pool, move |tx| {
@@ -176,22 +183,25 @@ fn finish(
         return;
     }
     let Outcome { result, left_total } = outcome;
-    let wanted: [HashSet<OsString>; 2] = [
-        marks::names(&result.left_marks, settings.mark),
-        marks::names(&result.right_marks, settings.mark),
-    ];
+    let tracker = content::Tracker::new(result, left_total, settings.mark);
+    let wanted = tracker.wanted();
     left.mutate(|m| marks::replace_selection(m, &wanted[0]));
     right.mutate(|m| marks::replace_selection(m, &wanted[1]));
 
-    let counts = marks::counts(&result, left_total, settings.mark);
-    let mut text = summary_text(&counts);
-    if settings.mode == CompareMode::Content && counts.pending > 0 {
-        let pending = result.content_candidates.len();
-        if !content::start(ctx, result.content_candidates) {
-            text = format!("{text}; {}", content::unavailable_note(pending));
-        }
+    if settings.mode != CompareMode::Content || tracker.remaining() == 0 {
+        message::show(ctx, &summary_text(&tracker.counts()));
+        return;
     }
-    message::show(ctx, &text);
+    // Content mode: the byte comparison of the same-size pairs streams in as a job.
+    let (pending, summary) = (tracker.remaining(), summary_text(&tracker.counts()));
+    let first = content::progress_text(&tracker);
+    match content::start(ctx, locations, tracker) {
+        Ok(()) => message::show_sticky(ctx, &first),
+        Err(why) => message::show(
+            ctx,
+            &format!("{summary}; {}", content::unavailable_note(&why, pending)),
+        ),
+    }
 }
 
 /// "3 differing on the left, 2 on the right, 10 identical".

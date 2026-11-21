@@ -94,6 +94,8 @@ fn compare_directories_marks_both_panels() {
         .file("tolerated.txt", FileSpec::content(b"tt").mtime_ns(T0 + SEC))
         .file("Case.TXT", FileSpec::content(b"cc").mtime_ns(T0))
         .file(odd_left.clone(), FileSpec::content(b"o").mtime_ns(T0))
+        .file("csame.txt", FileSpec::content(b"xxxx").mtime_ns(T0))
+        .file("cdiff.txt", FileSpec::content(b"aaaa").mtime_ns(T0))
         .dir("only-left-dir", TreeSpec::new());
     let right = TreeSpec::new()
         .file("same.txt", FileSpec::content(b"same").mtime_ns(T0))
@@ -101,6 +103,8 @@ fn compare_directories_marks_both_panels() {
         .file("bigger.txt", FileSpec::content(b"123").mtime_ns(T0))
         .file("newer.txt", FileSpec::content(b"nn").mtime_ns(T0))
         .file("tolerated.txt", FileSpec::content(b"tt").mtime_ns(T0))
+        .file("csame.txt", FileSpec::content(b"xxxx").mtime_ns(T0))
+        .file("cdiff.txt", FileSpec::content(b"aaab").mtime_ns(T0))
         .file("case.txt", FileSpec::content(b"cc").mtime_ns(T0));
     let left = left.build_temp().unwrap();
     let right = right.build_temp().unwrap();
@@ -154,7 +158,7 @@ fn compare_directories_marks_both_panels() {
     // 5 pairs matched on the left... `same.txt` and `tolerated.txt` are identical.
     assert_eq!(
         state.last_message().unwrap(),
-        "6 differing on the left, 4 on the right, 2 identical"
+        "6 differing on the left, 4 on the right, 4 identical"
     );
 
     // --- Marks survive a re-sort of both panels. -------------------------------------------
@@ -176,7 +180,7 @@ fn compare_directories_marks_both_panels() {
     );
     assert_eq!(selected(&ctx, LEFT), set(&["newer.txt"]));
     assert!(selected(&ctx, RIGHT).is_empty());
-    assert_eq!(msg, "1 differing on the left, 0 on the right, 2 identical");
+    assert_eq!(msg, "1 differing on the left, 0 on the right, 4 identical");
     // The dialog starts from the last settings.
     assert_eq!(state.settings().mark, MarkFilter::NewerHere);
 
@@ -229,7 +233,12 @@ fn compare_directories_marks_both_panels() {
     );
     assert!(selected(&ctx, LEFT).contains(&OsString::from("tolerated.txt")));
 
-    // --- Content mode: the metadata pass is applied; the byte pass is reported as pending. ----
+    // --- Content mode: the metadata marks first, then the byte job adds `cdiff.txt` (same size and
+    // time, different bytes) on both sides; equal pairs stay unmarked. -----------------------
+    assert!(
+        !compare::content::cancel_running(&ctx),
+        "nothing to cancel yet"
+    );
     let msg = run(
         &ctx,
         CompareSettings {
@@ -237,16 +246,41 @@ fn compare_directories_marks_both_panels() {
             ..CompareSettings::default()
         },
     );
-    assert!(selected(&ctx, LEFT).contains(&OsString::from("bigger.txt")));
-    assert!(msg.contains("content compare not available yet"), "{msg}");
+    assert!(!state.is_running());
+    let mut content_left = set(&[
+        "only-left.txt",
+        "bigger.txt",
+        "Case.TXT",
+        "only-left-dir",
+        "cdiff.txt",
+    ]);
+    content_left.insert(odd_left.clone());
+    assert_eq!(selected(&ctx, LEFT), content_left);
+    assert_eq!(
+        selected(&ctx, RIGHT),
+        set(&["only-right.txt", "bigger.txt", "case.txt", "cdiff.txt"])
+    );
+    assert_eq!(msg, "6 differing on the left, 4 on the right, 4 identical");
 
-    // --- A comparison while a panel changed directory meanwhile is dropped. -----------------
+    // --- A newer comparison supersedes one still running: only its marks end up applied. ------
     ctx.execute(cmd::SELECT_NONE);
     compare::start(&ctx, CompareSettings::default());
     assert!(state.is_running());
-    let before = state.last_message();
-    // A newer run supersedes the first one: only one message results.
-    compare::start(&ctx, CompareSettings::default());
+    compare::start(
+        &ctx,
+        CompareSettings {
+            mode: CompareMode::NameOnly,
+            include_dirs: false,
+            ..CompareSettings::default()
+        },
+    );
     pump_until("both runs finished", || !state.is_running());
-    assert_ne!(state.last_message(), before);
+    pump_briefly();
+    assert_eq!(
+        selected(&ctx, LEFT),
+        set(&["only-left.txt", "Case.TXT"])
+            .into_iter()
+            .chain([odd_left])
+            .collect::<BTreeSet<_>>()
+    );
 }

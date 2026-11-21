@@ -209,6 +209,9 @@ fn step(ctx: &Rc<AppContext>, dir: Direction) {
 
 /// Esc: close the bar and drop the filter; else drop a lingering filter; else stop a listing.
 fn cancel(ctx: &Rc<AppContext>) {
+    if crate::compare::content::cancel_running(ctx) {
+        return; // T8.1c: Esc stops a running content comparison first
+    }
     if let Some(bar) = active_bar(ctx)
         && bar.is_open()
     {

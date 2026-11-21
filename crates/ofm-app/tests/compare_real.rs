@@ -115,3 +115,33 @@ fn escape_cancels_and_mnemonics_choose_the_marks() {
     );
     assert_eq!(std::fs::read(s.right.join("differs")).unwrap(), b"x");
 }
+
+/// Content mode (Alt+C): same size and time, different bytes. The byte job marks only
+/// `cdiff.txt` (and the missing file); F5 then asks exactly one conflict question (Alt+O =
+/// overwrite) and the identical `csame.txt` is never asked about.
+#[test]
+fn content_mode_marks_files_that_differ_in_bytes() {
+    if !tools_available() {
+        return;
+    }
+    let left = TreeSpec::new()
+        .file("cdiff.txt", FileSpec::content(b"aaaa"))
+        .file("csame.txt", FileSpec::content(b"xxxx"))
+        .file("only-l", FileSpec::content(b"1"));
+    let right = TreeSpec::new()
+        .file("cdiff.txt", FileSpec::content(b"aaab"))
+        .file("csame.txt", FileSpec::content(b"xxxx"));
+    let s = Running::launch_with("", &left, &right);
+
+    s.keys(&["shift+F2", "alt+c"]);
+    save(&s, "compare-dialog-content");
+    s.keys_paced(&["Return"], 1200);
+    save(&s, "compare-content-marked");
+    s.keys_paced(&["F5", "Return", "alt+o"], 600);
+    wait_names(
+        "only-l copied after the conflict answer",
+        &s.right,
+        &set(&["cdiff.txt", "csame.txt", "only-l"]),
+    );
+    assert_eq!(std::fs::read(s.right.join("cdiff.txt")).unwrap(), b"aaaa");
+}
