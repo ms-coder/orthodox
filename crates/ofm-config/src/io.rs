@@ -18,7 +18,9 @@ fn io_err(path: &Path, source: std::io::Error) -> ConfigError {
 
 /// Write `contents` to `path` atomically: temp file in the same directory, fsync, rename; creates
 /// parent directories. A failure leaves the old file untouched. The file gets the default
-/// permissions (umask); use [`atomic_write_private`] for files that may hold secrets.
+/// permissions (umask); use [`atomic_write_private`] for files that may hold secrets. If `path`
+/// is a symlink the real target is written and the symlink is preserved (a dangling symlink is
+/// an error, not silently replaced).
 pub fn atomic_write(path: &Path, contents: &str) -> Result<(), ConfigError> {
     atomic_write_with_mode(path, contents, None)
 }
@@ -35,13 +37,25 @@ fn atomic_write_with_mode(
     contents: &str,
     mode: Option<u32>,
 ) -> Result<(), ConfigError> {
-    let dir = match path.parent() {
+    // A symlinked config file must keep pointing at its real target (dotfile managers symlink
+    // config.toml into a repo): resolve the final component and write/rename over the target so
+    // the symlink survives (T8.8). A dangling symlink is an error rather than silently
+    // replacing the user's symlink with a regular file.
+    let target: std::path::PathBuf = match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            fs::canonicalize(path).map_err(|e| io_err(path, e))?
+        }
+        Ok(_) => path.to_path_buf(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(e) => return Err(io_err(path, e)),
+    };
+    let dir = match target.parent() {
         Some(d) if !d.as_os_str().is_empty() => d,
         _ => Path::new("."),
     };
     fs::create_dir_all(dir).map_err(|e| io_err(dir, e))?;
     let mut tmp_name = std::ffi::OsString::from(".");
-    tmp_name.push(path.file_name().unwrap_or_default());
+    tmp_name.push(target.file_name().unwrap_or_default());
     tmp_name.push(format!(
         ".tmp.{}.{}",
         std::process::id(),
@@ -59,7 +73,7 @@ fn atomic_write_with_mode(
         f.write_all(contents.as_bytes())?;
         f.sync_all()?;
         drop(f);
-        fs::rename(&tmp, path)
+        fs::rename(&tmp, &target)
     })();
     match result {
         Ok(()) => {
@@ -169,5 +183,57 @@ mod tests {
     fn read_optional_reports_other_errors() {
         let d = tempfile::tempdir().unwrap();
         assert!(read_optional(d.path()).is_err());
+    }
+
+    #[test]
+    fn symlinked_target_is_preserved() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let d = tempfile::tempdir().unwrap();
+        // Dotfile-manager layout: config.toml is a symlink into a repo directory.
+        let real = d.path().join("repo/config.toml");
+        fs::create_dir(real.parent().unwrap()).unwrap();
+        atomic_write(&real, "one").unwrap();
+        let link = d.path().join("config.toml");
+        symlink(&real, &link).unwrap();
+
+        atomic_write(&link, "two").unwrap();
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read_to_string(&real).unwrap(), "two");
+        assert_eq!(fs::read_to_string(&link).unwrap(), "two");
+        // No regular file replaced the symlink, no temp files left.
+        assert_eq!(fs::read_dir(d.path()).unwrap().count(), 2); // link + repo dir
+
+        // The private variant keeps 0600 semantics on the real target.
+        atomic_write_private(&link, "three").unwrap();
+        let mode = fs::metadata(&real).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read_to_string(&real).unwrap(), "three");
+    }
+
+    #[test]
+    fn dangling_symlink_is_an_error_not_replaced() {
+        use std::os::unix::fs::symlink;
+        let d = tempfile::tempdir().unwrap();
+        let link = d.path().join("config.toml");
+        symlink(d.path().join("gone.toml"), &link).unwrap();
+        assert!(atomic_write(&link, "x").is_err());
+        // The symlink is untouched.
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 }

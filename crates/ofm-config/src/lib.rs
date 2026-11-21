@@ -19,7 +19,7 @@ pub mod session;
 pub mod theme;
 
 pub use config::Config;
-pub use error::{ConfigError, Warning};
-pub use keymap::{Keymap, Preset, TypingMode};
+pub use error::{ConfigError, ConfigWarning, Warning};
+pub use keymap::{Keymap, KeymapWarning, Preset, TypingMode};
 pub use paths::ConfigPaths;
 pub use theme::Theme;
