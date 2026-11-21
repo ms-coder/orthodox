@@ -137,6 +137,15 @@ pub enum JobSpec {
         /// `(from, to)` pairs.
         pairs: Vec<(PathBuf, PathBuf)>,
     },
+    /// Byte-for-byte comparison of file pairs (F27 content mode); read-only, cancellable.
+    /// Per-pair results arrive through `opts.on_result` (see [`crate::compare`]); the outcome is
+    /// `Outcome::Ok` / `Cancelled`.
+    CompareContent {
+        /// `(left, right)` pairs; the result index is the index into this list.
+        pairs: Vec<(PathBuf, PathBuf)>,
+        /// Options and the incremental result sink.
+        opts: crate::compare::CompareContentOpts,
+    },
 }
 
 /// Short display name of a location (last component for local paths).
@@ -190,12 +199,18 @@ impl JobSpec {
                 archive, dest_dir, ..
             } => format!("Extract '{}' to {}", path_name(archive), dest_dir.display()),
             JobSpec::Rename { pairs } => format!("Rename {} items", pairs.len()),
+            JobSpec::CompareContent { pairs, .. } => {
+                format!("Compare contents of {} files", pairs.len())
+            }
         }
     }
 
     /// Whether the job only reads (nothing to refresh in panels afterwards).
     pub fn is_read_only(&self) -> bool {
-        matches!(self, JobSpec::CalcSize { .. })
+        matches!(
+            self,
+            JobSpec::CalcSize { .. } | JobSpec::CompareContent { .. }
+        )
     }
 }
 
