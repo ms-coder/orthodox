@@ -134,10 +134,12 @@ fn save_config(ctx: &Rc<AppContext>) {
         state.save_again.set(true);
         return;
     }
-    let config = ctx.config.borrow().clone();
+    // Only the theme name is persisted, edited in place so the user's comments and ordering in a
+    // hand-edited config.toml survive (T8.8 `save_theme_choice`).
+    let name = ctx.config.borrow().theme.name.clone();
     let paths = ctx.paths.clone();
     let rx = wiring::run_on_pool(&ctx.services.pool, move |tx| {
-        let _ = tx.send_blocking(config.save(&paths));
+        let _ = tx.send_blocking(ofm_config::Config::save_theme_choice(&paths, &name));
     });
     let weak = Rc::downgrade(ctx);
     wiring::attach(
