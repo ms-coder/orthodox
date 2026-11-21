@@ -55,6 +55,10 @@ fn dispatch(spec: &JobSpec, ctx: &mut JobCtx) -> Result<Option<SizeTotals>, JobE
             dest_dir,
         } => ops::extract::run(ctx, archive, entries, dest_dir)?,
         JobSpec::Rename { pairs } => ops::rename::run(ctx, pairs)?,
+        JobSpec::CompareContent { pairs, opts } => {
+            // The results travel through `opts.on_result`; the outcome carries counters only.
+            crate::compare::run(ctx, pairs, opts)?;
+        }
     }
     Ok(None)
 }
