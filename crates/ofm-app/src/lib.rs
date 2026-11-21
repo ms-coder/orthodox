@@ -19,6 +19,7 @@
 pub mod app;
 pub mod chrome;
 pub mod cmdline;
+pub mod compare;
 pub mod context;
 pub mod desktop;
 pub mod dialogs;

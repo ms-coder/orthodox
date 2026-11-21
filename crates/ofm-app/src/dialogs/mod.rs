@@ -6,6 +6,7 @@
 //! A dialog is a plain function/struct that builds an `adw::Dialog` (or window), holds
 //! `ctx.enter_modal()` while shown, and runs commands via `ctx.execute`.
 
+pub mod compare;
 pub mod conflict;
 pub mod copy;
 pub mod delete;
