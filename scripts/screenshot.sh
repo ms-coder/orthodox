@@ -73,7 +73,7 @@ if [[ -n "${OFM_SHOT_THEME:-}${OFM_SHOT_VIEW:-}${OFM_SHOT_FIXTURE:-}" ]]; then
 fi
 
 cargo build -p ofm-app --quiet
-export OFM_SHOT_BIN="$PWD/target/debug/ofm"
+export OFM_SHOT_BIN="${CARGO_TARGET_DIR:-$PWD/target}/debug/ofm"
 
 export GDK_BACKEND=x11 GSK_RENDERER=cairo NO_AT_BRIDGE=1
 xvfb-run -a -s "-screen 0 1600x1000x24" bash -c '
