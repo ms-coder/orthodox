@@ -42,7 +42,7 @@ pub type ViewModeGetter = Box<dyn Fn(&PanelController) -> Option<String>>;
 pub type ViewModeSetter = Box<dyn Fn(&PanelController, &str)>;
 
 /// Validate a freshly loaded session (deferred M1 finding): `active_panel` is clamped to 0/1, tabs
-/// without a path are dropped, `active_tab` is clamped to the tab count, at most two panels are
+/// without an absolute path are dropped (a relative path would depend on the working directory), `active_tab` is clamped to the tab count, at most two panels are
 /// kept and geometry values are made sane. Never fails: a damaged session degrades to defaults.
 pub fn sanitize(s: &mut Session) {
     s.active_panel = s.active_panel.min(1);
@@ -56,7 +56,7 @@ pub fn sanitize(s: &mut Session) {
         let mut kept = Vec::with_capacity(p.tabs.len());
         let mut new_active = None;
         for (i, tab) in std::mem::take(&mut p.tabs).into_iter().enumerate() {
-            if tab.path_buf().is_none() {
+            if !tab.path_buf().is_some_and(|p| p.is_absolute()) {
                 continue;
             }
             if i >= active && new_active.is_none() {
@@ -206,7 +206,15 @@ pub fn snapshot(ctx: &AppContext) -> Session {
         window.maximized = win.is_maximized();
         // The size of a maximized/fullscreen window is not the window's own size: keep the old one.
         if !win.is_maximized() && !win.is_fullscreen() {
-            let (width, height) = (win.width(), win.height());
+            // `default-width/height` follow user resizes and exclude the client-side shadow, so
+            // it round-trips through `set_default_size` (the widget size would shrink the window
+            // by the shadow on every restart).
+            let (dw, dh) = win.default_size();
+            let (width, height) = if dw >= MIN_WINDOW && dh >= MIN_WINDOW {
+                (dw, dh)
+            } else {
+                (win.width(), win.height())
+            };
             if width >= MIN_WINDOW && height >= MIN_WINDOW {
                 window = WindowState {
                     width,
@@ -317,6 +325,22 @@ mod tests {
         sanitize(&mut s);
         assert_eq!(s.panels[0].active_tab, 0);
         assert_eq!(s.panels[0].tabs.len(), 1);
+    }
+
+    #[test]
+    fn relative_paths_are_dropped() {
+        let mut s = Session {
+            panels: vec![PanelSession {
+                active_tab: 1,
+                tabs: vec![tab("rel/dir"), tab("/abs"), tab("")],
+            }],
+            ..Session::default()
+        };
+        sanitize(&mut s);
+        let p = &s.panels[0];
+        assert_eq!(p.tabs.len(), 1);
+        assert_eq!(p.tabs[0].path_buf().unwrap(), PathBuf::from("/abs"));
+        assert_eq!(p.active_tab, 0);
     }
 
     #[test]

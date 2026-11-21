@@ -167,10 +167,15 @@ impl AppContext {
         self.host(self.other_side()).active()
     }
 
-    /// Start listing both panels' initial locations (call after the window exists).
+    /// Start listing both panels' initial locations (call after the window exists). A tab that
+    /// is already loading (a restored session tab, F33) is left alone: reloading it would
+    /// replace its wanted cursor name with the (not yet existing) cursor of the empty model.
     pub fn start_loading(&self) {
         for host in &self.panels {
-            host.active().reload();
+            let tab = host.active();
+            if tab.state() != crate::panel::LoadState::Loading {
+                tab.reload();
+            }
         }
     }
 
