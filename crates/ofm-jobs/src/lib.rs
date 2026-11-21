@@ -7,7 +7,8 @@
 //! - T3.1: `engine.rs`, `plan.rs`, `copy.rs`, `move_.rs`, `progress.rs`, `fs/real.rs`
 //! - T3.2: `ops/{delete,mkdir,link,attrs,size,trash}.rs` (+ `trash` dependency in `Cargo.toml`)
 //! - T3.4: `tests/**`
-//! - later: `ops/{rename,extract}.rs`
+//! - T6.2: `extract.rs` (frozen request types: `spec::ExtractOpts`, `JobSpec::Extract`)
+//! - later: `ops/rename.rs`
 //!
 //! Layering: `engine` (threads, queue, events) -> `runner::run_job` -> operation (`copy`, `move_`,
 //! `ops::*`) -> `JobCtx` (checkpoint/progress/questions) -> `Fs`. Operations never see the engine,
@@ -19,6 +20,7 @@ pub mod ctx;
 pub mod engine;
 pub mod error;
 pub mod event;
+pub mod extract;
 pub mod fs;
 pub mod move_;
 pub mod ops;
@@ -40,4 +42,4 @@ pub use event::{
 pub use fs::{FileType, Fs, FsFile, FsStat, RealFs, TrashError};
 pub use progress::{Clock, ManualClock, ProgressTracker, SystemClock};
 pub use runner::{run_job, run_sync};
-pub use spec::{CopyOpts, JobId, JobSpec, LinkKind, ModeChange, OwnerChange, RunMode};
+pub use spec::{CopyOpts, ExtractOpts, JobId, JobSpec, LinkKind, ModeChange, OwnerChange, RunMode};

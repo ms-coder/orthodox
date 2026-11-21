@@ -16,6 +16,7 @@ use crate::copy::run_copy;
 use crate::ctx::{JobCtx, JobSink};
 use crate::error::JobError;
 use crate::event::{Outcome, SizeTotals};
+use crate::extract::run_extract;
 use crate::fs::Fs;
 use crate::move_::run_move;
 use crate::ops;
@@ -53,7 +54,11 @@ fn dispatch(spec: &JobSpec, ctx: &mut JobCtx) -> Result<Option<SizeTotals>, JobE
             archive,
             entries,
             dest_dir,
-        } => ops::extract::run(ctx, archive, entries, dest_dir)?,
+            opts,
+        } => {
+            ctx.set_conflict_policy(opts.on_conflict);
+            run_extract(ctx, archive, entries, dest_dir, opts)?;
+        }
         JobSpec::Rename { pairs } => ops::rename::run(ctx, pairs)?,
     }
     Ok(None)

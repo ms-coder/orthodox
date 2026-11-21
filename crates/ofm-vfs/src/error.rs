@@ -26,6 +26,9 @@ pub enum VfsError {
     /// Archive is corrupt or has an unsupported format / unsafe entry (zip-slip).
     #[error("archive error: {0}")]
     Archive(String),
+    /// The location is read-only (archive entries; v1.0 has no other read-only providers).
+    #[error("read-only location: {}", .0.display())]
+    ReadOnly(PathBuf),
     /// Archive needs a password (or the given one was wrong).
     #[error("password required")]
     PasswordRequired,

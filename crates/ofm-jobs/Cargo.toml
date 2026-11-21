@@ -16,6 +16,7 @@ testing = ["dep:ofm-testkit"]
 
 [dependencies]
 ofm-core = { path = "../ofm-core" }
+ofm-vfs = { path = "../ofm-vfs" }
 async-channel.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

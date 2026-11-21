@@ -1174,6 +1174,7 @@ dependencies = [
  "ofm-core",
  "ofm-jobs",
  "ofm-testkit",
+ "ofm-vfs",
  "rustix",
  "thiserror",
  "tracing",
@@ -1182,6 +1183,14 @@ dependencies = [
 [[package]]
 name = "ofm-search"
 version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "ofm-core",
+ "ofm-vfs",
+ "tempfile",
+ "thiserror",
+ "tracing",
+]
 
 [[package]]
 name = "ofm-testkit"

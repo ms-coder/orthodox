@@ -27,6 +27,10 @@ pub enum JobError {
     /// A worker panicked; the message is the panic payload.
     #[error("internal error: {0}")]
     Panic(String),
+    /// The archive could not be read (corrupt, unsupported, wrong password, unsafe entry,
+    /// decompression-bomb guard). The message is `ArchiveError`'s text.
+    #[error("archive: {0}")]
+    Archive(String),
     /// Not available in this version (archive sources before M6, batch rename before M8, ...).
     #[error("not supported: {0}")]
     Unsupported(String),
@@ -56,6 +60,18 @@ impl JobError {
     /// True for [`JobError::Cancelled`].
     pub fn is_cancelled(&self) -> bool {
         matches!(self, JobError::Cancelled)
+    }
+}
+
+impl From<ofm_vfs::archive::ArchiveError> for JobError {
+    /// `Cancelled` stays a cancel, `Io` keeps its path, everything else becomes `Archive`.
+    fn from(e: ofm_vfs::archive::ArchiveError) -> Self {
+        use ofm_vfs::archive::ArchiveError as A;
+        match e {
+            A::Cancelled => JobError::Cancelled,
+            A::Io { path, source } => JobError::Io { path, source },
+            other => JobError::Archive(other.to_string()),
+        }
     }
 }
 
