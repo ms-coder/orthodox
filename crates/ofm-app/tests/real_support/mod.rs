@@ -263,10 +263,16 @@ impl Running {
     pub fn wait_for_window(&mut self) -> String {
         let end = Instant::now() + Duration::from_secs(20);
         while Instant::now() < end {
-            assert!(
-                self.app.try_wait().unwrap().is_none(),
-                "ofm exited during start-up"
-            );
+            if let Some(status) = self.app.try_wait().unwrap() {
+                // Report HOW it died: a signal (9 = OOM kill under memory pressure, 11 = crash)
+                // tells a resource flake from a real start-up bug.
+                use std::os::unix::process::ExitStatusExt;
+                panic!(
+                    "ofm exited during start-up: {status} (signal {:?}, core dumped: {})",
+                    status.signal(),
+                    status.core_dumped()
+                );
+            }
             let out = self.x("xdotool", &["search", "--onlyvisible", "--class", "ofm"]);
             let ids = String::from_utf8_lossy(&out.stdout).into_owned();
             if let Some(id) = ids.lines().next() {

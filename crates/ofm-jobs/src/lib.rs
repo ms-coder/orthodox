@@ -8,12 +8,14 @@
 //! - T3.2: `ops/{delete,mkdir,link,attrs,size,trash}.rs` (+ `trash` dependency in `Cargo.toml`)
 //! - T3.4: `tests/**`
 //! - later: `ops/{rename,extract}.rs`
+//! - T8.1b: `compare.rs` (read-only content comparison job, `JobSpec::CompareContent`)
 //!
 //! Layering: `engine` (threads, queue, events) -> `runner::run_job` -> operation (`copy`, `move_`,
 //! `ops::*`) -> `JobCtx` (checkpoint/progress/questions) -> `Fs`. Operations never see the engine,
 //! so they are unit-testable with `ctx::ScriptedSink` and `fs::faulty::FaultyFs`.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod compare;
 pub mod copy;
 pub mod ctx;
 pub mod engine;
@@ -27,6 +29,7 @@ pub mod progress;
 pub mod runner;
 pub mod spec;
 
+pub use compare::{CompareContentOpts, PairError, PairResult, ResultSink, SkipReason};
 pub use ctx::{
     ErrorResolution, JobCtx, JobSink, PauseGate, Recording, Resolution, ScriptedSink,
     ask_over_events,
