@@ -5,9 +5,14 @@
 //! the row `name` is the display path (relative to `base` when inside it, else the full path), unique
 //! within the list. File operations never see `Location::List`: the app turns the selected rows into
 //! `Location::Local(real_path)` (see [`ListStore::real_paths`]) and submits normal copy/move/delete
-//! jobs, so F5/F6/F8 act on the real files.
+//! jobs, so F5/F6/F8 act on the real files. Writing *into* the list pseudo-directory itself
+//! (mkdir/create "in the list") is impossible: `Caps.write` is `false` and rows have no child
+//! locations — the app maps row selections to `Location::Local(real_path)` before any job, so
+//! delete/rename/copy of items always runs against the real file through the local provider.
 //!
 //! File ownership (T7.2): everything below `list/`.
+
+mod stat;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -61,15 +66,45 @@ impl PanelList {
     }
 
     /// Stat (`lstat`) every path on the calling worker thread and build the list; paths that do
-    /// not exist are ignored and counted in the second tuple field. Checks `cancel` between paths.
-    /// T7.2: stub.
+    /// not exist (or cannot be statted) are ignored and counted in the second tuple field.
+    /// Duplicates (same path) keep the first occurrence, input order is preserved. Checks
+    /// `cancel` between paths.
     pub fn from_paths(
-        _title: impl Into<String>,
-        _base: Option<PathBuf>,
-        _paths: Vec<PathBuf>,
-        _cancel: &CancelToken,
+        title: impl Into<String>,
+        base: Option<PathBuf>,
+        paths: Vec<PathBuf>,
+        cancel: &CancelToken,
     ) -> Result<(PanelList, usize), VfsError> {
-        Err(VfsError::Unsupported("PanelList::from_paths (T7.2)"))
+        if cancel.is_cancelled() {
+            return Err(VfsError::Cancelled);
+        }
+        let mut seen = std::collections::HashSet::with_capacity(paths.len());
+        let mut entries = Vec::with_capacity(paths.len());
+        let mut ignored = 0usize;
+        for path in paths {
+            if cancel.is_cancelled() {
+                return Err(VfsError::Cancelled);
+            }
+            if !seen.insert(path.clone()) {
+                continue; // duplicate: keep the first occurrence
+            }
+            let name = Self::display_name(base.as_deref(), &path);
+            match stat::stat_path(&path, name) {
+                Ok(mut e) => {
+                    e.real_path = Some(path);
+                    entries.push(e);
+                }
+                Err(_) => ignored += 1,
+            }
+        }
+        Ok((
+            PanelList {
+                title: title.into(),
+                base,
+                entries,
+            },
+            ignored,
+        ))
     }
 
     /// Display name of `path`: relative to `base` when inside it, else the full path (always
@@ -155,6 +190,24 @@ impl ListStore {
             .collect())
     }
 
+    /// Real path of the row called `name` (`None` when no row has that name); the single-row
+    /// companion of [`real_paths`](Self::real_paths) for the job layer / UI to map a list item
+    /// to the real file.
+    pub fn real_path(
+        &self,
+        id: ListId,
+        name: &std::ffi::OsStr,
+    ) -> Result<Option<PathBuf>, VfsError> {
+        let list = self
+            .get(id)
+            .ok_or_else(|| VfsError::NotFound(PathBuf::from(format!("list:{}", id.0))))?;
+        Ok(list
+            .entries
+            .iter()
+            .find(|e| e.name == name)
+            .and_then(|e| e.real_path.clone()))
+    }
+
     /// Remove rows whose `real_path` is in `paths` (after a delete/move job); returns how many.
     pub fn forget_paths(&self, id: ListId, paths: &[PathBuf]) -> usize {
         let Ok(mut m) = self.lists.lock() else {
@@ -192,20 +245,55 @@ impl ListVfs {
 }
 
 impl Vfs for ListVfs {
-    /// Emits the rows of the list. T7.2: re-`lstat` every `real_path` first (refresh = drop
-    /// vanished files, update sizes/times), checking `cancel` between batches.
+    /// Emits the rows of the list. Refresh: every `real_path` is re-`lstat`ed first (fresh
+    /// sizes/times), rows whose file vanished are dropped — counted in a `tracing::warn!` —
+    /// and removed from the store, other stat failures keep the stale row. Checks `cancel`
+    /// between batches.
     fn list(&self, loc: &Location, cancel: &CancelToken, sink: &mut dyn FnMut(ListEvent)) {
         let list = match self.list_of(loc) {
             Ok(l) => l,
             Err(e) => return sink(ListEvent::Error(e)),
         };
         let mut total = 0;
+        let mut vanished: Vec<PathBuf> = Vec::new();
         for chunk in list.entries.chunks(BATCH) {
             if cancel.is_cancelled() {
                 return sink(ListEvent::Error(VfsError::Cancelled));
             }
-            total += chunk.len();
-            sink(ListEvent::Batch(chunk.to_vec()));
+            let mut batch = Vec::with_capacity(chunk.len());
+            for e in chunk {
+                let Some(real) = e.real_path.as_ref() else {
+                    batch.push(e.clone());
+                    continue;
+                };
+                match stat::stat_path(real, e.name.clone()) {
+                    Ok(mut fresh) => {
+                        fresh.real_path = Some(real.clone());
+                        batch.push(fresh);
+                    }
+                    // Vanished since the list was built: drop the row.
+                    Err(VfsError::NotFound(_)) => vanished.push(real.clone()),
+                    // Permission etc.: keep the stale row rather than hiding a real file.
+                    Err(err) => {
+                        tracing::debug!(path = %real.display(), error = %err, "list refresh stat failed; keeping stale row");
+                        batch.push(e.clone());
+                    }
+                }
+            }
+            total += batch.len();
+            if !batch.is_empty() {
+                sink(ListEvent::Batch(batch));
+            }
+        }
+        if !vanished.is_empty() {
+            tracing::warn!(
+                list = %list.title,
+                dropped = vanished.len(),
+                "list refresh dropped vanished items"
+            );
+            if let Location::List { id } = loc {
+                self.store.forget_paths(*id, &vanished);
+            }
         }
         sink(ListEvent::Done { total });
     }
@@ -254,7 +342,7 @@ impl Vfs for ListVfs {
 mod tests {
     use super::*;
 
-    fn row(path: &str) -> Entry {
+    fn row(path: impl Into<PathBuf>) -> Entry {
         let mut e = Entry::new("x", EntryKind::File);
         e.real_path = Some(path.into());
         e
@@ -280,38 +368,88 @@ mod tests {
 
     #[test]
     fn store_resolves_names_to_real_paths_and_forgets() {
+        let tmp = std::env::temp_dir().join(format!("ofm-list-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("a"), b"a").unwrap();
+        std::fs::write(tmp.join("c"), b"c").unwrap();
         let store = Arc::new(ListStore::default());
         let id = store.create(PanelList::from_entries(
             "Find",
-            Some("/src".into()),
-            vec![row("/src/a"), row("/etc/hosts")],
+            Some(tmp.clone()),
+            vec![row(tmp.join("a")), row("/etc/hosts")],
         ));
         assert_eq!(
             store
-                .append(id, vec![row("/src/a"), row("/src/c")])
+                .append(id, vec![row(tmp.join("a")), row(tmp.join("c"))])
                 .unwrap(),
             1
         );
         let real = store
             .real_paths(id, &["c".into(), "/etc/hosts".into(), "zz".into()])
             .unwrap();
-        assert_eq!(real, [PathBuf::from("/src/c"), PathBuf::from("/etc/hosts")]);
-        assert_eq!(store.forget_paths(id, &["/src/a".into()]), 1);
+        assert_eq!(real, [tmp.join("c"), PathBuf::from("/etc/hosts")]);
+        // Single-row mapping helper: same resolution as the bulk one.
+        assert_eq!(
+            store.real_path(id, std::ffi::OsStr::new("c")).unwrap(),
+            Some(tmp.join("c"))
+        );
+        assert_eq!(
+            store.real_path(id, std::ffi::OsStr::new("zz")).unwrap(),
+            None
+        );
+        assert_eq!(store.forget_paths(id, &[tmp.join("a")]), 1);
 
         let vfs = ListVfs::new(store.clone());
         let loc = Location::List { id };
         let mut got = Vec::new();
         vfs.list(&loc, &CancelToken::new(), &mut |ev| got.push(ev));
         assert!(matches!(&got[0], ListEvent::Batch(b) if b.len() == 2));
+        assert!(matches!(got.last(), Some(ListEvent::Done { total: 2 })));
         assert!(vfs.capabilities(&loc).real_paths && !vfs.capabilities(&loc).write);
         assert!(vfs.parent(&loc).is_none());
         store.remove(id);
         assert!(vfs.stat(&loc).is_err());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
-    fn from_paths_is_a_typed_stub_until_t72() {
-        let r = PanelList::from_paths("t", None, vec![], &CancelToken::new());
-        assert!(matches!(r, Err(VfsError::Unsupported(_))));
+    fn from_paths_stats_and_counts_missing() {
+        let tmp = std::env::temp_dir().join(format!("ofm-list-from-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("x"), b"123").unwrap();
+        std::os::unix::fs::symlink("x", tmp.join("link")).unwrap();
+        let (list, ignored) = PanelList::from_paths(
+            "t",
+            Some(tmp.clone()),
+            vec![
+                tmp.join("x"),
+                tmp.join("x"), // duplicate: dropped, not counted
+                tmp.join("missing"),
+                tmp.join("link"),
+            ],
+            &CancelToken::new(),
+        )
+        .unwrap();
+        assert_eq!(ignored, 1);
+        assert_eq!(list.entries.len(), 2);
+        assert_eq!(list.entries[0].name, std::ffi::OsStr::new("x"));
+        assert_eq!(list.entries[0].size, 3);
+        assert_eq!(list.entries[0].real_path, Some(tmp.join("x")));
+        assert_eq!(
+            list.entries[1].kind,
+            EntryKind::Symlink {
+                target: Some(ofm_core::TargetKind::File)
+            }
+        );
+        // Cancelled before the first path: a Cancelled error, no partial list.
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        assert!(matches!(
+            PanelList::from_paths("t", None, vec![tmp.join("x")], &cancel),
+            Err(VfsError::Cancelled)
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -12,6 +12,10 @@ workspace = true
 thiserror.workspace = true
 serde.workspace = true
 toml.workspace = true
+# Process-group signals for `panelize::run_panelize` (kill the whole command group on
+# cancel/timeout); std has no killpg.
+libc = "0.2"
+tracing.workspace = true
 
 [dev-dependencies]
 proptest = "1"
