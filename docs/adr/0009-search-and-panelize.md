@@ -55,6 +55,24 @@ relative items to `cwd`, drop `.` components, keep `..`; bytes, not `String`. A 
 not an error (`grep -l`, `find`): the summary carries the code and a stderr tail and the UI warns.
 Existence is checked by `PanelList::from_paths`, not by core. Cancel kills the process group.
 
+## Implementation notes (T7.2)
+
+- `run_panelize` spawns `<shell> -c <command>` (command line = one argv element) with
+  `process_group(0)` and kills the whole group on cancel/timeout/cap (`SIGTERM`, 150 ms grace,
+  `SIGKILL`). stdout is read on a helper thread and parsed incrementally (chunk-boundary safe,
+  same semantics as `parse_paths`); stderr is drained on a second thread and tailed to 4 KiB.
+  A wall-clock limit is available as the additive `run_panelize_timed`; the frozen
+  `PanelizeSummary` has no timeout flag, so a timeout is reported as `cancelled = true`.
+- Over-long output items (> 4096 bytes) are dropped and reported via the additive
+  `PanelizeEvent::Warning(String)` variant (the T7.0 enum had no warning carrier). T7.3 must
+  handle it like a search warning.
+- `PanelList::from_paths` lstats (rustix `statat`, nofollow + one following stat for symlink
+  target kind) on the calling worker, keeps first duplicates, preserves input order, counts
+  everything it could not stat. `ListVfs::list` re-stats every row on refresh: vanished rows are
+  dropped (counted in a `tracing::warn!`, removed from the store via `forget_paths`), other stat
+  errors keep the stale row. `ListStore::real_path` (single) joins the frozen `real_paths`
+  (bulk) as the row→real-file mapping for the job layer.
+
 ## Alternatives considered
 
 - Search results as `Location::List` entries fed directly by the engine: couples engine and store;
