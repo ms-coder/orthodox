@@ -180,6 +180,47 @@ pub fn entry_wants_key(chord: &KeyChord) -> bool {
     )
 }
 
+/// Hook for chords the keymap cannot bind because they are dynamic (the hotkey letters of the
+/// user menu entries, F28): while a dialog is open and the `dialog` section has no command for
+/// a chord, the dialog that installed a hook may take it. Stored in `ctx.ext`; the hook is
+/// cleared when its dialog closes.
+#[derive(Default)]
+pub struct DialogKeyFallback {
+    hook: std::cell::RefCell<Option<DialogKeyHook>>,
+}
+
+/// A [`DialogKeyFallback`] hook: returns true when it consumed the chord.
+pub type DialogKeyHook = Rc<dyn Fn(&Rc<AppContext>, KeyChord) -> bool>;
+
+impl DialogKeyFallback {
+    /// The state in `ctx.ext` (created on first use).
+    pub fn ensure(ctx: &AppContext) -> Rc<DialogKeyFallback> {
+        ctx.ext.get::<DialogKeyFallback>().unwrap_or_else(|| {
+            let fb = Rc::new(DialogKeyFallback::default());
+            ctx.ext.insert(Rc::clone(&fb));
+            fb
+        })
+    }
+
+    /// Install `hook` (replaces a previous one).
+    pub fn set(&self, hook: DialogKeyHook) {
+        *self.hook.borrow_mut() = Some(hook);
+    }
+
+    /// Remove the hook.
+    pub fn clear(&self) {
+        *self.hook.borrow_mut() = None;
+    }
+
+    fn offer(ctx: &Rc<AppContext>, chord: KeyChord) -> bool {
+        let hook = ctx
+            .ext
+            .get::<DialogKeyFallback>()
+            .and_then(|fb| fb.hook.borrow().clone());
+        hook.is_some_and(|h| h(ctx, chord))
+    }
+}
+
 /// Name of the controller added by [`install_key_controller`] (guards against adding it twice).
 const CONTROLLER_NAME: &str = "ofm-dispatch";
 
@@ -235,6 +276,15 @@ pub fn install_key_controller(
             Some(cmd) => {
                 ctx.execute(cmd);
                 glib::Propagation::Stop
+            }
+            None if kind == WindowKind::Dialog
+                || (kind == WindowKind::Main && ctx.modal_open()) =>
+            {
+                if DialogKeyFallback::offer(&ctx, chord) {
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
             }
             None => glib::Propagation::Proceed,
         }
