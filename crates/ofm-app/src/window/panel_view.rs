@@ -294,6 +294,11 @@ impl PanelViewHandles {
                     m.selected_size(),
                     fmt.size,
                 );
+                // A quick filter that outlives its bar (Enter) stays visible until cleared.
+                let summary = match m.filter() {
+                    Some(f) => statusline::with_filter(f, &summary),
+                    None => summary,
+                };
                 (left, summary)
             }
         };

@@ -109,6 +109,11 @@ pub fn cursor_info(entry: &Entry, fmt: &StatusFormat) -> String {
     format!("{}   {what}   {when}", entry.name.to_string_lossy())
 }
 
+/// The selection summary prefixed with the active quick filter: `filter: txt · 3 items`.
+pub fn with_filter(filter: &str, summary: &str) -> String {
+    format!("{} {filter} \u{b7} {summary}", tr("filter:"))
+}
+
 /// "3 selected (1.2 MiB) of 120" / "120 items".
 pub fn summary(total: usize, selected: usize, selected_size: u64, fmt: SizeFormat) -> String {
     if selected > 0 {
@@ -130,6 +135,11 @@ pub fn free_text(free: u64, fmt: SizeFormat) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filter_indicator_prefixes_the_summary() {
+        assert_eq!(with_filter("txt", "3 items"), "filter: txt \u{b7} 3 items");
+    }
 
     #[test]
     fn sizes() {
