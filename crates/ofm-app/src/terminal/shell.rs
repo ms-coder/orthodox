@@ -54,7 +54,9 @@ impl ShellKind {
     pub fn quote_style(self) -> ofm_core::cmdline::QuoteStyle {
         match self {
             ShellKind::Fish => ofm_core::cmdline::QuoteStyle::Fish,
-            _ => ofm_core::cmdline::QuoteStyle::Posix,
+            ShellKind::Bash | ShellKind::Zsh => ofm_core::cmdline::QuoteStyle::Posix,
+            // sh, dash, ksh, …: no ANSI-C `$'…'` guarantee (dash lacks it), so portable only.
+            ShellKind::Plain => ofm_core::cmdline::QuoteStyle::PortableSh,
         }
     }
 
@@ -593,9 +595,11 @@ mod tests {
     fn quote_style_follows_the_shell() {
         use ofm_core::cmdline::QuoteStyle;
         assert_eq!(ShellKind::Fish.quote_style(), QuoteStyle::Fish);
-        for k in [ShellKind::Bash, ShellKind::Zsh, ShellKind::Plain] {
+        for k in [ShellKind::Bash, ShellKind::Zsh] {
             assert_eq!(k.quote_style(), QuoteStyle::Posix);
         }
+        // dash and friends must never see `$'…'` (shell injection via non-UTF-8 names).
+        assert_eq!(ShellKind::Plain.quote_style(), QuoteStyle::PortableSh);
     }
 
     // ---- session directory and wrapper files -------------------------------------------------

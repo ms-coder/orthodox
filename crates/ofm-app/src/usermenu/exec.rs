@@ -24,14 +24,16 @@ pub const OUTPUT_CAP: usize = 16 * 1024;
 /// Lines of output shown in a message.
 pub const SHOWN_LINES: usize = 12;
 
-/// The shell that runs every menu command: `sh` reads POSIX quoting, so this is also the
-/// [`QuoteStyle`] used to expand the template — whatever the user's login shell or the embedded
-/// terminal's shell is (fish, ...), because it is never the one that parses the command.
+/// The shell that runs every menu command. `/bin/sh` is dash on Ubuntu: it knows neither
+/// `$'…'` ANSI-C quoting nor anything beyond POSIX, so names are expanded in the portable
+/// style — whatever the user's login shell or the embedded terminal's shell is (fish, ...),
+/// because it is never the one that parses the command.
 pub const SHELL: &str = "/bin/sh";
 
-/// Quote style for names substituted into a command that `SHELL` will run.
+/// Quote style for names substituted into a command that `SHELL` will run: byte-exact `'…'`
+/// only ([`QuoteStyle::PortableSh`]); `$'…'` would let a non-UTF-8 name break out under dash.
 pub fn quote_style() -> QuoteStyle {
-    QuoteStyle::Posix
+    QuoteStyle::PortableSh
 }
 
 /// The exact argument vector for a command: `["/bin/sh", "-c", command]`.
@@ -216,8 +218,8 @@ mod tests {
     }
 
     #[test]
-    fn quote_style_is_posix() {
-        assert_eq!(quote_style(), QuoteStyle::Posix);
+    fn quote_style_is_portable_sh() {
+        assert_eq!(quote_style(), QuoteStyle::PortableSh);
     }
 
     #[test]
