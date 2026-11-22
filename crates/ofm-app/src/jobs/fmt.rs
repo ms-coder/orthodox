@@ -2,6 +2,7 @@
 
 use ofm_jobs::{JobState, Outcome, Progress};
 
+use super::controller::Requested;
 use crate::chrome::statusline::{SizeFormat, format_size};
 use crate::i18n::tr;
 
@@ -70,13 +71,16 @@ pub fn details(p: &Progress) -> String {
 }
 
 /// Short state word for a job row.
-pub fn state_text(state: JobState, asking: bool) -> &'static str {
-    match (state, asking) {
-        (JobState::Queued, _) => tr("Queued"),
-        (JobState::Running, true) => tr("Waiting for your answer"),
-        (JobState::Running, false) => tr("Running"),
-        (JobState::Paused, _) => tr("Paused"),
-        (JobState::Finished, _) => tr("Finished"),
+pub fn state_text(state: JobState, asking: bool, requested: Option<Requested>) -> &'static str {
+    match (state, asking, requested) {
+        (JobState::Finished, ..) => tr("Finished"),
+        // The user pressed Cancel / Pause: say so at once, the worker stops at its next checkpoint.
+        (_, _, Some(Requested::Cancelling)) => tr("Cancelling\u{2026}"),
+        (JobState::Running, _, Some(Requested::Pausing)) => tr("Pausing\u{2026}"),
+        (JobState::Queued, ..) => tr("Queued"),
+        (JobState::Running, true, _) => tr("Waiting for your answer"),
+        (JobState::Running, false, _) => tr("Running"),
+        (JobState::Paused, ..) => tr("Paused"),
     }
 }
 
@@ -121,6 +125,30 @@ pub fn outcome_text(o: &Outcome) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn requested_pause_and_cancel_show_at_once() {
+        use Requested::{Cancelling, Pausing};
+        assert_eq!(state_text(JobState::Running, false, None), "Running");
+        assert_eq!(
+            state_text(JobState::Running, false, Some(Pausing)),
+            "Pausing\u{2026}"
+        );
+        assert_eq!(
+            state_text(JobState::Running, true, Some(Cancelling)),
+            "Cancelling\u{2026}"
+        );
+        assert_eq!(
+            state_text(JobState::Paused, false, Some(Cancelling)),
+            "Cancelling\u{2026}"
+        );
+        // A pause request means nothing once the job is not running; a finished job is finished.
+        assert_eq!(state_text(JobState::Paused, false, Some(Pausing)), "Paused");
+        assert_eq!(
+            state_text(JobState::Finished, false, Some(Cancelling)),
+            "Finished"
+        );
+    }
 
     #[test]
     fn durations() {

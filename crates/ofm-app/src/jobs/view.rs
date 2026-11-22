@@ -99,8 +99,10 @@ impl Row {
             (ofm_jobs::RunMode::Parallel, s) if s != JobState::Finished => " \u{b7} parallel",
             _ => "",
         };
-        self.state
-            .set_text(&format!("{}{mode}", fmt::state_text(job.state, job.asking)));
+        self.state.set_text(&format!(
+            "{}{mode}",
+            fmt::state_text(job.state, job.asking, job.requested)
+        ));
         let finished = job.state == JobState::Finished;
         self.bar.set_visible(!finished);
         match fmt::fraction(&job.progress) {
@@ -125,7 +127,7 @@ impl Row {
             .update_property(&[gtk::accessible::Property::Label(&format!(
                 "{}, {}",
                 job.title,
-                fmt::state_text(job.state, job.asking)
+                fmt::state_text(job.state, job.asking, job.requested)
             ))]);
     }
 }

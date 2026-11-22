@@ -168,6 +168,7 @@ mod tests {
             progress: Progress::default(),
             asking: false,
             outcome: None,
+            requested: None,
         }
     }
 

@@ -28,7 +28,9 @@ pub mod targets;
 pub mod ui;
 pub mod view;
 
-pub use controller::{Capture, Control, JobEntry, JobsController, JobsEvent, SubmitOpts};
+pub use controller::{
+    Capture, Control, JobEntry, JobsController, JobsEvent, Requested, SubmitOpts,
+};
 pub use quit::allow_close;
 
 use std::rc::Rc;
