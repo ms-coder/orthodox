@@ -69,7 +69,8 @@ fault it. `FaultyFs` lives in `ofm-jobs` behind the `testing` feature (it needs 
 self dev-dependency). `RealFs` is built on `rustix` (no `unsafe`, no libc crate).
 
 **Other decisions.** Rename in place (Shift+F6) is a `Move` into the same directory with a literal rename
-mask; `JobSpec::Rename` is only the F20 batch rename (M8). v1.0/M3 copy and move sources are
+mask; the F20 batch rename is `JobSpec::RenameBatch` / `JobSpec::RenameRollback` (T8.3b,
+`rename_batch.rs`; the former `Rename { pairs }` stub is gone). v1.0/M3 copy and move sources are
 `Location::Local` only (other locations are `Unsupported` until M6/M7 add a source-reader seam).
 Panels refresh through the directory watcher (`PanelController`, T3.0), not through job events;
 `Report::created` + `PanelController::focus_name` only place the cursor.

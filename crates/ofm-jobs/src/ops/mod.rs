@@ -9,7 +9,7 @@
 //! | `attrs.rs` | T3.2 | `(ctx, &[PathBuf], Option<ModeChange>, Option<OwnerChange>, recursive)` |
 //! | `size.rs` | T3.2 | `(ctx, &[PathBuf]) -> SizeTotals` |
 //! | `trash.rs` | T3.2 | `trash_path(&Path) -> Result<(), TrashError>` (called by `RealFs::trash`) |
-//! | `rename.rs`, `extract.rs` | later milestones | `Unsupported` stubs (M8 batch rename, M6 extract) |
+//! | `extract.rs` | later milestone | `Unsupported` stub (M6 extract); batch rename lives in `rename_batch.rs` |
 //!
 //! Rules for every operation: all I/O through `ctx.fs()`; `ctx.checkpoint()` between items and in
 //! every loop; per-item failures through `ctx.attempt` / `ctx.resolve_error` (retry/skip/abort);
@@ -21,6 +21,5 @@ pub mod delete;
 pub mod extract;
 pub mod link;
 pub mod mkdir;
-pub mod rename;
 pub mod size;
 pub mod trash;
