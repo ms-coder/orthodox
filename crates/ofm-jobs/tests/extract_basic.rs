@@ -397,3 +397,34 @@ fn an_entry_named_like_the_archive_itself_never_replaces_it() {
     assert_eq!(std::fs::read(&arch).unwrap(), before);
     assert_no_part_files(tmp.path());
 }
+
+#[test]
+fn sync_option_fsyncs_files_and_directories_and_changes_nothing_else() {
+    let tmp = Tmp::new("sync");
+    let dst = tmp.dst();
+    let mut a = MemArchive::new(&tmp.archive_file("a.tar", 20_000));
+    a.dir("d").mode(0o750);
+    a.file("d/f", b"synced").mode(0o640);
+    let mut r = a.reader();
+    let o = ofm_jobs::ExtractOpts {
+        sync: true,
+        ..opts()
+    };
+    let (sink, rec) = ofm_jobs::ScriptedSink::refusing();
+    let fs = std::sync::Arc::new(ofm_jobs::fs::faulty::FaultyFs::over_real(
+        ofm_testkit::fault::FaultPlan::new(),
+    ));
+    let run = run_with_ctx(
+        ofm_jobs::JobCtx::simple(fs.clone(), sink),
+        rec,
+        &mut r,
+        &[],
+        &dst,
+        &o,
+    );
+    run.ok();
+    assert_eq!(read(&dst.join("d/f")), b"synced");
+    assert_eq!(perm(&dst.join("d")), 0o750);
+    assert!(fs.calls_of(ofm_testkit::fault::FaultOp::FileSync) >= 1);
+    assert!(fs.calls_of(ofm_testkit::fault::FaultOp::SyncDir) >= 2);
+}
