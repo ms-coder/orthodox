@@ -136,6 +136,9 @@ fn go_up(ctx: &Rc<AppContext>) {
     let ctrl = ctx.active_controller();
     if let Some((parent, from)) = parent_of(&ctrl.location()) {
         navigate(ctx, &ctrl, parent, Some(from));
+    } else if matches!(ctrl.location(), Location::List { .. }) {
+        // A panelized list has no parent: leaving it returns to where the panel came from.
+        ctx.execute(cmd::PANEL_HISTORY_BACK);
     }
 }
 

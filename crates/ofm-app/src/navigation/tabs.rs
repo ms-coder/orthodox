@@ -186,7 +186,10 @@ impl TabBar {
             label.set_ellipsize(gtk::pango::EllipsizeMode::End);
             label.set_max_width_chars(24);
             item.append(&label);
-            item.set_tooltip_text(Some(&tab.location().display_lossy()));
+            item.set_tooltip_text(Some(&crate::search::lists::location_label(
+                &tab.services().lists,
+                &tab.location(),
+            )));
             item.update_property(&[gtk::accessible::Property::Label(&title)]);
             // Mouse: click activates, middle click closes. Keys use the tab.* commands.
             let click = gtk::GestureClick::new();

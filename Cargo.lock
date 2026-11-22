@@ -1134,6 +1134,7 @@ dependencies = [
  "ofm-config",
  "ofm-core",
  "ofm-jobs",
+ "ofm-search",
  "ofm-testkit",
  "ofm-vfs",
  "ofm-viewer",
