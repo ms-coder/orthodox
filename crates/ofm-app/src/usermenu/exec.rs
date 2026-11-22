@@ -122,6 +122,10 @@ pub enum Outcome {
 /// Run `command` through `sh -c` in `cwd` and wait for it (blocking; call from a worker).
 /// stdin is closed; the child gets its own process group, so a Ctrl+C aimed at OFM's
 /// terminal does not reach it.
+///
+/// The outcome does not wait for grandchildren: after the shell exits, its stdout/stderr
+/// pipes are drained for at most [`READER_GRACE`] longer — `gedit %f &` keeps the pipe open
+/// until the editor exits, and the result must arrive when the command itself is done.
 pub fn run_blocking(command: &[u8], cwd: &Path) -> Outcome {
     let args = argv(command);
     let mut child = match Command::new(&args[0])
@@ -140,10 +144,10 @@ pub fn run_blocking(command: &[u8], cwd: &Path) -> Outcome {
     let err = child.stderr.take().map(spawn_reader);
     let status = child.wait();
     let stdout = out
-        .and_then(|h| h.join().ok())
+        .map(|(t, d)| finish_reader(t, d))
         .unwrap_or_else(|| BoundedTail::new(0));
     let stderr = err
-        .and_then(|h| h.join().ok())
+        .map(|(t, d)| finish_reader(t, d))
         .unwrap_or_else(|| BoundedTail::new(0));
     match status {
         Ok(s) if s.success() => Outcome::Success {
@@ -162,18 +166,52 @@ pub fn run_blocking(command: &[u8], cwd: &Path) -> Outcome {
     }
 }
 
-fn spawn_reader<R: Read + Send + 'static>(mut stream: R) -> std::thread::JoinHandle<BoundedTail> {
+/// How long the output pipes are drained after the shell exited: long enough for the last
+/// foreground output, short enough that a backgrounded grandchild (`sleep 5 &`) does not
+/// delay the outcome.
+pub const READER_GRACE: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Collect a reader's tail, waiting at most [`READER_GRACE`]: a grandchild may still hold
+/// the pipe open; whatever was captured by then is the result and the detached reader keeps
+/// draining into the shared tail until the pipe closes.
+fn finish_reader(
+    tail: std::sync::Arc<std::sync::Mutex<BoundedTail>>,
+    done: std::sync::mpsc::Receiver<()>,
+) -> BoundedTail {
+    let _ = done.recv_timeout(READER_GRACE);
+    tail.lock()
+        .map(|t| t.clone())
+        .unwrap_or_else(|_| BoundedTail::new(0))
+}
+
+/// Drain `stream` into a shared bounded tail on its own thread; the returned receiver fires
+/// when the stream is exhausted and the tail holds whatever was read by then.
+fn spawn_reader<R: Read + Send + 'static>(
+    mut stream: R,
+) -> (
+    std::sync::Arc<std::sync::Mutex<BoundedTail>>,
+    std::sync::mpsc::Receiver<()>,
+) {
+    let tail = std::sync::Arc::new(std::sync::Mutex::new(BoundedTail::new(OUTPUT_CAP)));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let shared = std::sync::Arc::clone(&tail);
     std::thread::spawn(move || {
-        let mut tail = BoundedTail::new(OUTPUT_CAP);
         let mut chunk = [0u8; 4096];
         loop {
             match stream.read(&mut chunk) {
                 Ok(0) | Err(_) => break,
-                Ok(n) => tail.push(&chunk[..n]),
+                Ok(n) => {
+                    if let Ok(mut t) = shared.lock() {
+                        t.push(&chunk[..n]);
+                    } else {
+                        break;
+                    }
+                }
             }
         }
-        tail
-    })
+        let _ = tx.send(());
+    });
+    (tail, rx)
 }
 
 /// Start [`run_blocking`] on a dedicated thread; the receiver yields exactly one [`Outcome`]
@@ -255,6 +293,25 @@ mod tests {
         ));
         let missing = run_blocking(b"true", &dir.path().join("nope"));
         assert!(matches!(missing, Outcome::SpawnFailed(_)));
+    }
+
+    /// T8.10: `gedit %f &`-style commands must not hold the result until the grandchild
+    /// exits — the shell finishes, the pipes get a short grace, and the outcome arrives with
+    /// the foreground output captured.
+    #[test]
+    fn background_grandchild_does_not_delay_the_result() {
+        let dir = ofm_testkit::temp::TempDir::new().unwrap();
+        let start = std::time::Instant::now();
+        let out = run_blocking(b"echo hi; sleep 5 &", dir.path());
+        let elapsed = start.elapsed();
+        let Outcome::Success { stdout } = out else {
+            panic!("{out:?}");
+        };
+        assert!(stdout.contains("hi"), "{stdout}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(4),
+            "result waited for the grandchild: {elapsed:?}"
+        );
     }
 
     #[test]
