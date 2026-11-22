@@ -27,4 +27,4 @@ pub mod session;
 
 pub use commands::{install_commands, install_state};
 pub use main_window::{MainWindow, install_ui};
-pub use panel_view::{PanelView, install_panel_view};
+pub use panel_view::{PanelView, TextHold, install_panel_view};

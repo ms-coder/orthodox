@@ -16,11 +16,12 @@ use super::DEBOUNCE;
 use super::debounce::{Debouncer, Tick};
 use super::pane::{Body, Content, PreviewPane};
 use super::worker::{self, ImageData, Msg, Preview, Target, TargetKey, Update, ViewBox};
-use crate::chrome::statusline::{SizeFormat, StatusFormat, format_size};
+use crate::chrome::statusline::{SizeFormat, StatusFormat, cursor_info, format_size};
 use crate::context::AppContext;
 use crate::i18n::tr;
 use crate::panel::{LoadState, PanelController, PanelHost, Side};
 use crate::signal::SignalId;
+use crate::window::TextHold;
 use crate::wiring;
 
 /// Signal connections made while quick view is on (all removed by [`QuickView::off`]).
@@ -41,6 +42,8 @@ struct Current {
 pub struct QuickView {
     ctx: Weak<AppContext>,
     panes: RefCell<[Option<PreviewPane>; 2]>,
+    /// Path header / status line of each side (shown as "Quick view" + the item's info).
+    holds: RefCell<[Option<TextHold>; 2]>,
     shown_on: Cell<Option<Side>>,
     conns: RefCell<Conns>,
     debounce: RefCell<Debouncer<()>>,
@@ -55,6 +58,7 @@ impl QuickView {
         Rc::new(QuickView {
             ctx: Rc::downgrade(ctx),
             panes: RefCell::new([None, None]),
+            holds: RefCell::new([None, None]),
             shown_on: Cell::new(None),
             conns: RefCell::new(Conns::default()),
             debounce: RefCell::new(Debouncer::new(DEBOUNCE)),
@@ -67,6 +71,15 @@ impl QuickView {
     /// Remember the pane laid over `side`'s file list.
     pub fn register_pane(&self, side: Side, pane: PreviewPane) {
         self.panes.borrow_mut()[side.min(1)] = Some(pane);
+    }
+
+    /// Remember the text hold of `side`'s path header and status line.
+    pub fn register_hold(&self, side: Side, hold: TextHold) {
+        self.holds.borrow_mut()[side.min(1)] = Some(hold);
+    }
+
+    fn hold(&self, side: Side) -> Option<TextHold> {
+        self.holds.borrow()[side.min(1)].clone()
     }
 
     /// Whether quick view is on.
@@ -104,6 +117,9 @@ impl QuickView {
             return;
         };
         self.shown_on.set(Some(side));
+        if let Some(hold) = self.hold(side) {
+            hold.hold(tr("Quick view"), "");
+        }
         pane.set_visible(true);
         let source = 1 - side;
         let host = Rc::clone(ctx.host(source));
@@ -154,6 +170,9 @@ impl QuickView {
         if let Some(pane) = self.pane(side) {
             pane.set_visible(false);
             pane.set_content(Content::default());
+        }
+        if let Some(hold) = self.hold(side) {
+            hold.release();
         }
     }
 
@@ -240,6 +259,18 @@ impl QuickView {
             let m = source.model();
             (m.cursor_entry().cloned(), source.location(), source.state())
         };
+        // The preview side's status line describes the previewed item (as the source panel's
+        // status line does).
+        if let Some(hold) = self.hold(side) {
+            let fmt = {
+                let cfg = ctx.config.borrow();
+                StatusFormat {
+                    size: SizeFormat::from_config(&cfg.panels.size_format),
+                    time: cfg.panels.time_format.clone(),
+                }
+            };
+            hold.set_status(&entry.as_ref().map_or_else(String::new, |e| cursor_info(e, &fmt)));
+        }
         let Some(entry) = entry else {
             let text = match state {
                 LoadState::Loading => tr("Loading..."),

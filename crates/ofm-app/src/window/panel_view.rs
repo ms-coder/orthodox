@@ -25,6 +25,8 @@ pub struct PanelView {
     pub tab_bar_slot: gtk::Box,
     /// Current location as text.
     pub path_label: gtk::Label,
+    /// Shown instead of `path_label` while a [`TextHold`] is active (quick view).
+    held_path_label: gtk::Label,
     /// Overlay around the list: popovers/overlays (quick search) attach here.
     pub overlay: gtk::Overlay,
     /// The custom-drawn list.
@@ -38,6 +40,45 @@ pub struct PanelView {
     /// Row below the list for extra status widgets (progress, free space).
     pub status_slot: gtk::Box,
     host: Rc<PanelHost>,
+    /// Set while a [`TextHold`] owns the path header and the status line.
+    held: Rc<Cell<bool>>,
+}
+
+/// While held, the controller-driven texts (path header, status line, selection summary) of a
+/// panel side are not rewritten; [`TextHold::release`] shows the controller's texts again.
+#[derive(Clone)]
+pub struct TextHold {
+    handles: PanelViewHandles,
+}
+
+impl TextHold {
+    /// Take over the path header and clear the selection summary; the status line shows `status`.
+    pub fn hold(&self, path: &str, status: &str) {
+        let h = &self.handles;
+        h.held.set(true);
+        // A second label takes the header's place: re-setting the text of the real path label
+        // leaves a 2-pixel rendering difference behind (found by the pixel-exact restore test).
+        h.held_path_label.set_text(path);
+        h.held_path_label.set_visible(true);
+        h.status_label.set_text(status);
+        h.summary_label.set_text("");
+    }
+
+    /// Change the status line while held (a no-op otherwise).
+    pub fn set_status(&self, status: &str) {
+        if self.handles.held.get() {
+            self.handles.status_label.set_text(status);
+        }
+    }
+
+    /// Give the texts back: they are rebuilt from the side's active tab.
+    pub fn release(&self) {
+        let h = &self.handles;
+        if h.held.replace(false) {
+            h.held_path_label.set_visible(false);
+            h.update_texts(&h.host.active());
+        }
+    }
 }
 
 impl PanelView {
@@ -52,6 +93,11 @@ impl PanelView {
         path_label.set_xalign(0.0);
         path_label.set_ellipsize(gtk::pango::EllipsizeMode::Start);
         path_label.add_css_class("ofm-path");
+        let held_path_label = gtk::Label::new(None);
+        held_path_label.set_xalign(0.0);
+        held_path_label.set_ellipsize(gtk::pango::EllipsizeMode::Start);
+        held_path_label.add_css_class("ofm-path");
+        held_path_label.set_visible(false);
         let list = FileList::new();
         list.set_palette(ctx.theme.palette());
         list.install_mouse(ctx, side);
@@ -78,7 +124,13 @@ impl PanelView {
         status_slot.append(&summary_label);
         status_slot.append(&space_label);
         root.append(&tab_bar_slot);
-        root.append(&path_label);
+        // The held label is drawn over the path label, which keeps its allocation (hiding or
+        // re-measuring it changes how its glyphs are clipped by a pixel row).
+        let path_overlay = gtk::Overlay::new();
+        path_overlay.set_child(Some(&path_label));
+        path_overlay.add_overlay(&held_path_label);
+        path_overlay.set_measure_overlay(&held_path_label, false);
+        root.append(&path_overlay);
         root.append(&overlay);
         root.append(&status_slot);
 
@@ -89,12 +141,14 @@ impl PanelView {
             root,
             tab_bar_slot,
             path_label,
+            held_path_label,
             overlay,
             list,
             status_label,
             summary_label,
             space_label,
             status_slot,
+            held: Rc::new(Cell::new(false)),
         };
         view.sync_active(ctx.active_side() == side);
 
@@ -122,11 +176,21 @@ impl PanelView {
         view
     }
 
+    /// Handle that lets another module (quick view) take over the path header and the status
+    /// line of this side and give them back exactly as they were.
+    pub fn text_hold(&self, ctx: &Rc<AppContext>) -> TextHold {
+        TextHold {
+            handles: self.handles(ctx),
+        }
+    }
+
     /// Cheap clone of the widget handles for use in closures.
     fn handles(&self, ctx: &Rc<AppContext>) -> PanelViewHandles {
         PanelViewHandles {
+            held: Rc::clone(&self.held),
             root: self.root.clone(),
             path_label: self.path_label.clone(),
+            held_path_label: self.held_path_label.clone(),
             status_label: self.status_label.clone(),
             summary_label: self.summary_label.clone(),
             space_label: self.space_label.clone(),
@@ -154,8 +218,10 @@ fn set_active_look(root: &gtk::Box, list: &FileList, active: bool) {
 
 #[derive(Clone)]
 struct PanelViewHandles {
+    held: Rc<Cell<bool>>,
     root: gtk::Box,
     path_label: gtk::Label,
+    held_path_label: gtk::Label,
     status_label: gtk::Label,
     summary_label: gtk::Label,
     space_label: gtk::Label,
@@ -208,6 +274,9 @@ impl PanelViewHandles {
     }
 
     fn update_texts(&self, ctrl: &PanelController) {
+        if self.held.get() {
+            return;
+        }
         self.path_label.set_text(&ctrl.location().display_lossy());
         let fmt = self.status_format();
         let (left, summary) = match ctrl.state() {

@@ -63,4 +63,5 @@ pub fn install_panel_view(ctx: &Rc<AppContext>, view: &PanelView) {
             .connect(move |palette| pane.set_palette(Rc::clone(palette)));
     }
     qv.register_pane(view.side, pane);
+    qv.register_hold(view.side, view.text_hold(ctx));
 }
