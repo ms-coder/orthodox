@@ -14,6 +14,7 @@ use ofm_vfs::VfsRegistry;
 use ofm_vfs::pool::IoPool;
 
 use crate::dispatch::{CommandDispatcher, ExecResult};
+use crate::panel::archive::ArchiveService;
 use crate::panel::{PanelController, PanelHost, Side};
 use crate::signal::Signal;
 use crate::theme::ThemeHost;
@@ -26,14 +27,21 @@ pub struct Services {
     pub vfs: VfsRegistry,
     /// Shared I/O pool (4 threads) for listing/stat/preview work.
     pub pool: IoPool,
+    /// Archive provider, passwords and temp directories (F26); its provider is registered in
+    /// `vfs` for `Location::Archive`.
+    pub archives: ArchiveService,
 }
 
 impl Services {
     /// Production services: local provider + 4 I/O threads.
     pub fn new() -> Self {
+        let archives = ArchiveService::new();
+        let mut vfs = VfsRegistry::with_local();
+        archives.register(&mut vfs);
         Services {
-            vfs: VfsRegistry::with_local(),
+            vfs,
             pool: IoPool::new(4),
+            archives,
         }
     }
 }

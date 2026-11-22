@@ -103,6 +103,10 @@ impl CommandDispatcher {
 
     /// Run `cmd` for `ctx`. The handler is cloned out first, so it may call `execute` itself.
     pub fn execute(&self, ctx: &Rc<AppContext>, cmd: CommandId) -> ExecResult {
+        // Archive panels are read-only; F5/F6/F3/F4 mean something else there (T6.3).
+        if crate::panel::archive::intercept(ctx, cmd) {
+            return ExecResult::Handled;
+        }
         match self.registry.handlers.get(&cmd).cloned() {
             Some(h) => {
                 tracing::debug!(command = %cmd, "execute");

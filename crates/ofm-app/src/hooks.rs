@@ -49,6 +49,7 @@ pub fn install_state(ctx: &Rc<AppContext>) {
     viewer::install_state(ctx); // T5.2a: ViewerHost in ctx.ext
     compare::install_state(ctx); // T8.1c: CompareState in ctx.ext
     usermenu::install_state(ctx); // T8.2b: UserMenuState in ctx.ext
+    crate::panel::archive::install_state(ctx); // T6.3: archive state + password prompts
 }
 
 /// Decorate one panel view right after it is built (tab bar, quick-search popover, ...).

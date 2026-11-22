@@ -257,6 +257,8 @@ impl JobsController {
 
     /// Cancel a job.
     pub fn cancel(&self, id: JobId) {
+        // An extract job blocked on a password prompt must wake up (T6.3).
+        crate::dialogs::password::abort_pending(crate::dialogs::password::Origin::Job);
         self.update(id, |j| {
             if j.state != JobState::Finished {
                 j.requested = Some(Requested::Cancelling);
@@ -271,6 +273,7 @@ impl JobsController {
 
     /// Cancel every unfinished job (after the user confirmed quitting).
     pub fn cancel_all(&self) {
+        crate::dialogs::password::abort_pending(crate::dialogs::password::Origin::Job);
         let ids: Vec<JobId> = self
             .jobs
             .borrow()
