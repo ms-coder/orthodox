@@ -183,13 +183,10 @@ mod tests {
 
     #[test]
     fn map_io_keeps_limits() {
-        let e = io::Error::new(
-            io::ErrorKind::Other,
-            ArchiveError::LimitExceeded {
-                archive: PathBuf::from("/a.zip"),
-                kind: LimitKind::ExceedsDeclaredSize,
-            },
-        );
+        let e = io::Error::other(ArchiveError::LimitExceeded {
+            archive: PathBuf::from("/a.zip"),
+            kind: LimitKind::ExceedsDeclaredSize,
+        });
         assert!(matches!(
             map_io(Path::new("/a.zip"), e),
             ArchiveError::LimitExceeded {
