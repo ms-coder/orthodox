@@ -577,6 +577,36 @@ mod tests {
         assert_eq!(Keymap::preset(Preset::Tc).typing, TypingMode::QuickSearch);
     }
 
+    /// T8.12: laptops without a numpad must reach every mask/all/none selection command
+    /// with at least one chord that is not a keypad key (Gray*/KP*).
+    #[test]
+    fn mask_selection_commands_have_non_numpad_chords_in_every_preset() {
+        use ofm_core::keychord::Key;
+        let selection = [
+            cmd::SELECT_BY_MASK,
+            cmd::SELECT_UNMASK,
+            cmd::SELECT_INVERT,
+            cmd::SELECT_ALL,
+            cmd::SELECT_NONE,
+        ];
+        let is_numpad = |k: Key| {
+            matches!(
+                k,
+                Key::Keypad(_) | Key::GrayPlus | Key::GrayMinus | Key::GrayStar | Key::GraySlash
+            )
+        };
+        for (name, p) in [("far", Preset::Far), ("tc", Preset::Tc), ("mc", Preset::Mc)] {
+            let km = Keymap::preset(p);
+            for c in selection {
+                let non_numpad = km
+                    .chords_for(c)
+                    .iter()
+                    .any(|(ctx, ch)| *ctx == KeyContext::Panels && !is_numpad(ch.key));
+                assert!(non_numpad, "{name}: {c:?} has no non-numpad chord");
+            }
+        }
+    }
+
     #[test]
     fn lookup_and_resolution_order() {
         let km = Keymap::preset(Preset::Far);

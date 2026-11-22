@@ -177,7 +177,7 @@ fn invalid(field: &'static str, message: impl Into<String>) -> SearchError {
 impl SearchQuery {
     /// Check the query without touching the file system, so the dialog can show errors before
     /// starting. Done here: roots present and absolute, glob mask parses, ranges ordered, content
-    /// pattern non-empty. T7.1 adds: compile the name regex and the content pattern.
+    /// pattern non-empty, the name regex and the content pattern compile.
     pub fn validate(&self) -> Result<(), SearchError> {
         if self.roots.is_empty() {
             return Err(invalid("roots", "no directory to search"));
@@ -185,11 +185,17 @@ impl SearchQuery {
         if let Some(r) = self.roots.iter().find(|r| !r.is_absolute()) {
             return Err(invalid("roots", format!("not absolute: {}", r.display())));
         }
-        if self.name.mode == NameMode::Glob {
-            let opts = MaskOpts {
-                case_insensitive: !self.name.case_sensitive,
-            };
-            Mask::parse(&self.name.pattern, opts).map_err(|e| invalid("name", e.to_string()))?;
+        match self.name.mode {
+            NameMode::Glob => {
+                let opts = MaskOpts {
+                    case_insensitive: !self.name.case_sensitive,
+                };
+                Mask::parse(&self.name.pattern, opts)
+                    .map_err(|e| invalid("name", e.to_string()))?;
+            }
+            NameMode::Regex => {
+                crate::compile::compile_name_regex(&self.name.pattern, self.name.case_sensitive)?;
+            }
         }
         if let (Some(min), Some(max)) = (self.size.min, self.size.max)
             && min > max
@@ -201,10 +207,11 @@ impl SearchQuery {
         {
             return Err(invalid("mtime", "'after' is later than 'before'"));
         }
-        if let Some(c) = &self.content
-            && c.pattern.is_empty()
-        {
-            return Err(invalid("content", "empty search text"));
+        if let Some(c) = &self.content {
+            if c.pattern.is_empty() {
+                return Err(invalid("content", "empty search text"));
+            }
+            crate::compile::compile_line_regex(c)?;
         }
         Ok(())
     }
