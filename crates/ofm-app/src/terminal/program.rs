@@ -55,6 +55,7 @@ pub fn spawn_argv_in(argv: &[OsString], cwd: Option<&Path>) -> Vec<String> {
 }
 
 /// The argv to hand to `spawn_async` so that the child runs exactly `argv`.
+#[cfg(test)]
 pub fn spawn_argv(argv: &[OsString]) -> Vec<String> {
     spawn_argv_in(argv, None)
 }
