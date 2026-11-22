@@ -811,7 +811,9 @@ mod tests {
         let start = Instant::now();
         let r = compare(&left, &right, &opts);
         let elapsed = start.elapsed();
-        assert!(elapsed.as_secs() < 1, "compare took {elapsed:?}");
+        // Generous on purpose: this guards against an O(n^2) regression (minutes at 100k
+        // entries), not against a loaded CI box in a debug build (flaked at 1 s).
+        assert!(elapsed.as_secs() < 15, "compare took {elapsed:?}");
         // Left: 100 size-changed + 100 names the right side dropped.
         assert_eq!(r.left_marks.len(), 200, "left marks changed?");
         // Right: only the 100 size-changed entries carry a mark (the dropped
