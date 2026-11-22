@@ -129,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_variants_fail_cleanly() {
+    fn missing_archive_fails_cleanly() {
         let (sink, _) = ScriptedSink::refusing();
         let out = run_sync(
             &JobSpec::Extract {
@@ -141,9 +141,7 @@ mod tests {
             Arc::new(RealFs),
             sink,
         );
-        assert!(
-            matches!(&out, Outcome::Failed { error, .. } if error.contains("not supported")),
-            "{out:?}"
-        );
+        // Extraction is implemented (T6.2); a missing archive is a clean typed failure.
+        assert!(matches!(&out, Outcome::Failed { .. }), "{out:?}");
     }
 }
