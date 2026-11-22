@@ -61,8 +61,9 @@ impl Read for EntryStream<'_> {
                 ArchiveError::Cancelled,
             ));
         }
-        let n = self.inner.read(buf)?;
-        self.read += n as u64;
+        // Cap at `declared + 1`: the read that crosses the boundary may still deliver its bytes
+        // (the backend reports the shortfall/excess after the visitor returns); the next read
+        // reports the lying header.
         if self.read > self.declared {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -72,6 +73,8 @@ impl Read for EntryStream<'_> {
                 },
             ));
         }
+        let n = self.inner.read(buf)?;
+        self.read += n as u64;
         Ok(n)
     }
 }

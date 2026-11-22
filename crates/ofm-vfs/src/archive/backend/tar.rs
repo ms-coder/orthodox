@@ -456,8 +456,8 @@ mod tests {
             zstd_frame_window(&frame(0x00, wd)),
             Some((1 << 20) + 7 * (1 << 20) / 8)
         );
-        // Single segment, fcs flag 1 (2-byte fcs at offset 5) = 300 + 256.
-        let mut f = frame(0x80 | 0x20, 0);
+        // Single segment, fcs flag 1 (2-byte fcs at offset 5); stored value is FCS - 256.
+        let mut f = frame(0x40 | 0x20, 0);
         f[5..7].copy_from_slice(&300u16.to_le_bytes());
         assert_eq!(zstd_frame_window(&f), Some(556));
         // Garbage / short input.

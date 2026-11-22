@@ -142,18 +142,26 @@ impl ArchiveVfs {
         self.passwords.forget(archive);
     }
 
-    /// A cached index whose file identity still matches (staleness check).
+    /// A cached index whose file identity still matches (staleness check). An index whose
+    /// identity was never recorded (preloaded where the file cannot be stat-ed, e.g. in tests)
+    /// is trusted; once the file can be stat-ed, its identity is adopted so later changes are
+    /// still detected.
     fn cached(&self, archive: &Path) -> Option<Arc<ArchiveIndex>> {
         let ix = self.indexes.lock().ok()?.get(archive).cloned()?;
-        let Some(current) = stat_identity(archive) else {
-            // File vanished or is not stat-able: the cached index is useless.
-            self.invalidate(archive);
-            return None;
-        };
-        match self.identities.lock().ok()?.get(archive) {
-            Some(&id) if id == current => Some(ix),
+        let mut ids = self.identities.lock().ok()?;
+        match (stat_identity(archive), ids.get(archive).copied()) {
+            // Identity known and matching: fresh.
+            (Some(cur), Some(id)) if cur == id => Some(ix),
+            // Identity not yet recorded: adopt the current one (self-heal) and serve.
+            (Some(cur), None) => {
+                ids.insert(archive.to_owned(), cur);
+                Some(ix)
+            }
+            // No file and no recorded identity: nothing to compare against (test preload).
+            (None, None) => Some(ix),
+            // File vanished after indexing, or its identity changed: rebuild.
             _ => {
-                drop(ix);
+                drop(ids);
                 self.invalidate(archive);
                 None
             }
@@ -329,9 +337,10 @@ mod tests {
         let mut seen = Vec::new();
         vfs.list(&missing, &CancelToken::new(), &mut |ev| seen.push(ev));
         assert!(matches!(seen.as_slice(), [ListEvent::Error(_)]));
-        assert!(matches!(
-            vfs.open_read(&at("d/f.txt")),
-            Err(VfsError::Unsupported(_))
-        ));
+        let e = vfs.open_read(&at("d/f.txt")).err().expect("an error");
+        assert!(
+            matches!(e, VfsError::NotFound(_)),
+            "indexing a missing archive is a typed not-found error, got: {e:?}"
+        );
     }
 }

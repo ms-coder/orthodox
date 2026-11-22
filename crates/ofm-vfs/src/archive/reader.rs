@@ -121,7 +121,7 @@ mod tests {
     use crate::archive::NoPassword;
 
     #[test]
-    fn stub_backends_fail_with_a_typed_error() {
+    fn truncated_zip_fails_with_a_typed_error() {
         let dir = tempfile::tempdir().unwrap();
         let zip = dir.path().join("x.zip");
         std::fs::write(&zip, b"PK\x03\x04").unwrap();
@@ -133,7 +133,11 @@ mod tests {
                 &CancelToken::new(),
             )
         };
-        assert!(matches!(open(&zip), Err(ArchiveError::NotImplemented(_))));
+        // Magic bytes say zip, the file is truncated: a typed error, never a panic or Ok.
+        assert!(!matches!(
+            open(&zip),
+            Ok(_) | Err(ArchiveError::NotAnArchive(_))
+        ));
         let plain = dir.path().join("plain.txt");
         std::fs::write(&plain, b"hello").unwrap();
         assert!(matches!(open(&plain), Err(ArchiveError::NotAnArchive(_))));
