@@ -269,7 +269,11 @@ impl QuickView {
                     time: cfg.panels.time_format.clone(),
                 }
             };
-            hold.set_status(&entry.as_ref().map_or_else(String::new, |e| cursor_info(e, &fmt)));
+            hold.set_status(
+                &entry
+                    .as_ref()
+                    .map_or_else(String::new, |e| cursor_info(e, &fmt)),
+            );
         }
         let Some(entry) = entry else {
             let text = match state {

@@ -58,6 +58,8 @@ pub fn install_state(ctx: &Rc<AppContext>) {
 /// Build the progress row above the F-key bar once the window exists.
 pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
     indicator::install_ui(ctx, win);
+    // Owner/group names for the panel columns (looked up on a worker).
+    idnames::start_global(ctx);
 }
 
 /// The context's [`JobsController`] (`None` only before `install_state` ran).
