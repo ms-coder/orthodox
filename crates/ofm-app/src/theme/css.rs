@@ -158,12 +158,16 @@ fn dialog_rules(p: &Palette, font: &str, radius: &str) -> String {
          dialog.ofm-dialog row:selected, dialog.ofm-dialog row:hover {{ background: {focus_bg}; \
             color: {focus_fg}; }}\n\
          dialog.ofm-dialog row label {{ color: inherit; }}\n\
+         dialog.ofm-dialog row .dim-label {{ color: {row_dim}; }}\n\
+         dialog.ofm-dialog row:selected .dim-label, dialog.ofm-dialog row:hover .dim-label {{ \
+            color: {focus_fg}; }}\n\
          dialog.ofm-dialog separator {{ background: {border}; min-height: 1px; }}\n\
          dialog.ofm-dialog .ofm-error {{ color: {err_fg}; background-color: {err_bg}; }}",
         bg = css(&bg),
         fg = css(&fg),
         border = css(&border),
         dim = css(&dim),
+        row_dim = css(&mix(entry_fg, entry_bg, 0.75)),
         ebg = css(&entry_bg),
         efg = css(&entry_fg),
         btn_bg = css(&btn_bg),
