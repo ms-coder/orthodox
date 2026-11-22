@@ -12,6 +12,6 @@ workspace = true
 # encoding_rs_io, regex; dev: tempfile.
 [dependencies]
 ofm-core = { path = "../ofm-core" }
+ofm-viewer = { path = "../ofm-viewer" }
 async-channel.workspace = true
 thiserror.workspace = true
-

@@ -1186,10 +1186,8 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "ofm-core",
- "ofm-vfs",
- "tempfile",
+ "ofm-viewer",
  "thiserror",
- "tracing",
 ]
 
 [[package]]

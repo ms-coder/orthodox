@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use ofm_core::mask::{Mask, MaskOpts};
+use ofm_viewer::Encoding;
 
 use crate::error::SearchError;
 
@@ -48,26 +49,17 @@ pub enum ContentMode {
     Regex,
 }
 
-/// Text encoding of searched files.
+/// Text encoding of searched files. The concrete encodings are the viewer's
+/// (`ofm_viewer::Encoding`: UTF-8, UTF-16LE/BE, windows-1251, IBM866, KOI8-R, ISO-8859-1), so
+/// "F3 on a hit" opens the viewer with the same encoding and byte offset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SearchEncoding {
-    /// BOM, else valid UTF-8, else Windows-1251 as a lossy fallback. Binary files are skipped.
+    /// Per file via `ofm_viewer::detect_encoding` (BOM, UTF-8, heuristics). Binary files are
+    /// skipped unless `ContentQuery::search_binary`.
     #[default]
     Auto,
-    /// UTF-8.
-    Utf8,
-    /// UTF-16 little endian.
-    Utf16Le,
-    /// UTF-16 big endian.
-    Utf16Be,
-    /// Windows-1251.
-    Windows1251,
-    /// IBM866 (DOS Cyrillic).
-    Cp866,
-    /// KOI8-R.
-    Koi8R,
-    /// ISO-8859-1.
-    Latin1,
+    /// Treat every file as this encoding.
+    Fixed(Encoding),
 }
 
 /// Content ("find text in files") filter. Only regular files are searched; directories never

@@ -20,9 +20,7 @@ pub use error::SearchError;
 pub use event::{
     ContentHit, ContentMatch, Hit, SearchEvent, SearchProgress, SearchSummary, SearchWarning,
 };
-pub use handle::{
-    BATCH_INTERVAL, BATCH_SIZE, CHANNEL_CAPACITY, PROGRESS_INTERVAL, SearchHandle,
-};
+pub use handle::{BATCH_INTERVAL, BATCH_SIZE, CHANNEL_CAPACITY, PROGRESS_INTERVAL, SearchHandle};
 pub use query::{
     ContentMode, ContentQuery, NameFilter, NameMode, SearchEncoding, SearchQuery, SizeFilter,
     TimeFilter,
