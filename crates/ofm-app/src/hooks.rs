@@ -14,8 +14,8 @@ use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
 use crate::window::{MainWindow, PanelView};
 use crate::{
-    chrome, cmdline, compare, desktop, dialogs, jobs, navigation, quickview, terminal, viewer,
-    widgets, window,
+    chrome, cmdline, compare, desktop, dialogs, jobs, navigation, quickview, terminal, usermenu,
+    viewer, widgets, window,
 };
 
 /// Register command handlers. Every module registers only commands it owns (OWNERSHIP.md);
@@ -33,6 +33,7 @@ pub fn install_commands(reg: &mut CommandRegistry) {
     quickview::install_commands(reg); // T5.2b: panel.toggle_quickview
     viewer::install_commands(reg); // T5.2a: file.view, viewer.*
     compare::install_commands(reg); // T8.1c: panel.compare_dirs
+    usermenu::install_commands(reg); // T8.2b: menu.user, menu.edit, menu.edit_local
 }
 
 /// Create module-owned state and store it with `ctx.ext.insert(Rc::new(..))`.
@@ -47,6 +48,7 @@ pub fn install_state(ctx: &Rc<AppContext>) {
     quickview::install_state(ctx); // T5.2b: QuickView in ctx.ext
     viewer::install_state(ctx); // T5.2a: ViewerHost in ctx.ext
     compare::install_state(ctx); // T8.1c: CompareState in ctx.ext
+    usermenu::install_state(ctx); // T8.2b: UserMenuState in ctx.ext
 }
 
 /// Decorate one panel view right after it is built (tab bar, quick-search popover, ...).

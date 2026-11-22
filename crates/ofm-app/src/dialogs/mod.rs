@@ -15,6 +15,9 @@ pub mod link;
 pub mod mask;
 pub mod mkdir;
 pub mod properties;
+pub mod usermenu_input;
+pub mod usermenu_menu;
+pub mod usermenu_trust;
 
 use std::rc::Rc;
 

@@ -190,6 +190,10 @@ pub mod cmd {
     pub const FILE_OPEN_WITH: CommandId = CommandId::new("file.open_with");
     /// User menu.
     pub const MENU_USER: CommandId = CommandId::new("menu.user");
+    /// Edit the global user menu file.
+    pub const MENU_EDIT: CommandId = CommandId::new("menu.edit");
+    /// Edit (create) the local `.ofm-menu.toml` of the active panel's folder.
+    pub const MENU_EDIT_LOCAL: CommandId = CommandId::new("menu.edit_local");
     /// Find files.
     pub const SEARCH_FIND: CommandId = CommandId::new("search.find");
     /// Panelize command output.
@@ -718,6 +722,16 @@ pub const ALL: &[CommandInfo] = &[
     CommandInfo {
         id: cmd::MENU_USER,
         title: "User menu",
+        context: KeyContext::Panels,
+    },
+    CommandInfo {
+        id: cmd::MENU_EDIT,
+        title: "Edit user menu",
+        context: KeyContext::Panels,
+    },
+    CommandInfo {
+        id: cmd::MENU_EDIT_LOCAL,
+        title: "Edit local user menu (this folder)",
         context: KeyContext::Panels,
     },
     CommandInfo {

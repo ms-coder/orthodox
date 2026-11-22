@@ -101,6 +101,8 @@ Note: Ctrl+X is Cut (not command-history-next, as in Far); history-next is Ctrl+
 | `file.copy_path` | panels | Copy full path to clipboard | `Ctrl+Shift+C` | = | = |
 | `file.open_with` | panels | Open with... | `Shift+Enter` | = | = |
 | `menu.user` | panels | User menu | `F2` | = | = |
+| `menu.edit` | panels | Edit user menu | `Ctrl+Alt+M` | = | = |
+| `menu.edit_local` | panels | Edit local user menu (this folder) | `Ctrl+Alt+Shift+M` | = | = |
 | `search.find` | panels | Find files | `Alt+F7` | = | = |
 | `search.panelize_command` | panels | Panelize command output | `Ctrl+Alt+P` | = | = |
 | `cmdline.history_prev` | panels | Command history: previous | `Ctrl+E` | = | = |

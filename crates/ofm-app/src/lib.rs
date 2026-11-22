@@ -34,6 +34,7 @@ pub mod quickview;
 pub mod signal;
 pub mod terminal;
 pub mod theme;
+pub mod usermenu;
 pub mod viewer;
 pub mod widgets;
 pub mod window;
