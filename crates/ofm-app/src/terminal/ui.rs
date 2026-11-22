@@ -488,7 +488,7 @@ impl TerminalUi {
         if self.program.borrow().is_some() {
             return Err(tr("A program is already running in the terminal.").to_owned());
         }
-        let plan = program::spawn_argv(argv);
+        let plan = program::spawn_argv_in(argv, cwd);
         let plan: Vec<&str> = plan.iter().map(String::as_str).collect();
         let term = vte4::Terminal::new();
         style_terminal(&ctx, &term);
@@ -513,7 +513,10 @@ impl TerminalUi {
         let envv = ["TERM=xterm-256color"];
         term.spawn_async(
             vte4::PtyFlags::DEFAULT,
-            cwd.and_then(Path::to_str), // a non-UTF-8 directory: inherit ours
+            // A non-UTF-8 directory cannot be handed to VTE (str only); spawn_argv_in has
+            // already baked a byte-exact `cd` into the wrapper script instead, so here it
+            // must be None to keep the child's start directory irrelevant.
+            cwd.and_then(Path::to_str),
             &plan,
             &envv,
             glib::SpawnFlags::SEARCH_PATH,
