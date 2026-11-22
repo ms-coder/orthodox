@@ -126,6 +126,31 @@ pub fn owner_change(
     Ok((uid.is_some() || gid.is_some()).then_some(OwnerChange { uid, gid }))
 }
 
+/// Without root the owner cannot change and the group only to one the user is a member of.
+pub fn check_membership(
+    names: &IdNames,
+    root: bool,
+    change: Option<OwnerChange>,
+) -> Result<Option<OwnerChange>, String> {
+    let Some(c) = change else {
+        return Ok(None);
+    };
+    if root {
+        return Ok(Some(c));
+    }
+    if c.uid.is_some() {
+        return Err(tr("Changing the owner needs administrator rights.").to_owned());
+    }
+    match c.gid {
+        Some(g) if !names.is_my_group(g) => Err(format!(
+            "{} {}",
+            tr("You are not a member of the group"),
+            names.group_name(g)
+        )),
+        _ => Ok(Some(c)),
+    }
+}
+
 fn kind_one(e: &Entry) -> &'static str {
     match e.kind {
         EntryKind::File => tr("File"),
@@ -473,10 +498,9 @@ pub fn present(ctx: &Rc<AppContext>) {
         owner.set_hexpand(true);
         group.set_hexpand(true);
         column.append(&grid);
+        let hint = ui::caption(tr("Changing owner and group needs administrator rights."));
         if !can_chown {
-            column.append(&ui::caption(tr(
-                "Changing owner and group needs administrator rights.",
-            )));
+            column.append(&hint);
         }
         // Names are looked up on a worker; the ids are replaced by names when they arrive.
         let (names, owner, group) = (Rc::clone(&names), owner.clone(), group.clone());
@@ -484,6 +508,17 @@ pub fn present(ctx: &Rc<AppContext>) {
         wiring::attach(
             idnames::load(&ctx.services.pool),
             move |loaded| {
+                // Not root: the owner stays fixed, but the group may become any group the user
+                // belongs to (the worker snapshot holds them).
+                let mine = loaded.my_group_names();
+                if !can_chown && !mine.is_empty() {
+                    group.set_sensitive(true);
+                    hint.set_text(&format!(
+                        "{} {}",
+                        tr("The owner needs administrator rights. The group can be one of yours:"),
+                        mine.join(", ")
+                    ));
+                }
                 if let Some(u) = uid0 {
                     let n = loaded.user_name(u);
                     if owner.text() == io.borrow().as_str() {
@@ -526,18 +561,23 @@ pub fn present(ctx: &Rc<AppContext>) {
                 return true;
             };
             let mode = mode_change(&initial, &current.borrow());
-            let owner_change = if can_chown {
+            // Root may change both; anybody else only the group, and only once the group entry
+            // was unlocked (the names have loaded) and edited.
+            let group_edited = group.text().trim() != initial_group.borrow().trim();
+            let owner_change = if can_chown || group_edited {
                 let Some(table) = names.borrow().clone() else {
                     ui::set_error(&error, Some(tr("User names are still loading, try again.")));
                     return false;
                 };
-                match owner_change(
+                let change = owner_change(
                     &table,
                     &owner.text(),
                     &initial_owner.borrow(),
                     &group.text(),
                     &initial_group.borrow(),
-                ) {
+                )
+                .and_then(|c| check_membership(&table, can_chown, c));
+                match change {
                     Ok(c) => c,
                     Err(msg) => {
                         ui::set_error(&error, Some(&msg));
@@ -662,5 +702,38 @@ mod tests {
             }))
         );
         assert!(owner_change(&names, "ghost", "bob", "", "").is_err());
+    }
+
+    #[test]
+    fn non_root_may_only_pick_own_groups() {
+        let names = IdNames::from_texts(
+            "root:x:0:0\nbob:x:1000:1000\n",
+            "root:x:0:\nstaff:x:50:\nbob:x:1000:\n",
+        )
+        .with_my_groups(vec![1000, 50]);
+        let group = |g| OwnerChange {
+            uid: None,
+            gid: Some(g),
+        };
+        assert_eq!(check_membership(&names, false, None), Ok(None));
+        assert_eq!(
+            check_membership(&names, false, Some(group(50))),
+            Ok(Some(group(50)))
+        );
+        let err = check_membership(&names, false, Some(group(0))).unwrap_err();
+        assert!(err.contains("root"), "{err}");
+        let owner = OwnerChange {
+            uid: Some(0),
+            gid: None,
+        };
+        assert!(check_membership(&names, false, Some(owner)).is_err());
+        assert_eq!(
+            check_membership(&names, true, Some(group(0))),
+            Ok(Some(group(0)))
+        );
+        assert_eq!(
+            names.my_group_names(),
+            vec!["bob".to_owned(), "staff".to_owned()]
+        );
     }
 }

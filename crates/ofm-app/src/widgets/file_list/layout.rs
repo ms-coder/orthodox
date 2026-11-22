@@ -61,6 +61,13 @@ impl Grid {
         (idx < len).then_some(idx)
     }
 
+    /// Columns that hold at least one of the `len` entries when the window starts at `first`
+    /// (at least 1: an empty list still shows its first column).
+    pub fn used_cols(&self, first: u32, len: u32) -> u32 {
+        let shown = len.saturating_sub(first);
+        shown.div_ceil(self.rows).clamp(1, self.cols)
+    }
+
     /// Alignment of `first`: whole columns in multi-column grids, single rows otherwise.
     fn align(&self, first: u32) -> u32 {
         if self.cols > 1 {
@@ -181,6 +188,22 @@ mod tests {
 
     fn g(rows: u32, cols: u32) -> Grid {
         Grid { rows, cols }
+    }
+
+    #[test]
+    fn brief_headers_only_for_columns_with_entries() {
+        let grid = g(10, 3);
+        assert_eq!(
+            grid.used_cols(0, 0),
+            1,
+            "an empty list keeps its first header"
+        );
+        assert_eq!(grid.used_cols(0, 4), 1);
+        assert_eq!(grid.used_cols(0, 10), 1);
+        assert_eq!(grid.used_cols(0, 11), 2);
+        assert_eq!(grid.used_cols(0, 25), 3);
+        assert_eq!(grid.used_cols(0, 500), 3, "never more than the grid has");
+        assert_eq!(grid.used_cols(10, 15), 1, "scrolled by one column");
     }
 
     #[test]

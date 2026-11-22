@@ -2,12 +2,15 @@
 //! happens on a worker (through the `Fs` seam of `ofm-jobs`), the dialog only sees the result.
 
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::path::Path;
-use std::sync::Arc;
+use std::rc::Rc;
+use std::sync::{Arc, OnceLock};
 
 use ofm_jobs::{Fs, RealFs};
 use ofm_vfs::pool::IoPool;
 
+use crate::context::AppContext;
 use crate::wiring;
 
 /// Names and ids of users and groups.
@@ -17,6 +20,9 @@ pub struct IdNames {
     groups: HashMap<String, u32>,
     user_ids: HashMap<u32, String>,
     group_ids: HashMap<u32, String>,
+    /// Groups of the running user (effective gid plus supplementary groups), see
+    /// [`current_groups`]; empty until [`load`] filled it.
+    my_groups: Vec<u32>,
 }
 
 /// Parse `name:x:id:...` lines (passwd and group share this prefix).
@@ -43,6 +49,26 @@ impl IdNames {
             n.groups.entry(name).or_insert(id);
         }
         n
+    }
+
+    /// The same tables plus the groups the running user belongs to.
+    pub fn with_my_groups(mut self, groups: Vec<u32>) -> IdNames {
+        self.my_groups = groups;
+        self
+    }
+
+    /// Whether the running user is a member of group `gid` (a non-root user may `chgrp` only
+    /// to such groups).
+    pub fn is_my_group(&self, gid: u32) -> bool {
+        self.my_groups.contains(&gid)
+    }
+
+    /// Names of the running user's groups, sorted (for the properties dialog's hint).
+    pub fn my_group_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.my_groups.iter().map(|g| self.group_name(*g)).collect();
+        v.sort();
+        v.dedup();
+        v
     }
 
     /// Name of user `uid`, or its number.
@@ -91,6 +117,28 @@ fn read_text(fs: &dyn Fs, path: &Path) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+/// Effective gid plus supplementary groups of this process. Plain syscalls, no file access, but
+/// still meant for a worker thread.
+pub fn current_groups() -> Vec<u32> {
+    // SAFETY: getegid has no preconditions; getgroups(0, NULL) only returns the count and the
+    // second call writes at most `n` gids into a buffer of exactly that size.
+    unsafe {
+        let mut groups = vec![libc::getegid()];
+        let n = libc::getgroups(0, std::ptr::null_mut());
+        if n > 0 {
+            let mut buf: Vec<libc::gid_t> = vec![0; n as usize];
+            let got = libc::getgroups(n, buf.as_mut_ptr());
+            if got > 0 {
+                buf.truncate(got as usize);
+                groups.extend(buf);
+            }
+        }
+        groups.sort_unstable();
+        groups.dedup();
+        groups
+    }
+}
+
 /// Load the tables on the I/O pool; the receiver yields one [`IdNames`].
 pub fn load(pool: &IoPool) -> async_channel::Receiver<Arc<IdNames>> {
     wiring::run_on_pool(pool, |tx| {
@@ -98,9 +146,42 @@ pub fn load(pool: &IoPool) -> async_channel::Receiver<Arc<IdNames>> {
         let names = IdNames::from_texts(
             &read_text(&fs, Path::new("/etc/passwd")),
             &read_text(&fs, Path::new("/etc/group")),
-        );
+        )
+        .with_my_groups(current_groups());
         let _ = tx.send_blocking(Arc::new(names));
     })
+}
+
+/// Process-wide tables for the panel's owner/group columns, filled once by [`start_global`].
+static GLOBAL: OnceLock<Arc<IdNames>> = OnceLock::new();
+
+/// The tables once they are loaded (`None` before: the columns show numbers meanwhile).
+pub fn global() -> Option<Arc<IdNames>> {
+    GLOBAL.get().cloned()
+}
+
+/// Load the tables once on a worker, then redraw the panels so that the visible owner/group
+/// cells switch from numbers to names.
+pub fn start_global(ctx: &Rc<AppContext>) {
+    if GLOBAL.get().is_some() {
+        return;
+    }
+    let weak = Rc::downgrade(ctx);
+    wiring::attach(
+        load(&ctx.services.pool),
+        move |names| {
+            let _ = GLOBAL.set(names);
+            if let Some(ctx) = weak.upgrade() {
+                for host in &ctx.panels {
+                    for tab in host.tabs() {
+                        tab.changed.emit(&crate::panel::PanelEvent::Redraw);
+                    }
+                }
+            }
+            ControlFlow::Break(())
+        },
+        || {},
+    );
 }
 
 /// True when the process runs with root privileges (chown is then allowed).

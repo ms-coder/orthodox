@@ -45,6 +45,17 @@ pub struct JobEntry {
     pub asking: bool,
     /// Set when the job finished.
     pub outcome: Option<Outcome>,
+    /// A pause or cancel the user asked for that the worker has not acted on yet.
+    pub requested: Option<Requested>,
+}
+
+/// What the user asked of a running job; shown as "Pausing..." / "Cancelling..." at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Requested {
+    /// Pause requested, the worker still runs to its next checkpoint.
+    Pausing,
+    /// Cancel requested, the job has not reported its end yet.
+    Cancelling,
 }
 
 /// What observers of the job table are told (the jobs view, status line, quit prompt).
@@ -223,6 +234,11 @@ impl JobsController {
 
     /// Pause a job.
     pub fn pause(&self, id: JobId) {
+        self.update(id, |j| {
+            if j.state == JobState::Running && j.requested.is_none() {
+                j.requested = Some(Requested::Pausing);
+            }
+        });
         if let Some(c) = self.capture.borrow().as_ref() {
             c.controls.borrow_mut().push(Control::Pause(id));
         } else if let Some(e) = self.engine.get() {
@@ -241,6 +257,11 @@ impl JobsController {
 
     /// Cancel a job.
     pub fn cancel(&self, id: JobId) {
+        self.update(id, |j| {
+            if j.state != JobState::Finished {
+                j.requested = Some(Requested::Cancelling);
+            }
+        });
         if let Some(c) = self.capture.borrow().as_ref() {
             c.controls.borrow_mut().push(Control::Cancel(id));
         } else if let Some(e) = self.engine.get() {
@@ -250,6 +271,16 @@ impl JobsController {
 
     /// Cancel every unfinished job (after the user confirmed quitting).
     pub fn cancel_all(&self) {
+        let ids: Vec<JobId> = self
+            .jobs
+            .borrow()
+            .iter()
+            .filter(|j| j.state != JobState::Finished)
+            .map(|j| j.id)
+            .collect();
+        for id in ids {
+            self.update(id, |j| j.requested = Some(Requested::Cancelling));
+        }
         if let Some(c) = self.capture.borrow().as_ref() {
             c.controls.borrow_mut().push(Control::CancelAll);
         } else if let Some(e) = self.engine.get() {
@@ -326,11 +357,18 @@ impl JobsController {
                     progress: Progress::default(),
                     asking: false,
                     outcome: None,
+                    requested: None,
                 });
                 self.changed.emit(&JobsEvent::Added(id));
             }
             JobEvent::Started { id } => self.update(id, |j| j.state = JobState::Running),
-            JobEvent::StateChanged { id, state } => self.update(id, |j| j.state = state),
+            JobEvent::StateChanged { id, state } => self.update(id, |j| {
+                j.state = state;
+                // The worker acted on the pause; a pending cancel stays until the job ends.
+                if j.requested == Some(Requested::Pausing) {
+                    j.requested = None;
+                }
+            }),
             JobEvent::Progress { id, progress } => self.update(id, |j| j.progress = progress),
             JobEvent::Ask {
                 id,
@@ -408,6 +446,7 @@ impl JobsController {
             jobs.iter_mut().find(|j| j.id == id).map(|j| {
                 j.state = JobState::Finished;
                 j.asking = false;
+                j.requested = None;
                 j.outcome = Some(outcome.clone());
                 j.title.clone()
             })

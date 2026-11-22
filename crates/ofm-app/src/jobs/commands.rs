@@ -111,9 +111,9 @@ fn calc_size(ctx: &Rc<AppContext>) {
             RunMode::Parallel,
             SubmitOpts {
                 origin: None,
-                on_finished: Some(Box::new(move |_ctx, outcome| {
+                on_finished: Some(Box::new(move |ctx, outcome| {
                     if let (Outcome::Size(t), Some(panel)) = (outcome, panel.upgrade()) {
-                        show_dir_size(&panel, &location, &name, t.bytes);
+                        show_dir_size(ctx, &panel, &location, &name, t.bytes);
                     }
                 })),
             },
@@ -124,6 +124,7 @@ fn calc_size(ctx: &Rc<AppContext>) {
 /// Put a calculated folder size into the panel's entry (only while the panel still shows the
 /// same folder and the entry is still listed).
 fn show_dir_size(
+    ctx: &Rc<AppContext>,
     panel: &Rc<PanelController>,
     location: &ofm_core::Location,
     name: &str,
@@ -140,6 +141,10 @@ fn show_dir_size(
             .cloned()
     };
     if let Some(mut entry) = entry {
+        // Keep the number across refreshes (watcher re-stat, reload) while the mtime is the same.
+        if let Some(cache) = ctx.ext.get::<super::dirsize::DirSizeCache>() {
+            cache.store(panel, location, entry.name.clone(), entry.mtime_ns, bytes);
+        }
         entry.size = bytes;
         panel.mutate_view(|m| m.apply_update(vec![entry], &[]));
     }

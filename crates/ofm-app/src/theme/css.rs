@@ -10,7 +10,7 @@ use gtk::gdk::RGBA;
 use ofm_config::theme::{Color, Frames};
 
 use super::Palette;
-use super::palette::{luminance, mix};
+use super::palette::{luminance, mix, readable};
 
 fn css(c: &RGBA) -> String {
     format!(
@@ -58,6 +58,10 @@ fn chrome(p: &Palette) -> Chrome {
     let hdr_fg = p.panel.header_fg;
     let menu_bg = pick(p, &colors.dialog.bg, hdr_bg);
     let menu_fg = pick(p, &colors.dialog.fg, hdr_fg);
+    let (menu_sel_bg, menu_sel_fg) = readable(
+        pick(p, &colors.dialog.button_focus_bg, p.cursor.active_bg),
+        pick(p, &colors.dialog.button_focus_fg, p.cursor.active_fg),
+    );
     Chrome {
         win_bg: pick(p, &colors.status.bg, hdr_bg),
         win_fg: pick(p, &colors.status.fg, hdr_fg),
@@ -72,8 +76,8 @@ fn chrome(p: &Palette) -> Chrome {
         menu_bg,
         menu_fg,
         menu_border: pick(p, &colors.dialog.border, p.panel.frame),
-        menu_sel_bg: pick(p, &colors.dialog.button_focus_bg, p.cursor.active_bg),
-        menu_sel_fg: pick(p, &colors.dialog.button_focus_fg, p.cursor.active_fg),
+        menu_sel_bg,
+        menu_sel_fg,
         dim: mix(menu_fg, menu_bg, 0.6),
         error_fg: pick(p, &colors.error.fg, sys.error),
         error_bg: pick(p, &colors.error.bg, mix(sys.error, p.panel.bg, 0.15)),
@@ -102,6 +106,78 @@ fn font_rules(p: &Palette) -> String {
         let _ = write!(out, "font-size: {}pt; ", f.size);
     }
     out
+}
+
+/// Rules for presented dialogs (`modal::present` adds `ofm-dialog`): the theme's `colors.dialog`
+/// roles on the dialog surface, its labels, entries, buttons and list rows. Empty for themes
+/// that leave the role out (the Adwaita theme keeps the stock libadwaita dialog).
+fn dialog_rules(p: &Palette, font: &str, radius: &str) -> String {
+    let d = &p.theme.colors.dialog;
+    let (Some(bg), Some(fg)) = (p.resolve(&d.bg), p.resolve(&d.fg)) else {
+        return String::new();
+    };
+    let border = pick(p, &d.border, mix(fg, bg, 0.5));
+    let btn_bg = pick(p, &d.button_bg, mix(fg, bg, 0.12));
+    let btn_fg = pick(p, &d.button_fg, fg);
+    let (focus_bg, focus_fg) = readable(
+        pick(p, &d.button_focus_bg, p.cursor.active_bg),
+        pick(p, &d.button_focus_fg, p.cursor.active_fg),
+    );
+    let (btn_bg, btn_fg) = readable(btn_bg, btn_fg);
+    let (entry_bg, entry_fg) = (p.panel.bg, p.panel.fg);
+    let dim = mix(fg, bg, 0.65);
+    let err_fg = pick(p, &p.theme.colors.error.fg, p.system.error);
+    let err_bg = pick(p, &p.theme.colors.error.bg, mix(p.system.error, bg, 0.15));
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "dialog.ofm-dialog, dialog.ofm-dialog sheet, dialog.ofm-dialog .background, \
+         dialog.ofm-dialog toolbarview, dialog.ofm-dialog headerbar {{ {font}background: {bg}; \
+            background-color: {bg}; color: {fg}; }}\n\
+         dialog.ofm-dialog headerbar {{ box-shadow: none; border-bottom: 1px solid {border}; }}\n\
+         dialog.ofm-dialog label, dialog.ofm-dialog headerbar .title {{ color: {fg}; }}\n\
+         dialog.ofm-dialog .dim-label, dialog.ofm-dialog label.dim-label, \
+         dialog.ofm-dialog .caption {{ color: {dim}; opacity: 1; }}\n\
+         dialog.ofm-dialog entry, dialog.ofm-dialog textview text, dialog.ofm-dialog spinbutton {{ \
+            {radius}background: {ebg}; color: {efg}; border: 1px solid {border}; box-shadow: none; }}\n\
+         dialog.ofm-dialog entry text {{ background: transparent; color: {efg}; }}\n\
+         dialog.ofm-dialog button {{ {radius}background: {btn_bg}; color: {btn_fg}; \
+            border: 1px solid {border}; box-shadow: none; background-image: none; }}\n\
+         dialog.ofm-dialog button label {{ color: {btn_fg}; }}\n\
+         dialog.ofm-dialog button:hover, dialog.ofm-dialog button:focus, \
+         dialog.ofm-dialog button:checked {{ background: {focus_bg}; color: {focus_fg}; }}\n\
+         dialog.ofm-dialog button:hover label, dialog.ofm-dialog button:focus label, \
+         dialog.ofm-dialog button:checked label {{ color: {focus_fg}; }}\n\
+         dialog.ofm-dialog button.suggested-action, dialog.ofm-dialog button.destructive-action {{ \
+            font-weight: bold; }}\n\
+         dialog.ofm-dialog checkbutton, dialog.ofm-dialog radiobutton {{ color: {fg}; }}\n\
+         dialog.ofm-dialog check, dialog.ofm-dialog radio {{ background: {ebg}; color: {efg}; \
+            border: 1px solid {border}; }}\n\
+         dialog.ofm-dialog list, dialog.ofm-dialog listview, dialog.ofm-dialog row, \
+         dialog.ofm-dialog .card {{ background: {ebg}; color: {efg}; }}\n\
+         dialog.ofm-dialog row:selected, dialog.ofm-dialog row:hover {{ background: {focus_bg}; \
+            color: {focus_fg}; }}\n\
+         dialog.ofm-dialog row label {{ color: inherit; }}\n\
+         dialog.ofm-dialog row .dim-label {{ color: {row_dim}; }}\n\
+         dialog.ofm-dialog row:selected .dim-label, dialog.ofm-dialog row:hover .dim-label {{ \
+            color: {focus_fg}; }}\n\
+         dialog.ofm-dialog separator {{ background: {border}; min-height: 1px; }}\n\
+         dialog.ofm-dialog .ofm-error {{ color: {err_fg}; background-color: {err_bg}; }}",
+        bg = css(&bg),
+        fg = css(&fg),
+        border = css(&border),
+        dim = css(&dim),
+        row_dim = css(&mix(entry_fg, entry_bg, 0.75)),
+        ebg = css(&entry_bg),
+        efg = css(&entry_fg),
+        btn_bg = css(&btn_bg),
+        btn_fg = css(&btn_fg),
+        focus_bg = css(&focus_bg),
+        focus_fg = css(&focus_fg),
+        err_fg = css(&err_fg),
+        err_bg = css(&err_bg),
+    );
+    s
 }
 
 /// Whether the theme is dark (decides `adw::ColorScheme` for standard widgets).
@@ -227,6 +303,7 @@ pub fn generate(palette: &Palette) -> String {
         css(&c.progress_bar),
         css(&c.progress_trough),
     );
+    s.push_str(&dialog_rules(palette, &font, radius));
     if !retro.rounded_corners {
         s.push_str(
             "window.ofm-window button, window.ofm-window entry, window.ofm-window popover > contents, \

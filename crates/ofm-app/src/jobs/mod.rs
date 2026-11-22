@@ -20,6 +20,7 @@ pub mod actions;
 mod commands;
 pub mod compare;
 mod controller;
+pub mod dirsize;
 pub mod fmt;
 pub mod idnames;
 pub mod indicator;
@@ -28,7 +29,9 @@ pub mod targets;
 pub mod ui;
 pub mod view;
 
-pub use controller::{Capture, Control, JobEntry, JobsController, JobsEvent, SubmitOpts};
+pub use controller::{
+    Capture, Control, JobEntry, JobsController, JobsEvent, Requested, SubmitOpts,
+};
 pub use quit::allow_close;
 
 use std::rc::Rc;
@@ -51,11 +54,14 @@ pub fn install_state(ctx: &Rc<AppContext>) {
     ctx.ext.insert(Rc::new(JobsController::new()));
     actions::install_state(ctx);
     view::install_state(ctx);
+    dirsize::install_state(ctx);
 }
 
 /// Build the progress row above the F-key bar once the window exists.
 pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
     indicator::install_ui(ctx, win);
+    // Owner/group names for the panel columns (looked up on a worker).
+    idnames::start_global(ctx);
 }
 
 /// The context's [`JobsController`] (`None` only before `install_state` ran).

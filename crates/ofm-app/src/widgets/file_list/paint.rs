@@ -134,14 +134,18 @@ impl Painter<'_> {
                 h: geo.height,
             },
         );
-        self.paint_header(model.sort_spec());
+        self.paint_header(
+            model.sort_spec(),
+            geo.grid.used_cols(first, model.visible_len()),
+        );
         let drawn = self.paint_body(model, first, empty_message);
         self.paint_frame();
         drawn
     }
 
     // ---- header -------------------------------------------------------------------------------
-    fn paint_header(&mut self, sort: SortSpec) {
+    /// `used_cols`: Brief columns that hold entries (the others get no header).
+    fn paint_header(&mut self, sort: SortSpec, used_cols: u32) {
         let geo = self.geo;
         let p = self.palette;
         self.fill(&p.panel.header_bg, geo.header);
@@ -158,7 +162,7 @@ impl Painter<'_> {
                 } else {
                     format!("{} {arrow}", sort_title(sort.key))
                 };
-                for c in 0..geo.grid.cols {
+                for c in 0..used_cols.min(geo.grid.cols) {
                     let (x, _) = geo.cell_origin(c, 0);
                     let w = geo.cell_w - 2.0 * PAD;
                     self.text(Column::Name.title(), false, false, x + PAD, y, w, &hfg);

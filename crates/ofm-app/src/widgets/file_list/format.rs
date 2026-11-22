@@ -156,9 +156,12 @@ pub fn cell_text(e: &Entry, column: Column, size_fmt: SizeFormat, time_fmt: &str
         Column::Mtime => time_cell(e, time_fmt),
         Column::Mode => mode_string(e),
         Column::Owner if is_parent(e) => String::new(),
-        Column::Owner => e.uid.to_string(),
+        Column::Owner => {
+            crate::jobs::idnames::global().map_or_else(|| e.uid.to_string(), |n| n.user_name(e.uid))
+        }
         Column::Group if is_parent(e) => String::new(),
-        Column::Group => e.gid.to_string(),
+        Column::Group => crate::jobs::idnames::global()
+            .map_or_else(|| e.gid.to_string(), |n| n.group_name(e.gid)),
     }
 }
 

@@ -126,6 +126,8 @@ pub fn present_over(
     // stops key events at the dialog, so the main window's controller does not see them
     // (see `dispatch::install_key_controller`).
     dispatch::install_key_controller(dialog, ctx, WindowKind::Dialog);
+    // Hook for the theme's dialog colours (`theme::css`).
+    dialog.add_css_class("ofm-dialog");
     dialog.present(Some(parent));
     true
 }
