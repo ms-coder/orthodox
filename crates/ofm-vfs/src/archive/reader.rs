@@ -108,8 +108,7 @@ pub fn open_archive(
     limits: &ArchiveLimits,
     cancel: &CancelToken,
 ) -> Result<Box<dyn ArchiveReader>, ArchiveError> {
-    let format =
-        detect_format(path)?.ok_or_else(|| ArchiveError::NotAnArchive(path.to_owned()))?;
+    let format = detect_format(path)?.ok_or_else(|| ArchiveError::NotAnArchive(path.to_owned()))?;
     backend::open(format, path, passwords, limits, cancel)
 }
 
@@ -125,7 +124,12 @@ mod tests {
         let zip = dir.path().join("x.zip");
         std::fs::write(&zip, b"PK\x03\x04").unwrap();
         let open = |p: &Path| {
-            open_archive(p, &NoPassword, &ArchiveLimits::default(), &CancelToken::new())
+            open_archive(
+                p,
+                &NoPassword,
+                &ArchiveLimits::default(),
+                &CancelToken::new(),
+            )
         };
         assert!(matches!(open(&zip), Err(ArchiveError::NotImplemented(_))));
         let plain = dir.path().join("plain.txt");

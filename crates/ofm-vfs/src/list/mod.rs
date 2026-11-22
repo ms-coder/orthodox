@@ -37,7 +37,11 @@ impl PanelList {
     /// List from ready rows (search hits already carry metadata). Rows without `real_path` are
     /// dropped, duplicates (same `real_path`) keep the first, names are set to
     /// [`display_name`](Self::display_name).
-    pub fn from_entries(title: impl Into<String>, base: Option<PathBuf>, entries: Vec<Entry>) -> Self {
+    pub fn from_entries(
+        title: impl Into<String>,
+        base: Option<PathBuf>,
+        entries: Vec<Entry>,
+    ) -> Self {
         let mut seen = std::collections::HashSet::new();
         let entries = entries
             .into_iter()
@@ -119,13 +123,18 @@ impl ListStore {
             .get_mut(&id)
             .ok_or_else(|| VfsError::NotFound(PathBuf::from(format!("list:{}", id.0))))?;
         let extra = PanelList::from_entries(String::new(), list.base.clone(), entries);
-        let known: std::collections::HashSet<_> =
-            list.entries.iter().filter_map(|e| e.real_path.clone()).collect();
+        let known: std::collections::HashSet<_> = list
+            .entries
+            .iter()
+            .filter_map(|e| e.real_path.clone())
+            .collect();
         let before = list.entries.len();
-        list.entries
-            .extend(extra.entries.into_iter().filter(|e| {
-                e.real_path.as_ref().is_some_and(|p| !known.contains(p))
-            }));
+        list.entries.extend(
+            extra
+                .entries
+                .into_iter()
+                .filter(|e| e.real_path.as_ref().is_some_and(|p| !known.contains(p))),
+        );
         Ok(list.entries.len() - before)
     }
 
@@ -140,12 +149,17 @@ impl ListStore {
             .iter()
             .filter_map(|e| Some((&e.name, e.real_path.as_ref()?)))
             .collect();
-        Ok(names.iter().filter_map(|n| by_name.get(n).map(|p| (*p).clone())).collect())
+        Ok(names
+            .iter()
+            .filter_map(|n| by_name.get(n).map(|p| (*p).clone()))
+            .collect())
     }
 
     /// Remove rows whose `real_path` is in `paths` (after a delete/move job); returns how many.
     pub fn forget_paths(&self, id: ListId, paths: &[PathBuf]) -> usize {
-        let Ok(mut m) = self.lists.lock() else { return 0 };
+        let Ok(mut m) = self.lists.lock() else {
+            return 0;
+        };
         let Some(list) = m.get_mut(&id) else { return 0 };
         let before = list.entries.len();
         list.entries
@@ -257,7 +271,11 @@ mod tests {
         assert_eq!(names, ["a/b.rs", "/etc/hosts"]);
         let mut no_real = row("/x");
         no_real.real_path = None;
-        assert!(PanelList::from_entries("t", None, vec![no_real]).entries.is_empty());
+        assert!(
+            PanelList::from_entries("t", None, vec![no_real])
+                .entries
+                .is_empty()
+        );
     }
 
     #[test]
@@ -268,7 +286,12 @@ mod tests {
             Some("/src".into()),
             vec![row("/src/a"), row("/etc/hosts")],
         ));
-        assert_eq!(store.append(id, vec![row("/src/a"), row("/src/c")]).unwrap(), 1);
+        assert_eq!(
+            store
+                .append(id, vec![row("/src/a"), row("/src/c")])
+                .unwrap(),
+            1
+        );
         let real = store
             .real_paths(id, &["c".into(), "/etc/hosts".into(), "zz".into()])
             .unwrap();

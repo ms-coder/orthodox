@@ -239,7 +239,9 @@ impl IndexBuilder {
             },
             packed_size: raw.packed_size,
             mtime_ns: raw.mtime_ns.unwrap_or(0),
-            mode: raw.mode.map_or_else(|| default_mode(raw.kind), |m| m & 0o7777),
+            mode: raw
+                .mode
+                .map_or_else(|| default_mode(raw.kind), |m| m & 0o7777),
             uid: raw.uid.unwrap_or(0),
             gid: raw.gid.unwrap_or(0),
             link_target,
@@ -572,7 +574,11 @@ mod tests {
             .iter()
             .map(|i| ix.get(*i).unwrap().path.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(paths, ["d/f", "d/g", "d"], "archive order, synthetic dir last");
+        assert_eq!(
+            paths,
+            ["d/f", "d/g", "d"],
+            "archive order, synthetic dir last"
+        );
     }
 
     #[test]
