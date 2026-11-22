@@ -20,6 +20,7 @@ pub mod actions;
 mod commands;
 pub mod compare;
 mod controller;
+pub mod dirsize;
 pub mod fmt;
 pub mod idnames;
 pub mod indicator;
@@ -53,6 +54,7 @@ pub fn install_state(ctx: &Rc<AppContext>) {
     ctx.ext.insert(Rc::new(JobsController::new()));
     actions::install_state(ctx);
     view::install_state(ctx);
+    dirsize::install_state(ctx);
 }
 
 /// Build the progress row above the F-key bar once the window exists.
