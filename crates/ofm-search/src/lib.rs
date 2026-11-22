@@ -16,6 +16,12 @@ pub mod event;
 pub mod handle;
 pub mod query;
 
+mod archives;
+mod compile;
+mod content;
+mod engine;
+mod walker;
+
 pub use error::SearchError;
 pub use event::{
     ContentHit, ContentMatch, Hit, SearchEvent, SearchProgress, SearchSummary, SearchWarning,

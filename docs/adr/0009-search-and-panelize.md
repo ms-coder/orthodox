@@ -91,3 +91,32 @@ Existence is checked by `PanelList::from_paths`, not by core. Cancel kills the p
   `from_paths`, re-stat in `ListVfs::list`); the types and `ListStore` are frozen.
 - T7.3 builds the dialog/results panel against `SearchEvent`, `PanelList`, `PanelizeEvent` only.
 - Content search inside archives and non-UTF-8 file names are covered by tests in T7.1/T7.4.
+
+## T7.1 engine notes (implementation; API unchanged)
+
+Where the engine-rules sketch above named specific crates, the implementation differs
+(lead's T7.1 spec; frozen API untouched):
+
+- **Walker**: a hand-written iterative DFS (`std::fs::read_dir`, entries sorted by name
+  bytes so visit order is stable) on **one** walker thread, not `ignore::WalkBuilder::
+  build_parallel` — the T7.1 spec calls for one walking thread feeding a bounded matcher
+  pool and a stable order, which the parallel builder cannot provide. All rules kept:
+  (dev, ino) loop detection with warnings (and silent dedup of DAG revisits), `st_dev`
+  pruning, hidden/depth options, cancel checks per entry.
+- **Content**: not `grep-searcher`/`grep-regex`; the viewer's stack is reused instead
+  (`Document` reads, `detect_encoding`, `decode_range`) with a per-line Unicode `regex`
+  (literal text escaped) — same grep semantics: line-oriented, case option, whole words,
+  binary skip unless asked, fixed or auto encoding. Line splitting is encoding-aware
+  (UTF-16 code-unit aligned); endless lines are matched in 64 KiB-overlap segments
+  (matches longer than the overlap inside one huge line may be missed, like the viewer's
+  own chunked search). Match offsets map back to raw byte offsets exactly, including
+  invalid UTF-8 (WHATWG maximal-subpart walk).
+- **Panic policy**: a panicking content matcher is caught and reported as a `Warning` for
+  that file — the search continues; a walker/supervisor panic still ends the search with
+  `Failed(Panic)` (invariant 7).
+- **Archives**: implemented against the frozen `ArchiveReader` trait; with the T6.1 stub
+  backends the engine emits exactly one Warning ("archive search not available yet") per
+  search and never raw-searches archive bytes. The real-backend test is
+  `#[ignore = "needs T6.1"]`.
+- **Dependencies actually added**: `ofm-vfs`, `regex`, `memchr`, `tracing` (no `ignore`,
+  no `grep-*`).

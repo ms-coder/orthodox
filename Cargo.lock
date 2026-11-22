@@ -1191,9 +1191,17 @@ name = "ofm-search"
 version = "0.1.0"
 dependencies = [
  "async-channel",
+ "encoding_rs",
+ "memchr",
  "ofm-core",
+ "ofm-testkit",
+ "ofm-vfs",
  "ofm-viewer",
+ "proptest",
+ "regex",
+ "tempfile",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
