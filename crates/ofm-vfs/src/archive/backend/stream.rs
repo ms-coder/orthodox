@@ -56,22 +56,16 @@ impl<'a> EntryStream<'a> {
 impl Read for EntryStream<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.cancel.is_cancelled() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                ArchiveError::Cancelled,
-            ));
+            return Err(io::Error::other(ArchiveError::Cancelled));
         }
         // Cap at `declared + 1`: the read that crosses the boundary may still deliver its bytes
         // (the backend reports the shortfall/excess after the visitor returns); the next read
         // reports the lying header.
         if self.read > self.declared {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                ArchiveError::LimitExceeded {
-                    archive: self.archive.to_owned(),
-                    kind: LimitKind::ExceedsDeclaredSize,
-                },
-            ));
+            return Err(io::Error::other(ArchiveError::LimitExceeded {
+                archive: self.archive.to_owned(),
+                kind: LimitKind::ExceedsDeclaredSize,
+            }));
         }
         let n = self.inner.read(buf)?;
         self.read += n as u64;

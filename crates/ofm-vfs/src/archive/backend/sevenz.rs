@@ -132,7 +132,7 @@ pub fn open<'p>(
 /// references into that vector).
 fn entry_id(entry: &ArchiveEntry, files_base: usize, entry_size: usize) -> Option<usize> {
     let offset = (entry as *const ArchiveEntry as usize).saturating_sub(files_base);
-    if offset % entry_size == 0 {
+    if offset.is_multiple_of(entry_size) {
         Some(offset / entry_size)
     } else {
         None
@@ -226,10 +226,8 @@ fn read_symlink_target(
             } else {
                 &buf[..]
             };
-            let units: Vec<u16> = raw
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                .collect();
+            let (pairs, _rem) = raw.as_chunks::<2>();
+            let units: Vec<u16> = pairs.iter().map(|c| u16::from_le_bytes(*c)).collect();
             String::from_utf16_lossy(&units).into_bytes()
         } else {
             buf
@@ -310,7 +308,7 @@ impl ArchiveReader for SevenzReader {
                 .reader
                 .for_each_entries_with_decision(|lib_entry, stream| {
                     if aborted.is_some() || cancel.is_cancelled() {
-                        aborted.get_or_insert_with(|| ArchiveError::Cancelled);
+                        aborted.get_or_insert(ArchiveError::Cancelled);
                         return Ok(EntryDecision::Stop);
                     }
                     let Some(i) = entry_id(lib_entry, files_base, entry_size) else {
