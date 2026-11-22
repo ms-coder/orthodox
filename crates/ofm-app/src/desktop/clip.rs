@@ -166,6 +166,17 @@ pub fn paths_as_text(paths: &[PathBuf]) -> String {
         .join("\n")
 }
 
+/// Drop duplicate paths, keeping the first occurrence and the original order. A clipboard
+/// payload that lists the same URI twice must not make the paste job's target-name planning
+/// reject the whole job as a source/target overlap.
+pub fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = std::collections::HashSet::with_capacity(paths.len());
+    paths
+        .into_iter()
+        .filter(|p| seen.insert(p.clone()))
+        .collect()
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -265,5 +276,15 @@ mod tests {
     fn copy_path_text_is_one_path_per_line() {
         assert_eq!(paths_as_text(&[p("/a"), p("/b c")]), "/a\n/b c");
         assert_eq!(paths_as_text(&[]), "");
+    }
+
+    #[test]
+    fn dedupe_keeps_first_occurrence_and_order() {
+        let d = vec![p("/a"), p("/b"), p("/a"), p("/c"), p("/b"), p("/a")];
+        assert_eq!(dedupe_paths(d), vec![p("/a"), p("/b"), p("/c")]);
+        // Non-UTF-8 duplicates dedupe by exact bytes.
+        let d = vec![raw(b"/x/\xff"), raw(b"/x/\xfe"), raw(b"/x/\xff")];
+        assert_eq!(dedupe_paths(d), vec![raw(b"/x/\xff"), raw(b"/x/\xfe")]);
+        assert!(dedupe_paths(Vec::new()).is_empty());
     }
 }
