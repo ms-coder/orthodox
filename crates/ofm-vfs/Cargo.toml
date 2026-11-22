@@ -15,10 +15,39 @@ thiserror.workspace = true
 rustix = { version = "1.1.6", features = ["fs"] }
 notify = "8"
 tracing.workspace = true
+# Archive backends (ADR-0008); all pure Rust or vendored C, no system -dev packages.
+zip = { version = "9", default-features = false, features = [
+    "aes-crypto",
+    "deflate",
+    "deflate64",
+    "bzip2",
+    "zstd",
+    "xz",
+    "lzma",
+] }
+tar = "0.4"
+flate2 = "1"
+bzip2 = "0.6"
+lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "xz"] }
+zstd = "0.14"
+sevenz-rust2 = { version = "0.25", default-features = false, features = [
+    "aes256",
+    "bzip2",
+    "ppmd",
+    "zstd",
+    "deflate",
+    "util",
+] }
 
 [dev-dependencies]
 criterion = "0.8.2"
 tempfile = "3.27.0"
+proptest = "1"
+# Fixture generation needs the writer side of the xz codec (tests only; the
+# production dependency above stays encoder-free).
+lzma-rust2 = { version = "0.25", features = ["encoder"] }
+# 7z fixtures are written with the crate's own writer (tests only).
+sevenz-rust2 = { version = "0.25", features = ["compress"] }
 
 [[bench]]
 name = "list"
