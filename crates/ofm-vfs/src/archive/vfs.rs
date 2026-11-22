@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use ofm_core::{CancelToken, Entry, EntryKind, Location};
 
 use super::error::ArchiveError;
-use super::index::ArchiveIndex;
+use super::index::{ArchiveEntryKind, ArchiveIndex};
 use super::limits::ArchiveLimits;
 use super::password::PasswordSource;
 use super::reader::{ArchiveReader, open_archive};
@@ -36,6 +36,30 @@ pub struct ArchiveVfs {
     passwords: PasswordSource,
     limits: ArchiveLimits,
     indexes: Mutex<HashMap<PathBuf, Arc<ArchiveIndex>>>,
+    /// File identity (size, mtime, ino) an index was built from; a cached index is only reused
+    /// while the archive file's identity matches.
+    identities: Mutex<HashMap<PathBuf, FileIdentity>>,
+}
+
+/// Identity of the archive file an index was built from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileIdentity {
+    size: u64,
+    mtime_ns: i128,
+    ino: u64,
+}
+
+fn stat_identity(path: &Path) -> Option<FileIdentity> {
+    let md = std::fs::metadata(path).ok()?;
+    Some(FileIdentity {
+        size: md.len(),
+        mtime_ns: md
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| i128::try_from(d.as_nanos()).unwrap_or(i128::MAX)),
+        ino: std::os::unix::fs::MetadataExt::ino(&md),
+    })
 }
 
 impl std::fmt::Debug for ArchiveVfs {
@@ -59,6 +83,7 @@ impl ArchiveVfs {
             passwords,
             limits,
             indexes: Mutex::new(HashMap::new()),
+            identities: Mutex::new(HashMap::new()),
         }
     }
 
@@ -67,8 +92,9 @@ impl ArchiveVfs {
         &self.passwords
     }
 
-    /// Index of `archive`, building it if needed (blocking; worker threads only). T6.1: add the
-    /// file-identity check described in the module docs before trusting the cache.
+    /// Index of `archive`, building it if needed (blocking; worker threads only). A cached index
+    /// is reused only while the file's identity (size, mtime, ino) is unchanged; a changed file
+    /// drops the cached index (and the remembered password) and is rebuilt.
     pub fn index(
         &self,
         archive: &Path,
@@ -88,7 +114,7 @@ impl ArchiveVfs {
         &self,
         archive: &Path,
         cancel: &CancelToken,
-    ) -> Result<Box<dyn ArchiveReader>, ArchiveError> {
+    ) -> Result<Box<dyn ArchiveReader + '_>, ArchiveError> {
         open_archive(archive, &self.passwords, &self.limits, cancel)
     }
 
@@ -98,6 +124,11 @@ impl ArchiveVfs {
         if let Ok(mut m) = self.indexes.lock() {
             m.insert(archive.to_owned(), index);
         }
+        if let Ok(mut m) = self.identities.lock()
+            && let Some(id) = stat_identity(archive)
+        {
+            m.insert(archive.to_owned(), id);
+        }
     }
 
     /// Drop the cached index of `archive` (it changed on disk) and its remembered password.
@@ -105,11 +136,28 @@ impl ArchiveVfs {
         if let Ok(mut m) = self.indexes.lock() {
             m.remove(archive);
         }
+        if let Ok(mut m) = self.identities.lock() {
+            m.remove(archive);
+        }
         self.passwords.forget(archive);
     }
 
+    /// A cached index whose file identity still matches (staleness check).
     fn cached(&self, archive: &Path) -> Option<Arc<ArchiveIndex>> {
-        self.indexes.lock().ok()?.get(archive).cloned()
+        let ix = self.indexes.lock().ok()?.get(archive).cloned()?;
+        let Some(current) = stat_identity(archive) else {
+            // File vanished or is not stat-able: the cached index is useless.
+            self.invalidate(archive);
+            return None;
+        };
+        match self.identities.lock().ok()?.get(archive) {
+            Some(&id) if id == current => Some(ix),
+            _ => {
+                drop(ix);
+                self.invalidate(archive);
+                None
+            }
+        }
     }
 
     /// The error for any attempt to modify an archive location (all write operations).
@@ -170,12 +218,35 @@ impl Vfs for ArchiveVfs {
             .ok_or_else(|| VfsError::NotFound(archive.join(inner)))
     }
 
-    /// Contract (T6.1): returns the entry's data as a seekable in-memory buffer if
-    /// `size <= MAX_OPEN_READ_BYTES`, else `Unsupported("entry too large ...")`; directories are
-    /// `NotADirectory`-inverse (`Unsupported`); encrypted entries ask the password source.
+    /// The entry's data as a seekable in-memory buffer if `size <= MAX_OPEN_READ_BYTES`,
+    /// else `Unsupported` (callers extract big entries with a job); directories are
+    /// `Unsupported`; encrypted entries ask the password source; unsafe entries are invisible
+    /// (NotFound, like `lookup`).
     fn open_read(&self, loc: &Location) -> Result<Box<dyn ReadSeek + Send>, VfsError> {
-        split(loc)?;
-        Err(ArchiveError::NotImplemented("open archive entry (T6.1)").into())
+        let (archive, inner) = split(loc)?;
+        let index = self.index(archive, &CancelToken::new())?;
+        if inner.as_os_str().is_empty() {
+            return Err(VfsError::Unsupported(
+                "cannot open a directory inside an archive",
+            ));
+        }
+        let entry = index
+            .lookup(inner)
+            .ok_or_else(|| VfsError::NotFound(archive.join(inner)))?;
+        if entry.kind == ArchiveEntryKind::Dir {
+            return Err(VfsError::Unsupported(
+                "cannot open a directory inside an archive",
+            ));
+        }
+        if entry.size > MAX_OPEN_READ_BYTES {
+            return Err(VfsError::Unsupported(
+                "entry too large for in-memory viewing",
+            ));
+        }
+        let mut reader = self.open_reader(archive, &CancelToken::new())?;
+        let mut buf = Vec::with_capacity(entry.size.min(MAX_OPEN_READ_BYTES) as usize);
+        reader.read_entry(entry.id, &mut buf, &CancelToken::new())?;
+        Ok(Box::new(std::io::Cursor::new(buf)))
     }
 
     fn capabilities(&self, _loc: &Location) -> Caps {

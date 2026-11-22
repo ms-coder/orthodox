@@ -99,15 +99,17 @@ pub fn copy_stream(
 /// worker thread; may take long for big archives, checks `cancel`) and return a reader.
 ///
 /// `passwords` is consulted when the headers are encrypted (7z) or on the first encrypted entry
-/// (zip); wrap it in a `PasswordSource` to remember the accepted password. Errors: `NotAnArchive`
-/// (not a supported format: open the file normally), `Corrupt`, `Unsupported`, `NeedsPassword`,
-/// `WrongPassword`, `LimitExceeded`, `Cancelled`, `Io`.
-pub fn open_archive(
+/// (zip); wrap it in a `PasswordSource` to remember the accepted password. The returned reader
+/// borrows `passwords` (it is asked lazily while streaming encrypted entries), so the provider
+/// must outlive the reader — callers hold their shared `PasswordSource` for the whole operation.
+/// Errors: `NotAnArchive` (not a supported format: open the file normally), `Corrupt`,
+/// `Unsupported`, `NeedsPassword`, `WrongPassword`, `LimitExceeded`, `Cancelled`, `Io`.
+pub fn open_archive<'p>(
     path: &Path,
-    passwords: &dyn PasswordProvider,
+    passwords: &'p dyn PasswordProvider,
     limits: &ArchiveLimits,
     cancel: &CancelToken,
-) -> Result<Box<dyn ArchiveReader>, ArchiveError> {
+) -> Result<Box<dyn ArchiveReader + 'p>, ArchiveError> {
     let format = detect_format(path)?.ok_or_else(|| ArchiveError::NotAnArchive(path.to_owned()))?;
     backend::open(format, path, passwords, limits, cancel)
 }
