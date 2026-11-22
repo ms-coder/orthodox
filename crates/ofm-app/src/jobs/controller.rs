@@ -248,6 +248,15 @@ impl JobsController {
 
     /// Resume a job.
     pub fn resume(&self, id: JobId) {
+        // Resumed before the worker reached its pause checkpoint: drop the pending
+        // "Pausing…" at once (with it left set, the row could show it forever) and tell the
+        // observers so the jobs view updates.
+        if self
+            .job(id)
+            .is_some_and(|j| j.requested == Some(Requested::Pausing))
+        {
+            self.update(id, |j| j.requested = None);
+        }
         if let Some(c) = self.capture.borrow().as_ref() {
             c.controls.borrow_mut().push(Control::Resume(id));
         } else if let Some(e) = self.engine.get() {
@@ -535,5 +544,34 @@ mod tests {
         c.pause(JobId(1));
         c.cancel_all();
         c.clear_finished();
+    }
+
+    /// T8.10: resume before the worker's pause checkpoint must clear the pending "Pausing…"
+    /// immediately (it used to stay until some later state change, i.e. forever).
+    #[test]
+    fn resume_clears_a_pending_pausing_request() {
+        let c = JobsController::new();
+        let cap = c.capture();
+        let id = JobId(7);
+        c.jobs.borrow_mut().push(JobEntry {
+            id,
+            title: "copy".into(),
+            mode: RunMode::Queued,
+            state: JobState::Running,
+            progress: Progress::default(),
+            asking: false,
+            outcome: None,
+            requested: Some(Requested::Pausing),
+        });
+        c.resume(id);
+        assert_eq!(c.job(id).and_then(|j| j.requested), None);
+        assert_eq!(*cap.controls.borrow(), vec![Control::Resume(id)]);
+        // A cancel request survives resume.
+        c.update(id, |j| j.requested = Some(Requested::Cancelling));
+        c.resume(id);
+        assert_eq!(
+            c.job(id).and_then(|j| j.requested),
+            Some(Requested::Cancelling)
+        );
     }
 }
