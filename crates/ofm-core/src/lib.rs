@@ -4,6 +4,7 @@
 //! - T1.1: `panel/**`, `mask.rs`
 //! - T1.3: `keychord.rs` (parser/formatter bodies only)
 //! - M4: `cmdline.rs`
+//! - T7.2: `panelize.rs` (`run_panelize` body; types and `parse_paths` are frozen)
 //! - frozen API (architect only): everything else.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
@@ -19,6 +20,7 @@ pub mod location;
 pub mod mask;
 pub mod menu_expand;
 pub mod panel;
+pub mod panelize;
 pub mod responder;
 
 pub use cancel::CancelToken;

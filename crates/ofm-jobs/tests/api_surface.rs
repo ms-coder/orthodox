@@ -36,6 +36,7 @@ fn run_sync_wires_spec_fs_and_sink() {
             archive: "/x.zip".into(),
             entries: vec![],
             dest_dir: "/y".into(),
+            opts: Default::default(),
         },
         Arc::new(FaultyFs::over_real(FaultPlan::new())),
         sink,

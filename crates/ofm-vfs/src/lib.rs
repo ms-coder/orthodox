@@ -2,7 +2,7 @@
 //!
 //! File ownership for parallel tasks:
 //! - T1.2: `local/**`, `watch.rs`, `pool.rs`
-//! - M6: `archive/**`; M7: `list.rs`
+//! - M6 (T6.1): `archive/**`; M7 (T7.2): `list/**`
 //! - frozen API (architect only): `lib.rs`, `vfs.rs`, `error.rs`, `registry.rs`
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 

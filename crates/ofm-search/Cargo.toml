@@ -8,4 +8,10 @@ publish = false
 [lints]
 workspace = true
 
+# T7.1 adds (ADR-0009): ofm-vfs (archives), tracing, ignore, grep-searcher, grep-regex, encoding_rs,
+# encoding_rs_io, regex; dev: tempfile.
 [dependencies]
+ofm-core = { path = "../ofm-core" }
+ofm-viewer = { path = "../ofm-viewer" }
+async-channel.workspace = true
+thiserror.workspace = true

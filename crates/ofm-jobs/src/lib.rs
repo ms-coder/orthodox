@@ -9,7 +9,7 @@
 //! - T3.4: `tests/**`
 //! - T8.1b: `compare.rs` (read-only content comparison job, `JobSpec::CompareContent`)
 //! - T8.3b: `rename_batch.rs` (batch rename + rollback)
-//! - later: `ops/extract.rs`
+//! - T6.2: `extract.rs` (frozen request types: `spec::ExtractOpts`, `JobSpec::Extract`)
 //!
 //! Layering: `engine` (threads, queue, events) -> `runner::run_job` -> operation (`copy`, `move_`,
 //! `ops::*`) -> `JobCtx` (checkpoint/progress/questions) -> `Fs`. Operations never see the engine,
@@ -22,6 +22,7 @@ pub mod ctx;
 pub mod engine;
 pub mod error;
 pub mod event;
+pub mod extract;
 pub mod fs;
 pub mod move_;
 pub mod ops;
@@ -46,4 +47,4 @@ pub use fs::{FileType, Fs, FsFile, FsStat, RealFs, TrashError};
 pub use progress::{Clock, ManualClock, ProgressTracker, SystemClock};
 pub use rename_batch::{FileId, RenameBatchSpec, RollbackSpec, load_log, snapshot_identities};
 pub use runner::{run_job, run_sync};
-pub use spec::{CopyOpts, JobId, JobSpec, LinkKind, ModeChange, OwnerChange, RunMode};
+pub use spec::{CopyOpts, ExtractOpts, JobId, JobSpec, LinkKind, ModeChange, OwnerChange, RunMode};

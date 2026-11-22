@@ -16,6 +16,7 @@ use crate::copy::run_copy;
 use crate::ctx::{JobCtx, JobSink};
 use crate::error::JobError;
 use crate::event::{Outcome, SizeTotals};
+use crate::extract::run_extract;
 use crate::fs::Fs;
 use crate::move_::run_move;
 use crate::ops;
@@ -54,7 +55,11 @@ fn dispatch(spec: &JobSpec, ctx: &mut JobCtx) -> Result<Option<SizeTotals>, JobE
             archive,
             entries,
             dest_dir,
-        } => ops::extract::run(ctx, archive, entries, dest_dir)?,
+            opts,
+        } => {
+            ctx.set_conflict_policy(opts.on_conflict);
+            run_extract(ctx, archive, entries, dest_dir, opts)?;
+        }
         JobSpec::CompareContent { pairs, opts } => {
             // The results travel through `opts.on_result`; the outcome carries counters only.
             crate::compare::run(ctx, pairs, opts)?;
@@ -131,6 +136,7 @@ mod tests {
                 archive: "/x.zip".into(),
                 entries: vec![],
                 dest_dir: "/y".into(),
+                opts: Default::default(),
             },
             Arc::new(RealFs),
             sink,

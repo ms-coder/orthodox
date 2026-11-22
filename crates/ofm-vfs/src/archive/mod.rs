@@ -1,69 +1,37 @@
-//! Read-only archive provider (owned by M6).
+//! Read-only archive provider (M6, ADR-0008). Frozen by T6.0; implemented by T6.1.
 //!
-//! On first entry the whole archive is listed in a worker into an `ArchiveIndex` tree. Formats:
-//! zip (AES), tar + gz/bz2/xz/zst, 7z; detection by magic bytes. Entries with absolute paths or
-//! `..` are rejected (zip-slip). Extraction = ordinary copy jobs reading through `Vfs::open_read`.
+//! Layering: [`open_archive`] (magic detection) -> `backend::{zip,tar,sevenz}` -> [`ArchiveReader`]
+//! (index + streaming `visit`). [`ArchiveVfs`] adapts an index to the `Vfs` trait for panels;
+//! extract jobs (`ofm-jobs`) use `ArchiveReader::visit` directly and write through their own `Fs`.
+//!
+//! Safety contract: every stored path and link target goes through [`normalize_entry_path`] /
+//! [`resolve_link_target`] inside [`IndexBuilder::push`]; entries that are absolute, climb with
+//! `..`, or point out of the archive are flagged [`EntrySafety::Unsafe`] at index time and are
+//! invisible to listings, `select` and `visit`.
+//!
+//! File ownership (T6.1): everything below `archive/`. Frozen API (architect only): the item names
+//! and signatures re-exported here.
 
-use ofm_core::{CancelToken, Entry, Location};
+pub mod backend;
+pub mod error;
+pub mod format;
+pub mod index;
+pub mod limits;
+pub mod password;
+pub mod path;
+pub mod reader;
+pub mod vfs;
 
-use crate::error::VfsError;
-use crate::vfs::{Caps, ListEvent, ReadSeek, SpaceInfo, Vfs};
-
-/// Supported archive formats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ArchiveFormat {
-    /// zip (incl. AES-encrypted).
-    Zip,
-    /// Uncompressed tar.
-    Tar,
-    /// tar + gzip.
-    TarGz,
-    /// tar + bzip2.
-    TarBz2,
-    /// tar + xz.
-    TarXz,
-    /// tar + zstd.
-    TarZst,
-    /// 7z.
-    SevenZ,
-}
-
-/// Supplies passwords for encrypted archives; called on the worker thread (blocks on the UI via a
-/// `Responder`). `None` = user cancelled.
-pub trait PasswordProvider: Send + Sync {
-    /// Ask for the password of `archive`; `retry` is true if the previous one was wrong.
-    fn password(&self, archive: &std::path::Path, retry: bool) -> Option<String>;
-}
-
-/// Detect the format by magic bytes (not by extension); `None` if not an archive we support.
-pub fn detect_format(_path: &std::path::Path) -> Result<Option<ArchiveFormat>, VfsError> {
-    todo!("M6")
-}
-
-/// Provider for `Location::Archive`.
-#[derive(Debug, Default)]
-pub struct ArchiveVfs {}
-
-impl Vfs for ArchiveVfs {
-    fn list(&self, _loc: &Location, _cancel: &CancelToken, _sink: &mut dyn FnMut(ListEvent)) {
-        todo!("M6")
-    }
-    fn stat(&self, _loc: &Location) -> Result<Entry, VfsError> {
-        todo!("M6")
-    }
-    fn open_read(&self, _loc: &Location) -> Result<Box<dyn ReadSeek + Send>, VfsError> {
-        todo!("M6")
-    }
-    fn capabilities(&self, _loc: &Location) -> Caps {
-        Caps {
-            read: true,
-            ..Caps::default()
-        }
-    }
-    fn parent(&self, _loc: &Location) -> Option<Location> {
-        todo!("M6")
-    }
-    fn space(&self, _loc: &Location) -> Result<SpaceInfo, VfsError> {
-        Err(VfsError::Unsupported("space of an archive"))
-    }
-}
+pub use error::{ArchiveError, LimitKind, UnsafeReason};
+pub use format::{ArchiveFormat, MAGIC_LEN, detect_format, detect_magic};
+pub use index::{
+    ArchiveEntry, ArchiveEntryKind, ArchiveIndex, EntryId, EntrySafety, IndexBuilder,
+    IndexWarnings, RawEntry,
+};
+pub use limits::ArchiveLimits;
+pub use password::{
+    FixedPassword, MAX_PASSWORD_ATTEMPTS, NoPassword, PasswordProvider, PasswordSource,
+};
+pub use path::{normalize_entry_path, resolve_link_target};
+pub use reader::{ArchiveReader, VisitFn, copy_stream, open_archive};
+pub use vfs::{ArchiveVfs, MAX_OPEN_READ_BYTES};
