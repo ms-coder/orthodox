@@ -7,6 +7,6 @@ dir=${1:?worktree dir}; prompt=${2:?prompt}
 cd "$dir"
 ANTHROPIC_BASE_URL=https://api.kimi.com/coding/ \
 ANTHROPIC_AUTH_TOKEN="$KIMI_API_KEY" \
-ANTHROPIC_DEFAULT_SONNET_MODEL=kimi-for-coding ANTHROPIC_DEFAULT_OPUS_MODEL=kimi-for-coding ANTHROPIC_DEFAULT_HAIKU_MODEL=kimi-for-coding \
-ANTHROPIC_MODEL=kimi-for-coding \
+ANTHROPIC_DEFAULT_SONNET_MODEL="${KIMI_MODEL:-kimi-for-coding}" ANTHROPIC_DEFAULT_OPUS_MODEL="${KIMI_MODEL:-kimi-for-coding}" ANTHROPIC_DEFAULT_HAIKU_MODEL="${KIMI_MODEL:-kimi-for-coding}" \
+ANTHROPIC_MODEL="${KIMI_MODEL:-kimi-for-coding}" \
   claude -p "$prompt" --permission-mode acceptEdits --max-turns "${MAX_TURNS:-150}"
