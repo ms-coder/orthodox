@@ -84,7 +84,7 @@ pub enum ListEvent { Batch(Vec<Entry>), Done { total: usize }, Error(VfsError) }
   Watching: `notify` (inotify), debounce 100 ms, emits changed names; the panel re-stats only those.
 - `list` — in-memory lists for panelize; entries carry `real_path`; capabilities = those of real files.
 - `archive` — read-only. On first entry, the whole archive is listed in a worker into an `ArchiveIndex`
-  (tree). Formats: zip (`zip`, AES feature), tar + gz/bz2/xz/zst (`tar`, `flate2`, `bzip2`, `xz2`/`liblzma`,
+  (tree). Formats: zip (`zip`, AES feature), tar + gz/bz2/xz/zst (`tar`, `flate2`, `bzip2`, `lzma-rust2`,
   `zstd`), 7z (`sevenz-rust2`). Format detection by magic bytes, not extension. Rejects entries with
   absolute paths or `..` (zip-slip). Password via callback (`PasswordProvider`).
 - `VfsRegistry` maps a `Location` to its provider. Remote providers (SFTP, …) in v1.1+ add
@@ -107,7 +107,7 @@ pub enum JobSpec {
     Mkdir { path: PathBuf }, Link { target: PathBuf, link: PathBuf, kind: LinkKind },
     SetAttrs { paths: Vec<PathBuf>, mode: Option<ModeChange>, owner: Option<OwnerChange>, recursive: bool },
     CalcSize { paths: Vec<PathBuf> },
-    Extract { archive: PathBuf, entries: Vec<PathBuf>, dest_dir: PathBuf },
+    Extract { archive: PathBuf, entries: Vec<PathBuf>, dest_dir: PathBuf, opts: ExtractOpts }  // ADR-0008,
     Rename { pairs: Vec<(PathBuf, PathBuf)> },                               // batch rename (F20)
 }
 pub enum JobEvent {
@@ -254,7 +254,7 @@ is unavailable for that mount, ask before deleting permanently. Permanent delete
 
 gtk4, libadwaita, vte4, glib, gio (app only) · async-channel · rustix (fs, process) · memmap2 · memchr ·
 encoding_rs, chardetng, encoding_rs_io · regex · globset · notify · trash · uzers · xattr · filetime ·
-zip, tar, flate2, bzip2, xz2 (or liblzma), zstd, sevenz-rust2 · ignore, grep-searcher, grep-regex ·
+zip, tar, flate2, bzip2, lzma-rust2, zstd, sevenz-rust2 · ignore, grep-searcher, grep-regex ·
 serde, toml · directories (or etcetera) · thiserror, anyhow · tracing, tracing-subscriber · shell-escape ·
 dev: tempfile, proptest, criterion.
 

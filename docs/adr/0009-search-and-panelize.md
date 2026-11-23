@@ -1,0 +1,122 @@
+# ADR-0009: Search engine, list provider and panelize (F24, F25)
+
+Status: accepted · 2026-11-22 · frozen by T7.0 for T7.1 (engine), T7.2 (list + panelize), T7.3 (UI)
+
+## Context
+
+Alt+F7 searches by name, content, size and date, optionally inside archives, with results that stream
+in and can be cancelled. Results (or the output of a shell command) can be "panelized": shown as a
+panel in which F3/F4/F5/F6/F8 work on the real files. Engine, list provider and UI are separate tasks.
+
+## Decision
+
+**Search API (`ofm-search`).** `SearchQuery` is plain data (roots, `NameFilter` glob list or regex,
+optional `ContentQuery` text/regex + case + whole words + `SearchEncoding`, `SizeFilter`, `TimeFilter`
+in absolute ns, `follow_symlinks`, `same_filesystem`, `include_hidden` (default true; ignore files are
+never honoured), `search_archives`, `max_depth`, `max_hits`, `threads`). `query.validate()` checks it
+without I/O so the dialog can name the bad field (`SearchError::InvalidQuery { field, .. }`); T7.1 adds
+regex compilation. `SearchHandle::start(query, CancelToken)` returns at once and spawns workers;
+`handle.events()` is a bounded `async_channel::Receiver<SearchEvent>` (capacity 64: a stalled UI
+throttles workers; a dropped receiver or handle cancels). Events: `Found(Vec<Hit>)` (<= 256, flushed
+at least every 50 ms), `Progress` (<= 10 Hz), `Warning` (permission denied, symlink loop, encrypted
+archive skipped), then exactly one `Done(SearchSummary { cancelled, truncated, .. })` or
+`Failed(SearchError)`. Cancel uses `ofm_core::CancelToken`, like jobs and the viewer. One `Hit` per
+file: `Location` (local or archive), an `Entry` (`real_path` set for local hits) and an optional
+`ContentHit { first: ContentMatch { line, byte_offset, snippet, snippet_match }, count }`, so F3 can
+open the viewer at the byte offset. Encodings are `ofm_viewer::Encoding` (`Auto` = viewer detection),
+which keeps search and viewer consistent; `ofm-search` therefore depends on `ofm-viewer`.
+
+**Engine rules (T7.1).** Walker: `ignore::WalkBuilder::build_parallel` with all standard filters off;
+symlink loops detected by (dev, ino); `same_filesystem` compares `st_dev` with the root. Content:
+`grep-searcher` + `grep-regex`, literal text escaped into a regex, line-oriented (no multi-line
+matches), binary files skipped unless `search_binary`, decoding through the chosen encoding. Archives:
+`ofm_vfs::archive::open_archive` with `NoPassword` (a search never prompts), one level, entries
+streamed through `visit` with the same limits as browsing; unsafe entries are never reported. A
+panicking worker ends the search with `Failed(Panic)` (invariant 7). Target: 100k-file name search
+< 2 s. The engine never reads the clock (the UI turns "last 7 days" into absolute bounds).
+
+**List provider (`ofm-vfs::list`).** `PanelList { title, base, entries }` holds real local paths: every
+row is an `Entry` with `real_path = Some(..)`, `name` = path relative to `base` (else the full path),
+unique within the list; duplicates collapse. `ListStore` (shared, `create/get/append/remove/real_paths/
+forget_paths`) holds lists; `ListVfs` (registered for `LocationKind::List`) serves them. `PanelList::
+from_paths` lstat's paths on a worker and ignores non-existing ones (counted). Capabilities: `read`,
+`rename`, `trash`, `real_paths`; no `write` (nothing can be created in a list), no `watch`.
+**File operations never see `Location::List`**: the app maps the selected rows to
+`Location::Local(real_path)` (`ListStore::real_paths`) and submits normal copy/move/delete jobs;
+afterwards `forget_paths` drops vanished rows and a refresh re-stats (`ListVfs::list`, T7.2). A list
+has no parent: leaving it (Backspace/Esc) restores the previous location from panel history. Archive
+hits cannot be panelized in v1.0 (`Hit::to_list_entry` is `None`); the UI reports how many were left out.
+
+**Panelize command (`ofm-core::panelize`).** `run_panelize(&PanelizeSpec, &CancelToken, sink)` runs
+`<shell> -c <command>` in the panel's directory with stdin closed on the caller's worker thread and
+streams `PanelizeEvent::Paths` batches (<= 1024; cap 1 000 000) then one `Done(PanelizeSummary)`.
+`parse_paths` (implemented, pure): split at `\n` or NUL, drop empty items and a trailing `\r`, join
+relative items to `cwd`, drop `.` components, keep `..`; bytes, not `String`. A non-zero exit code is
+not an error (`grep -l`, `find`): the summary carries the code and a stderr tail and the UI warns.
+Existence is checked by `PanelList::from_paths`, not by core. Cancel kills the process group.
+
+## Implementation notes (T7.2)
+
+- `run_panelize` spawns `<shell> -c <command>` (command line = one argv element) with
+  `process_group(0)` and kills the whole group on cancel/timeout/cap (`SIGTERM`, 150 ms grace,
+  `SIGKILL`). stdout is read on a helper thread and parsed incrementally (chunk-boundary safe,
+  same semantics as `parse_paths`); stderr is drained on a second thread and tailed to 4 KiB.
+  A wall-clock limit is available as the additive `run_panelize_timed`; the frozen
+  `PanelizeSummary` has no timeout flag, so a timeout is reported as `cancelled = true`.
+- Over-long output items (> 4096 bytes) are dropped and reported via the additive
+  `PanelizeEvent::Warning(String)` variant (the T7.0 enum had no warning carrier). T7.3 must
+  handle it like a search warning.
+- `PanelList::from_paths` lstats (rustix `statat`, nofollow + one following stat for symlink
+  target kind) on the calling worker, keeps first duplicates, preserves input order, counts
+  everything it could not stat. `ListVfs::list` re-stats every row on refresh: vanished rows are
+  dropped (counted in a `tracing::warn!`, removed from the store via `forget_paths`), other stat
+  errors keep the stale row. `ListStore::real_path` (single) joins the frozen `real_paths`
+  (bulk) as the row→real-file mapping for the job layer.
+
+## Alternatives considered
+
+- Search results as `Location::List` entries fed directly by the engine: couples engine and store;
+  instead the UI converts hits (`Hit::to_list_entry`) and appends them to a `ListStore` list.
+- A `Vfs::list`-style callback sink for search: loses batching, progress and warnings, and the
+  bounded channel back-pressure.
+- A unified `JobSpec::Search`: search is read-only, long-lived and result-oriented; the job queue
+  (one disk-heavy job at a time, Ask protocol) does not fit.
+- Resolving list rows through a new `Location::ListItem`: touches every provider; the real-path
+  mapping keeps jobs oblivious to lists.
+
+## Consequences
+
+- T7.1 owns `crates/ofm-search/**` (adds dependencies `ofm-vfs`, `ignore`, `grep-*`, `regex`, `tracing`).
+- T7.2 owns `crates/ofm-vfs/src/list/**` and `crates/ofm-core/src/panelize.rs` (`run_panelize` body,
+  `from_paths`, re-stat in `ListVfs::list`); the types and `ListStore` are frozen.
+- T7.3 builds the dialog/results panel against `SearchEvent`, `PanelList`, `PanelizeEvent` only.
+- Content search inside archives and non-UTF-8 file names are covered by tests in T7.1/T7.4.
+
+## T7.1 engine notes (implementation; API unchanged)
+
+Where the engine-rules sketch above named specific crates, the implementation differs
+(lead's T7.1 spec; frozen API untouched):
+
+- **Walker**: a hand-written iterative DFS (`std::fs::read_dir`, entries sorted by name
+  bytes so visit order is stable) on **one** walker thread, not `ignore::WalkBuilder::
+  build_parallel` — the T7.1 spec calls for one walking thread feeding a bounded matcher
+  pool and a stable order, which the parallel builder cannot provide. All rules kept:
+  (dev, ino) loop detection with warnings (and silent dedup of DAG revisits), `st_dev`
+  pruning, hidden/depth options, cancel checks per entry.
+- **Content**: not `grep-searcher`/`grep-regex`; the viewer's stack is reused instead
+  (`Document` reads, `detect_encoding`, `decode_range`) with a per-line Unicode `regex`
+  (literal text escaped) — same grep semantics: line-oriented, case option, whole words,
+  binary skip unless asked, fixed or auto encoding. Line splitting is encoding-aware
+  (UTF-16 code-unit aligned); endless lines are matched in 64 KiB-overlap segments
+  (matches longer than the overlap inside one huge line may be missed, like the viewer's
+  own chunked search). Match offsets map back to raw byte offsets exactly, including
+  invalid UTF-8 (WHATWG maximal-subpart walk).
+- **Panic policy**: a panicking content matcher is caught and reported as a `Warning` for
+  that file — the search continues; a walker/supervisor panic still ends the search with
+  `Failed(Panic)` (invariant 7).
+- **Archives**: implemented against the frozen `ArchiveReader` trait; with the T6.1 stub
+  backends the engine emits exactly one Warning ("archive search not available yet") per
+  search and never raw-searches archive bytes. The real-backend test is
+  `#[ignore = "needs T6.1"]`.
+- **Dependencies actually added**: `ofm-vfs`, `regex`, `memchr`, `tracing` (no `ignore`,
+  no `grep-*`).

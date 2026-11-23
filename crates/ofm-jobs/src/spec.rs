@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use ofm_core::Location;
+use ofm_vfs::archive::{ArchiveLimits, PasswordSource};
 
 pub use crate::rename_batch::{RenameBatchSpec, RollbackSpec};
 
@@ -36,6 +37,32 @@ pub struct CopyOpts {
     /// Pre-decided conflict policy (as if the user had answered once with "apply to all");
     /// `None` = ask via `JobEvent::Ask`.
     pub on_conflict: Option<crate::event::ConflictAnswer>,
+}
+
+/// Options for [`JobSpec::Extract`] (ADR-0008).
+#[derive(Debug, Clone)]
+pub struct ExtractOpts {
+    /// Pre-decided conflict policy, as for copy; `None` = ask via `JobEvent::Ask`.
+    pub on_conflict: Option<crate::event::ConflictAnswer>,
+    /// Where encrypted archives get their password. Share the panel's `PasswordSource` so the user
+    /// is asked once per archive. Its provider blocks the worker: the app's implementation must
+    /// poll the job's `CancelToken` (ADR-0006 question protocol).
+    pub password: PasswordSource,
+    /// Decompression-bomb guards (`ArchiveLimits::default()` in the app).
+    pub limits: ArchiveLimits,
+    /// fsync every extracted file and directory (as `CopyOpts::sync`).
+    pub sync: bool,
+}
+
+impl Default for ExtractOpts {
+    fn default() -> Self {
+        ExtractOpts {
+            on_conflict: None,
+            password: PasswordSource::none(),
+            limits: ArchiveLimits::default(),
+            sync: false,
+        }
+    }
 }
 
 /// Kind of link to create.
@@ -125,14 +152,18 @@ pub enum JobSpec {
         /// Paths.
         paths: Vec<PathBuf>,
     },
-    /// Extract archive entries (v1.0: implemented as copy from the archive VFS).
+    /// Extract archive entries into `dest_dir` (T6.2, ADR-0008): same temp + rename + conflict
+    /// protocol as copy (ADR-0004), reading through `ofm_vfs::archive::ArchiveReader::visit`.
     Extract {
-        /// Archive file.
+        /// Archive file (local, absolute).
         archive: PathBuf,
-        /// Inner paths; empty = everything.
+        /// Inner paths (normalized, relative; each selects the entry and everything below it);
+        /// empty = everything.
         entries: Vec<PathBuf>,
         /// Destination directory.
         dest_dir: PathBuf,
+        /// Options.
+        opts: ExtractOpts,
     },
     /// Byte-for-byte comparison of file pairs (F27 content mode); read-only, cancellable.
     /// Per-pair results arrive through `opts.on_result` (see [`crate::compare`]); the outcome is

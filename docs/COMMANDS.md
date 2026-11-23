@@ -9,6 +9,10 @@ Several keys are comma separated. Key syntax: ADR-0005. Presets are generated fr
 
 Note: Ctrl+X is Cut (not command-history-next, as in Far); history-next is Ctrl+Shift+E.
 
+Non-numpad laptops (T8.12): besides the Gray chords, every preset binds `Alt+M` = select by mask,
+`Alt+Shift+M` = deselect by mask, `Ctrl+Shift+I` = invert selection, `Ctrl+A` = select all,
+`Ctrl+Shift+A` = deselect all; `Space` also toggles selection in the tc and mc presets.
+
 | ID | Context | Title | Far (default) | TC | mc |
 |---|---|---|---|---|---|
 | `app.quit` | global | Quit | `F10` | `Alt+F4` | = |
@@ -68,18 +72,18 @@ Note: Ctrl+X is Cut (not command-history-next, as in Far); history-next is Ctrl+
 | `tab.next` | panels | Next tab | `Ctrl+Tab` | = | = |
 | `tab.prev` | panels | Previous tab | `Ctrl+Shift+Tab` | = | = |
 | `tab.lock` | panels | Lock/unlock tab | `Ctrl+Shift+L` | = | = |
-| `select.toggle` | panels | Toggle selection and move down | `Ins` | `Ins`, `Space` | = |
+| `select.toggle` | panels | Toggle selection and move down | `Ins` | `Ins`, `Space` | `Ins`, `Space` |
 | `select.extend_up` | panels | Extend selection up | `Shift+Up` | = | = |
 | `select.extend_down` | panels | Extend selection down | `Shift+Down` | = | = |
 | `select.extend_page_up` | panels | Extend selection page up | `Shift+PgUp` | = | = |
 | `select.extend_page_down` | panels | Extend selection page down | `Shift+PgDn` | = | = |
 | `select.extend_home` | panels | Extend selection to first | `Shift+Home` | = | = |
 | `select.extend_end` | panels | Extend selection to last | `Shift+End` | = | = |
-| `select.by_mask` | panels | Select by mask | `Gray+` | = | = |
-| `select.unmask` | panels | Deselect by mask | `Gray-` | = | = |
-| `select.invert` | panels | Invert selection | `Gray*` | = | = |
-| `select.all` | panels | Select all | `Ctrl+Gray+` | `Ctrl+A`, `Ctrl+Gray+` | = |
-| `select.none` | panels | Deselect all | `Ctrl+Gray-` | = | = |
+| `select.by_mask` | panels | Select by mask | `Gray+`, `Alt+M` | = | = |
+| `select.unmask` | panels | Deselect by mask | `Gray-`, `Alt+Shift+M` | = | = |
+| `select.invert` | panels | Invert selection | `Gray*`, `Ctrl+Shift+I` | = | = |
+| `select.all` | panels | Select all | `Ctrl+Gray+`, `Ctrl+A` | `Ctrl+A`, `Ctrl+Gray+` | = |
+| `select.none` | panels | Deselect all | `Ctrl+Gray-`, `Ctrl+Shift+A` | = | = |
 | `select.restore` | panels | Restore previous selection | `Ctrl+M` | = | = |
 | `file.view` | panels | View (directory: calculate size) | `F3` | = | = |
 | `file.edit` | panels | Edit | `F4` | = | = |

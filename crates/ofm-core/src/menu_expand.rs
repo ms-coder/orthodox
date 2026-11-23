@@ -27,7 +27,7 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use crate::cmdline::{QuoteStyle, bytes_of, has_control_bytes, shell_quote_for};
+use crate::cmdline::{QuoteStyle, bytes_of, has_control_bytes, shell_quote_bytes_for};
 
 /// Everything [`expand`] needs to know about the two panels. All names are plain file names
 /// (no directory component); the directories are full paths.
@@ -347,8 +347,8 @@ fn push_quoted(
             name: name.to_string_lossy().into_owned(),
         });
     }
-    // shell_quote_for output is always printable text, so the bytes below are exact.
-    out.extend_from_slice(shell_quote_for(style, name).as_bytes());
+    // Bytes, not text: the portable-sh form keeps non-UTF-8 names raw inside '...'.
+    out.extend_from_slice(&shell_quote_bytes_for(style, name));
     Ok(())
 }
 

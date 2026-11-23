@@ -17,6 +17,7 @@ pub mod hotlist;
 pub mod link;
 pub mod mask;
 pub mod mkdir;
+pub mod password;
 pub mod properties;
 pub mod usermenu_input;
 pub mod usermenu_menu;

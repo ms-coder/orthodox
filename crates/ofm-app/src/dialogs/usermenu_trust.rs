@@ -33,10 +33,10 @@ pub struct Review {
     pub dir: PathBuf,
     /// sha256 of the content.
     pub hash: String,
-    /// The (possibly cut) file text.
+    /// The whole file text (invisible/bidi characters escaped).
     pub text: String,
-    /// `text` was cut at the preview limit.
-    pub truncated: bool,
+    /// The text contained bidi or zero-width characters, shown escaped: warn about it.
+    pub obfuscated: bool,
     /// Problems found in the file (displayed lines).
     pub problems: Vec<String>,
 }
@@ -79,6 +79,18 @@ pub fn present(
             tr("problem(s) in this file")
         )));
     }
+    if review.obfuscated {
+        let warn = gtk::Label::builder()
+            .label(tr(
+                "Warning: this file contains invisible or bidirectional control characters; they are shown escaped below.",
+            ))
+            .xalign(0.0)
+            .wrap(true)
+            .css_classes(["warning"])
+            .build();
+        warn.set_widget_name("ofm-usermenu-trust-obfuscated");
+        column.append(&warn);
+    }
 
     let view = gtk::TextView::builder()
         .editable(false)
@@ -86,12 +98,9 @@ pub fn present(
         .monospace(true)
         .wrap_mode(gtk::WrapMode::WordChar)
         .build();
-    let mut text = review.text.clone();
-    if review.truncated {
-        text.push_str("\n...\n");
-        text.push_str(tr("(the rest of the file is not shown)"));
-    }
-    view.buffer().set_text(&text);
+    // The whole file is shown (files too large for that are refused before this dialog), so
+    // what the user reads is exactly what the sha256 covers.
+    view.buffer().set_text(&review.text);
     view.update_property(&[gtk::accessible::Property::Label(tr("Menu file contents"))]);
     let scroll = gtk::ScrolledWindow::builder()
         .child(&view)
