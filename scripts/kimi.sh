@@ -9,4 +9,4 @@ ANTHROPIC_BASE_URL=https://api.kimi.com/coding/ \
 ANTHROPIC_AUTH_TOKEN="$KIMI_API_KEY" \
 ANTHROPIC_DEFAULT_SONNET_MODEL=kimi-for-coding ANTHROPIC_DEFAULT_OPUS_MODEL=kimi-for-coding ANTHROPIC_DEFAULT_HAIKU_MODEL=kimi-for-coding \
 ANTHROPIC_MODEL=kimi-for-coding \
-  claude -p "$prompt" --permission-mode acceptEdits --max-turns 150
+  claude -p "$prompt" --permission-mode acceptEdits --max-turns "${MAX_TURNS:-150}"

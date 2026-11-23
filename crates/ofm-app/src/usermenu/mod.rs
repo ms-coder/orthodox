@@ -165,7 +165,7 @@ fn present_loaded(
     if let LocalSource::Untrusted {
         hash,
         text,
-        truncated,
+        obfuscated,
         warnings,
     } = &loaded.local
         && (force_review || !st.is_ignored(&loaded.dir, hash))
@@ -174,12 +174,13 @@ fn present_loaded(
             dir: loaded.dir.clone(),
             hash: hash.clone(),
             text: text.clone(),
-            truncated: *truncated,
+            obfuscated: *obfuscated,
             problems: warnings.iter().map(load::describe_warning).collect(),
         };
         let (ctx2, st2) = (Rc::clone(ctx), Rc::clone(&st));
         let (dir, hash) = (loaded.dir.clone(), hash.clone());
-        usermenu_trust::present(ctx, &review, false, move |decision| match decision {
+        // Contents are visible from the start: trusting unseen text would defeat the prompt.
+        usermenu_trust::present(ctx, &review, true, move |decision| match decision {
             Decision::Trust => trust_then_reopen(&ctx2, dir, hash),
             Decision::Ignore => {
                 st2.ignore(&dir, &hash);

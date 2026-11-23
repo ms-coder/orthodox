@@ -195,6 +195,7 @@ proptest! {
             let got = match style {
                 QuoteStyle::Posix => reference_unquote(quoted),
                 QuoteStyle::Fish => fish_reference_unquote(quoted),
+                QuoteStyle::PortableSh => unreachable!("not in the style list above"),
             };
             prop_assert_eq!(got, Some(path_bytes.clone()));
         }

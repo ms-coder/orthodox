@@ -233,7 +233,8 @@ fn name_cmp(a: &OsStr, b: &[u8]) -> std::cmp::Ordering {
     a.as_encoded_bytes().cmp(b)
 }
 
-/// Insert `m` into `marks` (sorted by name, ascending).
+/// Insert `m` into `marks` (sorted by name, ascending). O(n) per call: only for the
+/// single-result [`apply_content_result`]; bulk paths push and sort once.
 fn insert_sorted(marks: &mut Vec<Marked>, m: Marked) {
     let pos = marks.partition_point(|x| name_cmp(&x.name, m.name.as_encoded_bytes()).is_lt());
     marks.insert(pos, m);
@@ -300,12 +301,8 @@ pub fn compare(
     }
 
     // Deterministic output independent of input ordering.
-    result
-        .left_marks
-        .sort_by(|a, b| name_cmp(&a.name, b.name.as_encoded_bytes()));
-    result
-        .right_marks
-        .sort_by(|a, b| name_cmp(&a.name, b.name.as_encoded_bytes()));
+    sort_marks(&mut result.left_marks);
+    sort_marks(&mut result.right_marks);
     result
 }
 
@@ -321,12 +318,12 @@ fn classify_pair(
             name: l.name.clone(),
             reason: MarkReason::TypeDiffers,
         };
-        insert_sorted(&mut result.left_marks, m);
+        Vec::push(&mut result.left_marks, m);
         let m = Marked {
             name: r.name.clone(),
             reason: MarkReason::TypeDiffers,
         };
-        insert_sorted(&mut result.right_marks, m);
+        Vec::push(&mut result.right_marks, m);
         return;
     }
     match l.kind {
@@ -337,14 +334,14 @@ fn classify_pair(
             if let (Some(a), Some(b)) = (&l.link_target, &r.link_target)
                 && a != b
             {
-                insert_sorted(
+                Vec::push(
                     &mut result.left_marks,
                     Marked {
                         name: l.name.clone(),
                         reason: MarkReason::LinkTargetDiffers,
                     },
                 );
-                insert_sorted(
+                Vec::push(
                     &mut result.right_marks,
                     Marked {
                         name: r.name.clone(),
@@ -365,14 +362,14 @@ fn classify_pair(
                     // marked: the newer side gets NewerHere, the other
                     // OlderHere.
                     if diff > tol {
-                        insert_sorted(
+                        Vec::push(
                             &mut result.left_marks,
                             Marked {
                                 name: l.name.clone(),
                                 reason: MarkReason::NewerHere,
                             },
                         );
-                        insert_sorted(
+                        Vec::push(
                             &mut result.right_marks,
                             Marked {
                                 name: r.name.clone(),
@@ -380,14 +377,14 @@ fn classify_pair(
                             },
                         );
                     } else if diff < -tol {
-                        insert_sorted(
+                        Vec::push(
                             &mut result.left_marks,
                             Marked {
                                 name: l.name.clone(),
                                 reason: MarkReason::OlderHere,
                             },
                         );
-                        insert_sorted(
+                        Vec::push(
                             &mut result.right_marks,
                             Marked {
                                 name: r.name.clone(),
@@ -414,20 +411,54 @@ fn classify_pair(
 
 /// Push `reason` for `l` and `r` onto the respective mark vectors.
 fn mark_both(l: &CompareEntry, r: &CompareEntry, reason: MarkReason, result: &mut CompareResult) {
-    insert_sorted(
+    Vec::push(
         &mut result.left_marks,
         Marked {
             name: l.name.clone(),
             reason,
         },
     );
-    insert_sorted(
+    Vec::push(
         &mut result.right_marks,
         Marked {
             name: r.name.clone(),
             reason,
         },
     );
+}
+
+/// Record the outcomes of many byte comparisons at once.
+///
+/// Equivalent to calling [`apply_content_result`] for each item, but O(n log n)
+/// overall instead of O(n) per mismatch (one stable sort after all pushes).
+pub fn apply_content_results<I>(result: &mut CompareResult, outcomes: I)
+where
+    I: IntoIterator<Item = (ContentPair, bool)>,
+{
+    let mut any = false;
+    for (pair, equal) in outcomes {
+        if equal {
+            continue;
+        }
+        any = true;
+        result.left_marks.push(Marked {
+            name: pair.name.clone(),
+            reason: MarkReason::ContentDiffers,
+        });
+        result.right_marks.push(Marked {
+            name: pair.name,
+            reason: MarkReason::ContentDiffers,
+        });
+    }
+    if any {
+        sort_marks(&mut result.left_marks);
+        sort_marks(&mut result.right_marks);
+    }
+}
+
+/// Stable sort of marks by name bytes.
+fn sort_marks(marks: &mut [Marked]) {
+    marks.sort_by(|a, b| name_cmp(&a.name, b.name.as_encoded_bytes()));
 }
 
 /// Record the outcome of a byte comparison for one [`ContentPair`].
@@ -796,6 +827,51 @@ mod tests {
         let c = CompareEntry::from(&e);
         assert_eq!(c.kind, CompareKind::Symlink);
         assert_eq!(c.name, OsString::from("x"));
+    }
+
+    #[test]
+    fn every_entry_marked_100k_is_n_log_n_and_matches_reference() {
+        // Left in descending name order (worst case for front insertion), right ascending;
+        // every size differs, so both sides carry 100k marks.
+        let mk = |n: u32, size: u64| file(&format!("f{n:07}"), size, 0);
+        let left: Vec<CompareEntry> = (0..100_000).rev().map(|n| mk(n, 1)).collect();
+        let right: Vec<CompareEntry> = (0..100_000).map(|n| mk(n, 2)).collect();
+        let start = Instant::now();
+        let r = compare(&left, &right, &CompareOptions::default());
+        let elapsed = start.elapsed();
+        assert!(elapsed.as_secs() < 5, "compare took {elapsed:?}");
+        // Straightforward reference: every name, sorted by bytes.
+        let mut expect: Vec<OsString> = left.iter().map(|e| e.name.clone()).collect();
+        expect.sort_by(|a, b| a.as_encoded_bytes().cmp(b.as_encoded_bytes()));
+        assert_eq!(names(&r.left_marks), expect);
+        assert_eq!(names(&r.right_marks), expect);
+        assert!(
+            r.left_marks
+                .iter()
+                .chain(&r.right_marks)
+                .all(|m| m.reason == MarkReason::SizeDiffers)
+        );
+    }
+
+    #[test]
+    fn bulk_content_results_match_single_application() {
+        let mk_pair = |n: u32| {
+            let e = file(&format!("p{n:05}"), 5, 0);
+            ContentPair {
+                name: e.name.clone(),
+                left: e.clone(),
+                right: e,
+            }
+        };
+        let order: Vec<u32> = (0..2000).rev().collect();
+        let mut one = CompareResult::default();
+        for &n in &order {
+            apply_content_result(&mut one, mk_pair(n), n % 3 == 0);
+        }
+        let mut bulk = CompareResult::default();
+        apply_content_results(&mut bulk, order.iter().map(|&n| (mk_pair(n), n % 3 == 0)));
+        assert_eq!(one, bulk);
+        assert!(!bulk.left_marks.is_empty());
     }
 
     #[test]
