@@ -831,7 +831,6 @@ fn stub_archive_backend_warns_once() {
 }
 
 #[test]
-#[ignore = "needs T6.1"]
 fn archive_content_search() {
     // Build a real tar with the system tool; requires the T6.1 backends.
     let dir = tempfile::tempdir().unwrap();
