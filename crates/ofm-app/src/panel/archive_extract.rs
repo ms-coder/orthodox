@@ -470,7 +470,7 @@ fn remove_temp_later(ctx: &Rc<AppContext>, dir: PathBuf) {
     ctx.services.pool.spawn(move || service.remove_temp(&dir));
 }
 
-/// Open the extracted file; its directory is deleted when the viewer window goes away.
+/// Open the extracted file; its directory is deleted when the viewer window closes.
 fn open_in_viewer(ctx: &Rc<AppContext>, x: Extracted) {
     match crate::viewer::window::open(ctx, vec![x.file.clone()], 0) {
         Some(session) => {
@@ -479,7 +479,7 @@ fn open_in_viewer(ctx: &Rc<AppContext>, x: Extracted) {
                 ctx.services.pool.clone(),
                 x.dir,
             );
-            session.window.connect_destroy(move |_| {
+            session.set_on_close(move || {
                 let (service, dir) = (service.clone(), dir.clone());
                 pool.spawn(move || service.remove_temp(&dir));
             });
