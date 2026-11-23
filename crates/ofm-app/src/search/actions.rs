@@ -54,7 +54,7 @@ pub fn view(ctx: &Rc<AppContext>, hit: &Hit) -> Result<(), String> {
         let mut tries = 0u32;
         glib::timeout_add_local(Duration::from_millis(75), move || {
             tries += 1;
-            if session.len() > 0 {
+            if !session.is_empty() {
                 session.jump_to(off);
                 if session.top() > 0 || tries > 40 {
                     return glib::ControlFlow::Break;
