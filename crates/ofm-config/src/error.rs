@@ -25,6 +25,16 @@ pub enum ConfigError {
     /// TOML serialization failure.
     #[error("serialize: {0}")]
     Serialize(String),
+    /// Reading the file was refused: it is not a small regular file (a symlink, FIFO,
+    /// socket or device, where a plain read could block or follow an attacker-swapped link)
+    /// or it exceeds the applicable size limit.
+    #[error("{}: {message}", path.display())]
+    ReadRefused {
+        /// File.
+        path: PathBuf,
+        /// What the file is and why it was not read.
+        message: String,
+    },
 }
 
 /// A problem the UI should show (e.g. an infobar) while continuing with defaults.

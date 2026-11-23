@@ -1148,6 +1148,7 @@ name = "ofm-config"
 version = "0.1.0"
 dependencies = [
  "async-channel",
+ "libc",
  "notify",
  "ofm-core",
  "serde",
