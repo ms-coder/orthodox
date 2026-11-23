@@ -163,7 +163,10 @@ fn paste(ctx: &Rc<AppContext>) {
         };
         let Some(ctx) = weak.upgrade() else { return };
         let mv = files.op == ClipOp::Cut;
-        let started = transfer::submit(&ctx, &files.paths, &dest, mv);
+        // Duplicate URIs in the payload (buggy producers) would make the target-name plan
+        // reject the whole job; paste each file once, in order.
+        let paths = clip::dedupe_paths(files.paths);
+        let started = transfer::submit(&ctx, &paths, &dest, mv);
         if mv && started {
             // The files are about to move: what the clipboard offers would be stale (GNOME
             // Files empties it after a cut-paste as well).

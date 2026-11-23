@@ -13,6 +13,7 @@ use super::quicksearch;
 use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
 use crate::i18n::tr;
+use crate::jobs::ui;
 use crate::panel::{LoadOpts, PanelController, PanelHost};
 
 /// Register the commands of this module.
@@ -169,6 +170,12 @@ fn open_cursor(ctx: &Rc<AppContext>, run: bool) {
             _ => here.join(&entry.name),
         };
         navigate(ctx, &ctrl, target, None);
+        return;
+    }
+    // FIFOs, devices and sockets are never "opened": Enter on one would block a pool
+    // thread forever (desktop::open::probe used to open them unconditionally).
+    if entry.kind == ofm_core::EntryKind::Other {
+        ui::message(ctx, tr("Open"), tr("Special file (not a regular file)."));
         return;
     }
     if !run {

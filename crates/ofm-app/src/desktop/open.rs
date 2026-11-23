@@ -62,10 +62,14 @@ struct Probe {
     head: Option<Vec<u8>>,
 }
 
-/// Mode bits and first four bytes (worker thread only).
+/// Mode bits and first four bytes (worker thread only). Never blocks: the file is only
+/// opened when the metadata says it is a regular file, and the open itself is
+/// `O_NONBLOCK|O_NOFOLLOW|O_NOCTTY` with an fstat afterwards, so a FIFO, device, socket or
+/// symlink swapped in after the listing fails here instead of blocking the pool thread.
 #[allow(clippy::disallowed_methods)] // runs on the I/O pool, never on the GTK thread
 fn probe(path: &Path) -> Probe {
     use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
     let Ok(meta) = std::fs::metadata(path) else {
         return Probe {
             is_file: false,
@@ -73,15 +77,33 @@ fn probe(path: &Path) -> Probe {
             head: None,
         };
     };
-    let head = std::fs::File::open(path).ok().map(|f| {
-        let mut buf = Vec::with_capacity(4);
-        // A short read (small file) is fine; errors give what was read so far.
-        let _ = f.take(4).read_to_end(&mut buf);
-        buf
-    });
+    let exec_bit = meta.permissions().mode() & 0o111 != 0;
+    if !meta.is_file() {
+        return Probe {
+            is_file: false,
+            exec_bit,
+            head: None,
+        };
+    }
+    let head = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_NOCTTY)
+        .open(path)
+        .ok()
+        .and_then(|f| {
+            // fstat the opened fd: refuse anything swapped in after the metadata call.
+            let md = f.metadata().ok()?;
+            if !md.file_type().is_file() {
+                return None;
+            }
+            let mut buf = Vec::with_capacity(4);
+            // A short read (small file) is fine; errors give what was read so far.
+            let _ = (&f).take(4).read_to_end(&mut buf);
+            Some(buf)
+        });
     Probe {
-        is_file: meta.is_file(),
-        exec_bit: meta.permissions().mode() & 0o111 != 0,
+        is_file: true,
+        exec_bit,
         head,
     }
 }
@@ -246,6 +268,25 @@ mod tests {
         assert!(!p.is_file);
         let p = probe(dir.path());
         assert!(!p.is_file);
+    }
+
+    /// T8.10: Enter on a FIFO must not block a pool thread. `probe` only opens regular files
+    /// and opens them `O_NONBLOCK|O_NOFOLLOW|O_NOCTTY` with an fstat, so a FIFO (or anything
+    /// swapped in after the listing) is refused instead of blocking on open.
+    #[test]
+    fn probe_never_opens_a_fifo() {
+        let dir = ofm_testkit::temp::TempDir::new().unwrap();
+        let fifo = dir.path().join("pipe");
+        let st = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(st.success());
+        // Returns promptly; a blocking open would hang the test.
+        let p = probe(&fifo);
+        assert!(!p.is_file);
+        assert!(p.head.is_none());
+        assert_eq!(classify(p.exec_bit, p.head.as_deref()), OpenAction::Default);
     }
 
     /// The wrapper runs the program with the exact path word (spaces, quotes, non-UTF-8 bytes)
