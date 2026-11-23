@@ -110,14 +110,15 @@ fn viewer_temp_dir_is_removed_when_the_viewer_closes() {
     app.register(gtk::gio::Cancellable::NONE).expect("register");
     let _win = MainWindow::new(&app, &ctx);
     ctx.start_loading();
-    pump_until("panels loaded", || loaded(&ctx, LEFT) && loaded(&ctx, ofm_app::panel::RIGHT));
+    pump_until("panels loaded", || {
+        loaded(&ctx, LEFT) && loaded(&ctx, ofm_app::panel::RIGHT)
+    });
 
     // Enter the archive (real index on the pool, magic-detected zip).
     put_cursor(&ctx, LEFT, "test.zip");
     ctx.execute(cmd::PANEL_OPEN);
     pump_until("archive opened", || {
-        matches!(ctx.host(LEFT).active().location(), Location::Archive { .. })
-            && loaded(&ctx, LEFT)
+        matches!(ctx.host(LEFT).active().location(), Location::Archive { .. }) && loaded(&ctx, LEFT)
     });
 
     // F3 on hello.txt: extracted to a private temp dir, opened in the viewer.
@@ -129,7 +130,12 @@ fn viewer_temp_dir_is_removed_when_the_viewer_closes() {
     // Esc (viewer.close): the window closes, the temp dir is removed.
     ctx.execute(cmd::VIEWER_CLOSE);
     pump_until("viewer host empty", || {
-        ctx.ext.get::<ofm_app::viewer::ViewerHost>().unwrap().is_empty()
+        ctx.ext
+            .get::<ofm_app::viewer::ViewerHost>()
+            .unwrap()
+            .is_empty()
     });
-    pump_until("temp dir removed", || ctx.services.archives.temp_count() == 0);
+    pump_until("temp dir removed", || {
+        ctx.services.archives.temp_count() == 0
+    });
 }
