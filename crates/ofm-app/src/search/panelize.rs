@@ -166,6 +166,8 @@ pub struct CommandDone {
     pub missing: usize,
     /// Exit code, stderr, cancel/truncation.
     pub summary: PanelizeSummary,
+    /// Warnings of the runner (over-long lines dropped, ...).
+    pub warnings: Vec<String>,
 }
 
 /// Run `command` in `cwd` on a pool worker: stream the paths, `lstat` them, build the list.
@@ -191,11 +193,13 @@ pub fn spawn_command(
         };
         let mut paths: Vec<PathBuf> = Vec::new();
         let mut summary = PanelizeSummary::default();
+        let mut warnings: Vec<String> = Vec::new();
         let run = run_panelize(&spec, &cancel, &mut |ev| match ev {
             PanelizeEvent::Paths(p) => {
                 paths.extend(p);
                 let _ = tx.send_blocking(CommandMsg::Count(paths.len()));
             }
+            PanelizeEvent::Warning(w) => warnings.push(w),
             PanelizeEvent::Done(s) => summary = s,
         });
         let result = match run {
@@ -205,6 +209,7 @@ pub fn spawn_command(
                     list,
                     missing,
                     summary,
+                    warnings,
                 })
                 .map_err(|e| e.to_string()),
         };
@@ -216,7 +221,10 @@ pub fn spawn_command(
 pub fn command_message(rows: usize, missing: usize, summary: &PanelizeSummary) -> String {
     let mut s = format!("{rows} {}", tr("files shown in the panel"));
     if missing > 0 {
-        s.push_str(&format!(", {missing} {}", tr("lines ignored (no such file)")));
+        s.push_str(&format!(
+            ", {missing} {}",
+            tr("lines ignored (no such file)")
+        ));
     }
     if summary.truncated {
         s.push_str(&format!(", {}", tr("output truncated")));
@@ -234,12 +242,27 @@ mod tests {
 
     #[test]
     fn hit_messages() {
-        assert!(hits_message(&Outcome { rows: 0, left_out: 3 }).starts_with("Nothing"));
+        assert!(
+            hits_message(&Outcome {
+                rows: 0,
+                left_out: 3
+            })
+            .starts_with("Nothing")
+        );
         assert_eq!(
-            hits_message(&Outcome { rows: 5, left_out: 0 }),
+            hits_message(&Outcome {
+                rows: 5,
+                left_out: 0
+            }),
             "5 results shown in the panel."
         );
-        assert!(hits_message(&Outcome { rows: 5, left_out: 2 }).contains("2 inside archives"));
+        assert!(
+            hits_message(&Outcome {
+                rows: 5,
+                left_out: 2
+            })
+            .contains("2 inside archives")
+        );
     }
 
     #[test]
@@ -252,7 +275,9 @@ mod tests {
             ..PanelizeSummary::default()
         };
         let m = command_message(3, 4, &bad);
-        assert!(m.contains("4 lines ignored") && m.contains("truncated") && m.contains("exit code 2"));
+        assert!(
+            m.contains("4 lines ignored") && m.contains("truncated") && m.contains("exit code 2")
+        );
     }
 
     #[test]

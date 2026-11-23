@@ -222,7 +222,11 @@ mod tests {
             },
             count: 1,
         });
-        assert!(cells(&h, SizeFormat::Bytes, &fmt_time).match_range.is_none());
+        assert!(
+            cells(&h, SizeFormat::Bytes, &fmt_time)
+                .match_range
+                .is_none()
+        );
     }
 
     #[test]

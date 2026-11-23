@@ -61,6 +61,7 @@ pub fn install_panel_view(ctx: &Rc<AppContext>, view: &PanelView) {
     cmdline::install_panel_view(ctx, view); // T4.2: reserved
     quickview::install_panel_view(ctx, view); // T5.2b: preview pane over the file list
     desktop::install_panel_view(ctx, view); // T8.4: file drops
+    search::install_panel_view(ctx, view); // T7.3: vanished-row message for list panels
 }
 
 /// Fill window regions once the whole `MainWindow` exists (menu bar, F-key bar, status line).

@@ -38,6 +38,7 @@ use ofm_core::cmd;
 use crate::context::AppContext;
 use crate::dialogs::find::FindWindow;
 use crate::dispatch::CommandRegistry;
+use crate::i18n::tr;
 use run::{Starter, real_starter};
 
 /// Enter / Esc, as routed by `dialog.ok` / `dialog.cancel`.
@@ -117,6 +118,69 @@ pub fn install_commands(reg: &mut CommandRegistry) {
             w.panelize();
         }
     });
+}
+
+/// Watch the tabs of one panel side: when a list panel finishes a refresh with fewer rows than it
+/// had (the re-stat dropped vanished files), say how many (`ListVfs` only logs it).
+pub fn install_panel_view(ctx: &Rc<AppContext>, view: &crate::window::PanelView) {
+    use std::cell::RefCell;
+    use std::rc::Weak;
+
+    use crate::panel::{LoadState, PanelController, PanelEvent};
+
+    let host = Rc::clone(ctx.host(view.side));
+    let watched: Rc<RefCell<Vec<Weak<PanelController>>>> = Rc::default();
+    let attach = {
+        let (weak_ctx, watched) = (Rc::downgrade(ctx), Rc::clone(&watched));
+        move |host: &crate::panel::PanelHost| {
+            for tab in host.tabs() {
+                if watched
+                    .borrow()
+                    .iter()
+                    .any(|w| w.as_ptr() == Rc::as_ptr(&tab))
+                {
+                    continue;
+                }
+                watched.borrow_mut().push(Rc::downgrade(&tab));
+                let (weak_ctx, weak_tab) = (weak_ctx.clone(), Rc::downgrade(&tab));
+                tab.changed.connect(move |ev| {
+                    if *ev != PanelEvent::State {
+                        return;
+                    }
+                    if let (Some(ctx), Some(tab)) = (weak_ctx.upgrade(), weak_tab.upgrade())
+                        && tab.state() == LoadState::Idle
+                    {
+                        check_vanished(&ctx, &tab);
+                    }
+                });
+            }
+        }
+    };
+    attach(&host);
+    let host2 = Rc::clone(&host);
+    host.tabs_changed.connect(move |()| attach(&host2));
+}
+
+/// Compare the row count of a refreshed list panel with what it should have.
+fn check_vanished(ctx: &Rc<AppContext>, tab: &Rc<crate::panel::PanelController>) {
+    let ofm_core::Location::List { id } = tab.location() else {
+        return;
+    };
+    let hub = &ctx.services.lists;
+    let (Some(expected), actual) = (hub.expected(id), tab.model().total_len()) else {
+        return;
+    };
+    if actual < expected {
+        hub.set_expected(id, actual);
+        notify(
+            ctx,
+            &format!(
+                "{} {}",
+                expected - actual,
+                tr("items no longer exist and were removed from the list.")
+            ),
+        );
+    }
 }
 
 /// Create the module state.

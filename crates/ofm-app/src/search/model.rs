@@ -82,8 +82,7 @@ mod imp {
         }
 
         fn item(&self, position: u32) -> Option<glib::Object> {
-            ((position as usize) < self.n_items() as usize)
-                .then(|| HitRow::new(position).upcast())
+            ((position as usize) < self.n_items() as usize).then(|| HitRow::new(position).upcast())
         }
     }
 }
@@ -215,7 +214,10 @@ mod tests {
         assert_eq!(model.n_items(), 301);
         let row = model.item(300).unwrap().downcast::<HitRow>().unwrap();
         assert_eq!(row.index(), 300);
-        assert_eq!(model.with_hit(300, |h| h.entry.name.clone()).unwrap(), "last");
+        assert_eq!(
+            model.with_hit(300, |h| h.entry.name.clone()).unwrap(),
+            "last"
+        );
         assert!(model.item(301).is_none());
         model.clear();
         assert_eq!(changes.borrow().last(), Some(&(0, 301, 0)));

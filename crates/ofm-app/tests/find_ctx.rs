@@ -7,7 +7,7 @@
     clippy::disallowed_methods // fixtures are read on the test thread
 )]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,15 +19,13 @@ use ofm_app::app::build_context;
 use ofm_app::context::{AppContext, AppInit};
 use ofm_app::dialogs::find::FindWindow;
 use ofm_app::jobs::targets::Targets;
-use ofm_app::panel::{LEFT, LoadState, RIGHT};
+use ofm_app::panel::{LEFT, LoadState};
 use ofm_app::search::run::{RunEvent, RunState, Starter};
 use ofm_app::search::{self, state};
 use ofm_app::window::MainWindow;
 use ofm_config::ConfigPaths;
 use ofm_core::{CancelToken, Entry, EntryKind, Location, cmd};
-use ofm_search::{
-    Hit, SearchEvent, SearchHandle, SearchProgress, SearchSummary, SearchWarning,
-};
+use ofm_search::{Hit, SearchEvent, SearchHandle, SearchProgress, SearchSummary, SearchWarning};
 use ofm_testkit::tree::{FileSpec, TreeSpec};
 
 fn pump_until(what: &str, mut done: impl FnMut() -> bool) {
@@ -38,15 +36,6 @@ fn pump_until(what: &str, mut done: impl FnMut() -> bool) {
             start.elapsed() < Duration::from_secs(20),
             "timed out: {what}"
         );
-        ctx.iteration(false);
-        std::thread::sleep(Duration::from_millis(2));
-    }
-}
-
-fn pump_for(d: Duration) {
-    let ctx = glib::MainContext::default();
-    let end = Instant::now() + d;
-    while Instant::now() < end {
         ctx.iteration(false);
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -66,6 +55,16 @@ mod tempfile_dir {
 }
 
 fn setup(app_id: &str) -> Option<Env> {
+    setup_themed(app_id, None)
+}
+
+fn setup_themed(app_id: &str, theme: Option<&str>) -> Option<Env> {
+    // SAFETY: set before GTK starts and before any other thread exists (single test).
+    unsafe {
+        std::env::set_var("GSK_RENDERER", "cairo");
+        std::env::set_var("GDK_BACKEND", "x11");
+        std::env::remove_var("WAYLAND_DISPLAY");
+    }
     if gtk::init().is_err() {
         eprintln!("no display: skipping");
         return None;
@@ -87,13 +86,22 @@ fn setup(app_id: &str) -> Option<Env> {
         .build_temp()
         .unwrap();
     let cfg = TreeSpec::new().build_temp().unwrap();
+    if let Some(t) = theme {
+        std::fs::create_dir_all(cfg.path().join("config")).unwrap();
+        std::fs::write(
+            cfg.path().join("config/config.toml"),
+            format!("[theme]\nname = \"{t}\"\n"),
+        )
+        .unwrap();
+    }
     let ctx = build_context(AppInit {
         paths: ConfigPaths::with_dirs(cfg.path().join("config"), cfg.path().join("state")),
         left: Location::Local(left.path().to_owned()),
         right: Location::Local(right.path().to_owned()),
     });
     let app = adw::Application::builder().application_id(app_id).build();
-    app.register(gtk::gio::Cancellable::NONE).expect("register app");
+    app.register(gtk::gio::Cancellable::NONE)
+        .expect("register app");
     let win = MainWindow::new(&app, &ctx);
     ctx.start_loading();
     pump_until("panels loaded", || {
@@ -142,7 +150,11 @@ struct Fake {
 fn starter(fake: Fake) -> Starter {
     let fake = Arc::new(std::sync::Mutex::new(Some(fake)));
     Arc::new(move |_query, cancel: CancelToken| {
-        let fake = fake.lock().unwrap().take().expect("fake engine started once");
+        let fake = fake
+            .lock()
+            .unwrap()
+            .take()
+            .expect("fake engine started once");
         let (tx, rx) = async_channel::bounded(64);
         let token = cancel.clone();
         std::thread::spawn(move || {
@@ -196,7 +208,10 @@ fn starter(fake: Fake) -> Starter {
 fn open_find(env: &Env, fake: Fake) -> Rc<FindWindow> {
     state(&env.ctx).unwrap().set_starter(starter(fake));
     env.ctx.execute(cmd::SEARCH_FIND);
-    let w = state(&env.ctx).unwrap().window().expect("find window opened");
+    let w = state(&env.ctx)
+        .unwrap()
+        .window()
+        .expect("find window opened");
     // Roots default to the active panel's directory.
     assert_eq!(w.resolved_roots(), [env.left.path().to_owned()]);
     w
@@ -215,7 +230,6 @@ fn three_hits(env: &Env) -> Vec<Vec<Hit>> {
     ]]
 }
 
-#[test]
 fn alt_f7_opens_one_window_and_results_stream_in() {
     let Some(env) = setup("io.github.mscoder.OfmFindCtx1") else {
         return;
@@ -244,7 +258,6 @@ fn alt_f7_opens_one_window_and_results_stream_in() {
     assert_eq!(w.run().warnings().len(), 2);
 }
 
-#[test]
 fn invalid_fields_are_reported_and_nothing_starts() {
     let Some(env) = setup("io.github.mscoder.OfmFindCtx2") else {
         return;
@@ -271,7 +284,6 @@ fn invalid_fields_are_reported_and_nothing_starts() {
     assert_eq!(w.run().state(), RunState::Idle);
 }
 
-#[test]
 fn updates_are_rate_limited_and_nothing_is_lost() {
     let Some(env) = setup("io.github.mscoder.OfmFindCtx3") else {
         return;
@@ -311,7 +323,6 @@ fn updates_are_rate_limited_and_nothing_is_lost() {
     );
 }
 
-#[test]
 fn stop_keeps_results_and_ends_the_engine() {
     let Some(env) = setup("io.github.mscoder.OfmFindCtx4") else {
         return;
@@ -349,7 +360,6 @@ fn stop_keeps_results_and_ends_the_engine() {
     assert!(state(&env.ctx).unwrap().window().is_none());
 }
 
-#[test]
 fn closing_the_window_cancels_the_search() {
     let Some(env) = setup("io.github.mscoder.OfmFindCtx5") else {
         return;
@@ -375,7 +385,6 @@ fn closing_the_window_cancels_the_search() {
     });
 }
 
-#[test]
 fn go_to_puts_the_cursor_on_the_file_in_the_active_panel() {
     let Some(env) = setup("io.github.mscoder.OfmFindCtx6") else {
         return;
@@ -408,7 +417,6 @@ fn go_to_puts_the_cursor_on_the_file_in_the_active_panel() {
     });
 }
 
-#[test]
 fn panelize_shows_a_list_panel_and_file_ops_map_to_real_paths() {
     let Some(env) = setup("io.github.mscoder.OfmFindCtx7") else {
         return;
@@ -450,7 +458,11 @@ fn panelize_shows_a_list_panel_and_file_ops_map_to_real_paths() {
     );
     // Rows are named relative to the search root.
     let names: Vec<String> = (0..ctrl.model().visible_len())
-        .filter_map(|i| ctrl.model().visible(i).map(|e| e.name.to_string_lossy().into_owned()))
+        .filter_map(|i| {
+            ctrl.model()
+                .visible(i)
+                .map(|e| e.name.to_string_lossy().into_owned())
+        })
         .collect();
     assert!(names.contains(&"sub/c.txt".to_owned()), "{names:?}");
 
@@ -463,7 +475,10 @@ fn panelize_shows_a_list_panel_and_file_ops_map_to_real_paths() {
     });
     let t = Targets::from_active(&env.ctx).expect("targets");
     let sources = t.sources();
-    assert_eq!(sources, [Location::Local(env.left.path().join("sub/c.txt"))]);
+    assert_eq!(
+        sources,
+        [Location::Local(env.left.path().join("sub/c.txt"))]
+    );
 
     // Backspace (go up) returns to the directory the panel came from.
     env.ctx.execute(cmd::PANEL_GO_UP);
@@ -474,7 +489,6 @@ fn panelize_shows_a_list_panel_and_file_ops_map_to_real_paths() {
     assert_eq!(ctrl.services().lists.len(), 1); // still reachable through history (forward)
 }
 
-#[test]
 fn panelize_selected_rows_only_when_several_are_selected() {
     let Some(env) = setup("io.github.mscoder.OfmFindCtx8") else {
         return;
@@ -499,5 +513,96 @@ fn panelize_selected_rows_only_when_several_are_selected() {
             && ctrl.state() == LoadState::Idle
             && ctrl.model().total_len() == 2
     });
-    let _ = (RIGHT, PathBuf::new());
+}
+
+/// Screenshots of the Find window with results, in every theme (`target/screenshots/find-*.png`).
+fn screenshots() {
+    if std::process::Command::new("import")
+        .arg("-version")
+        .output()
+        .is_err()
+    {
+        eprintln!("no ImageMagick: skipping screenshots");
+        return;
+    }
+    for (i, theme) in ["far-blue", "commander-light", "adwaita"]
+        .iter()
+        .enumerate()
+    {
+        let Some(env) = setup_themed(&format!("io.github.mscoder.OfmFindShot{i}"), Some(theme))
+        else {
+            return;
+        };
+        env._win.present();
+        let l = env.left.path().to_owned();
+        let mut hits = Vec::new();
+        for f in ["a.txt", "b.txt", "sub/c.txt", "sub/d.txt"] {
+            let mut h = hit_for(&l.join(f));
+            if f.starts_with("sub") {
+                h.content = Some(ofm_search::ContentHit {
+                    first: ofm_search::ContentMatch {
+                        line: 12,
+                        byte_offset: 100,
+                        snippet: "let needle = find(\"needle\");".into(),
+                        snippet_match: 4..10,
+                    },
+                    count: 2,
+                });
+            }
+            hits.push(h);
+        }
+        let w = open_find(
+            &env,
+            Fake {
+                batches: vec![hits],
+                delay: Duration::ZERO,
+                warnings: 1,
+                hold: false,
+                ended: Arc::default(),
+            },
+        );
+        let mut f = w.form();
+        f.text = "needle".into();
+        f.mask = "*.txt | *.bak".into();
+        w.set_form(&f);
+        w.start();
+        pump_until("finished", || finished(&w));
+        w.select_rows(&[2]);
+        // Let GTK map and paint the windows.
+        let end = Instant::now() + Duration::from_millis(800);
+        while Instant::now() < end {
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots");
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = std::process::Command::new("import")
+            .args(["-window", "root"])
+            .arg(dir.join(format!("find-{theme}.png")))
+            .status();
+        w.window.close();
+    }
+}
+
+/// GTK may only be initialised on one thread, so all scenarios run from one test.
+#[test]
+fn find_scenarios() {
+    eprintln!("== alt_f7_opens_one_window_and_results_stream_in");
+    alt_f7_opens_one_window_and_results_stream_in();
+    eprintln!("== invalid_fields_are_reported_and_nothing_starts");
+    invalid_fields_are_reported_and_nothing_starts();
+    eprintln!("== updates_are_rate_limited_and_nothing_is_lost");
+    updates_are_rate_limited_and_nothing_is_lost();
+    eprintln!("== stop_keeps_results_and_ends_the_engine");
+    stop_keeps_results_and_ends_the_engine();
+    eprintln!("== closing_the_window_cancels_the_search");
+    closing_the_window_cancels_the_search();
+    eprintln!("== go_to_puts_the_cursor_on_the_file_in_the_active_panel");
+    go_to_puts_the_cursor_on_the_file_in_the_active_panel();
+    eprintln!("== panelize_shows_a_list_panel_and_file_ops_map_to_real_paths");
+    panelize_shows_a_list_panel_and_file_ops_map_to_real_paths();
+    eprintln!("== panelize_selected_rows_only_when_several_are_selected");
+    panelize_selected_rows_only_when_several_are_selected();
+    eprintln!("== screenshots");
+    screenshots();
 }

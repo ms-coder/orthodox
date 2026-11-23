@@ -364,6 +364,7 @@ impl FindWindow {
         column.append(&grid);
         column.append(&notice);
         column.append(&form_buttons);
+        column.append(&row_label(tr("Res_ults:"), &results));
         column.append(&frame);
         column.append(&status);
         column.append(&actions_row);
@@ -682,16 +683,16 @@ impl FindWindow {
         };
         self.w.status.set_text(&text);
         let active = state.is_active();
-        self.w.start.set_label(if active {
-            tr("Stop")
-        } else {
-            tr("Start")
-        });
-        self.w.start.update_property(&[gtk::accessible::Property::Label(if active {
-            tr("Stop")
-        } else {
-            tr("Start")
-        })]);
+        self.w
+            .start
+            .set_label(if active { tr("Stop") } else { tr("Start") });
+        self.w
+            .start
+            .update_property(&[gtk::accessible::Property::Label(if active {
+                tr("Stop")
+            } else {
+                tr("Start")
+            })]);
         self.window.set_title(Some(&if stats.found > 0 {
             format!("{} - {}", tr("Find files"), stats.found)
         } else {
@@ -739,7 +740,9 @@ impl FindWindow {
     /// Positions of the selected rows, ascending.
     pub fn selected_indices(&self) -> Vec<usize> {
         let bits = self.selection.selection();
-        (0..bits.size()).map(|i| bits.nth(i as u32) as usize).collect()
+        (0..bits.size())
+            .map(|i| bits.nth(i as u32) as usize)
+            .collect()
     }
 
     /// Select exactly `rows` (tests; the user uses arrows, Shift and Ctrl+Space).
@@ -748,8 +751,10 @@ impl FindWindow {
         for r in rows {
             bits.add(u32::try_from(*r).unwrap_or(u32::MAX));
         }
-        self.selection
-            .set_selection(&bits, &gtk::Bitset::new_range(0, self.run.model().len() as u32));
+        self.selection.set_selection(
+            &bits,
+            &gtk::Bitset::new_range(0, self.run.model().len() as u32),
+        );
     }
 
     /// The row the single-row actions use: the first selected one, else the first row.
@@ -851,22 +856,27 @@ impl FindWindow {
         let dialog = gtk::FileDialog::new();
         dialog.set_title(tr("Search in"));
         let weak = Rc::downgrade(self);
-        dialog.select_folder(Some(&self.window), gtk::gio::Cancellable::NONE, move |res| {
-            if let (Some(t), Ok(file)) = (weak.upgrade(), res)
-                && let Some(path) = file.path()
-            {
-                t.w.roots.set_text(&path.to_string_lossy());
-                t.w.roots.grab_focus();
-                t.w.roots.set_position(-1);
-            }
-        });
+        dialog.select_folder(
+            Some(&self.window),
+            gtk::gio::Cancellable::NONE,
+            move |res| {
+                if let (Some(t), Ok(file)) = (weak.upgrade(), res)
+                    && let Some(path) = file.path()
+                {
+                    t.w.roots.set_text(&path.to_string_lossy());
+                    t.w.roots.grab_focus();
+                    t.w.roots.set_position(-1);
+                }
+            },
+        );
     }
 
     // ---- keys -----------------------------------------------------------------------------------
 
     fn focus_in_results(&self) -> bool {
-        gtk::prelude::RootExt::focus(&self.window)
-            .is_some_and(|f| f == *self.results.upcast_ref::<gtk::Widget>() || f.is_ancestor(&self.results))
+        gtk::prelude::RootExt::focus(&self.window).is_some_and(|f| {
+            f == *self.results.upcast_ref::<gtk::Widget>() || f.is_ancestor(&self.results)
+        })
     }
 
     /// Enter (`dialog.ok`): press the focused button, "go to" in the results, else start.
@@ -951,11 +961,11 @@ type CellFn = fn(&rows::Cells) -> &str;
 
 fn add_columns(view: &gtk::ColumnView, model: &HitModel) {
     let cols: [(&str, CellFn, i32, bool, f32); 5] = [
-        (tr("Name"), |c| &c.name, 220, false, 0.0),
-        (tr("Folder"), |c| &c.folder, 320, true, 0.0),
-        (tr("Size"), |c| &c.size, 80, false, 1.0),
-        (tr("Modified"), |c| &c.mtime, 140, false, 0.0),
-        (tr("Match"), |c| &c.matched, 260, true, 0.0),
+        (tr("Name"), |c| &c.name, 200, false, 0.0),
+        (tr("Folder"), |c| &c.folder, 240, true, 0.0),
+        (tr("Size"), |c| &c.size, 70, false, 1.0),
+        (tr("Modified"), |c| &c.mtime, 130, false, 0.0),
+        (tr("Match"), |c| &c.matched, 200, true, 0.0),
     ];
     for (title, text, width, expand, xalign) in cols {
         let factory = gtk::SignalListItemFactory::new();

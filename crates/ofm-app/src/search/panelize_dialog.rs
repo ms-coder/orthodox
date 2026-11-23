@@ -42,9 +42,7 @@ pub fn open(ctx: &Rc<AppContext>) {
     )));
     let nul = gtk::CheckButton::with_mnemonic(tr("_NUL-separated output (find -print0)"));
     nul.set_widget_name("ofm-panelize-nul");
-    nul.update_property(&[gtk::accessible::Property::Label(tr(
-        "NUL-separated output",
-    ))]);
+    nul.update_property(&[gtk::accessible::Property::Label(tr("NUL-separated output"))]);
     column.append(&nul);
     crate::dialogs::find::attach_history(&entry, Rc::new(history));
     let cancel = ui::button(tr("Cancel"));
@@ -160,12 +158,19 @@ fn finish(ctx: &Rc<AppContext>, result: Result<panelize::CommandDone, String>) {
         panelize::show_list(ctx, done.list);
         super::notify(ctx, &text);
     }
+    let mut details = String::new();
     if failed && !stderr.is_empty() {
-        ui::message(
-            ctx,
-            tr("Panelize command"),
-            &format!("{}\n\n{stderr}", tr("The command reported errors:")),
-        );
+        details.push_str(&format!("{}\n{stderr}", tr("The command reported errors:")));
+    }
+    if !done.warnings.is_empty() {
+        let shown: Vec<&str> = done.warnings.iter().take(5).map(String::as_str).collect();
+        if !details.is_empty() {
+            details.push_str("\n\n");
+        }
+        details.push_str(&format!("{}\n{}", tr("Warnings:"), shown.join("\n")));
+    }
+    if !details.is_empty() {
+        ui::message(ctx, tr("Panelize command"), &details);
     }
 }
 

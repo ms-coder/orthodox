@@ -267,9 +267,8 @@ fn days_in_month(y: i32, m: u32) -> u32 {
 
 /// `YYYY-MM-DD`, `YYYY/MM/DD` or `DD.MM.YYYY`.
 fn parse_date_part(s: &str) -> Option<(i32, u32, u32)> {
-    let nums = |sep: char| -> Option<Vec<u32>> {
-        s.split(sep).map(|p| p.parse::<u32>().ok()).collect()
-    };
+    let nums =
+        |sep: char| -> Option<Vec<u32>> { s.split(sep).map(|p| p.parse::<u32>().ok()).collect() };
     let (y, m, d) = if s.contains('.') {
         let n = nums('.')?;
         (*n.get(2)?, *n.get(1)?, *n.first()?)
@@ -547,12 +546,14 @@ mod tests {
 
     #[test]
     fn mask_lists_respect_braces_and_exclusions() {
-        assert_eq!(split_masks("*.rs; *.toml,*.{jpg,png} ,"), [
-            "*.rs",
-            "*.toml",
-            "*.{jpg,png}"
-        ]);
-        assert_eq!(mask_expression("*.rs;*.toml | *.bak, target*"), "*.rs;*.toml;!*.bak;!target*");
+        assert_eq!(
+            split_masks("*.rs; *.toml,*.{jpg,png} ,"),
+            ["*.rs", "*.toml", "*.{jpg,png}"]
+        );
+        assert_eq!(
+            mask_expression("*.rs;*.toml | *.bak, target*"),
+            "*.rs;*.toml;!*.bak;!target*"
+        );
         assert_eq!(mask_expression("*|"), "*");
         assert_eq!(mask_expression("| *.tmp"), "!*.tmp");
         assert_eq!(mask_expression("  "), "");
@@ -600,9 +601,18 @@ mod tests {
         assert_eq!(w("2026/11/30", true), Some(at(2026, 12, 1, 0, 0, 0) - 1));
         assert_eq!(w("2026-12-31", true), Some(at(2027, 1, 1, 0, 0, 0) - 1));
         assert_eq!(w("02.11.2026", false), Some(at(2026, 11, 2, 0, 0, 0)));
-        assert_eq!(w("2026-11-02 14:30", false), Some(at(2026, 11, 2, 14, 30, 0)));
-        assert_eq!(w("2026-11-02T14:30:15", false), Some(at(2026, 11, 2, 14, 30, 15)));
-        assert_eq!(w("2026-11-02 14:30", true), Some(at(2026, 11, 2, 14, 31, 0) - 1));
+        assert_eq!(
+            w("2026-11-02 14:30", false),
+            Some(at(2026, 11, 2, 14, 30, 0))
+        );
+        assert_eq!(
+            w("2026-11-02T14:30:15", false),
+            Some(at(2026, 11, 2, 14, 30, 15))
+        );
+        assert_eq!(
+            w("2026-11-02 14:30", true),
+            Some(at(2026, 11, 2, 14, 31, 0) - 1)
+        );
         assert_eq!(w("today", false), Some(at(2026, 11, 22, 0, 0, 0)));
         assert_eq!(w("yesterday", false), Some(at(2026, 11, 21, 0, 0, 0)));
         assert_eq!(w("now", false), Some(at(2026, 11, 22, 12, 0, 0)));

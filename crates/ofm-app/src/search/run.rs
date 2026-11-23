@@ -215,7 +215,11 @@ impl SearchRun {
         );
     }
 
-    fn engine_started(self: &Rc<Self>, generation: u64, started: Result<SearchHandle, SearchError>) {
+    fn engine_started(
+        self: &Rc<Self>,
+        generation: u64,
+        started: Result<SearchHandle, SearchError>,
+    ) {
         let handle = match started {
             Ok(h) => h,
             Err(e) => {
