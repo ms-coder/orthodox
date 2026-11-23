@@ -287,9 +287,17 @@ impl QuickView {
             });
             return;
         };
+        // Archive entries are previewed from a bounded private extraction (see below); the path
+        // is then only the identity of the request.
+        let mut archive_src: Option<(std::path::PathBuf, std::path::PathBuf)> = None;
         let path = match (&entry.real_path, dir.join(&entry.name)) {
             (Some(p), _) => p.clone(),
             (None, Location::Local(p)) => p,
+            (None, Location::Archive { archive, inner }) => {
+                let key = archive.join(&inner);
+                archive_src = Some((archive, inner));
+                key
+            }
             (None, _) => {
                 self.show_message(&pane, tr("No preview for the contents of an archive"));
                 return;
@@ -341,7 +349,38 @@ impl QuickView {
             title,
         });
 
-        if target.is_dir() && target.name != ".." {
+        if target.is_dir()
+            && target.name != ".."
+            && let Some((archive, inner)) = archive_src.clone()
+        {
+            // Folder in an archive: totals from the index, nothing is extracted.
+            pane.set_content(dir_content(
+                &job.target,
+                &job.fmt,
+                &job.title,
+                DirState::Counting { files: 0, bytes: 0 },
+            ));
+            let service = ctx.services.archives.clone();
+            let rx = wiring::run_on_pool(&ctx.services.pool, move |tx| {
+                let _quiet = crate::dialogs::password::quiet();
+                let update = match service.vfs().index(&archive, &cancel) {
+                    Ok(index) => {
+                        let t = crate::panel::archive_extract::totals_of(&index, &inner);
+                        Update::DirDone(SizeTotals {
+                            bytes: t.bytes,
+                            disk_bytes: t.bytes,
+                            files: t.files,
+                            dirs: t.dirs + 1,
+                        })
+                    }
+                    Err(e) => Update::DirFailed(crate::panel::archive::error_text(&e)),
+                };
+                if !cancel.is_cancelled() {
+                    let _ = tx.send_blocking(Msg { generation, update });
+                }
+            });
+            self.attach(rx, job);
+        } else if target.is_dir() && target.name != ".." {
             pane.set_content(dir_content(
                 &job.target,
                 &job.fmt,
@@ -359,8 +398,31 @@ impl QuickView {
             }
             self.attach(rx, job);
         } else {
+            let service = ctx.services.archives.clone();
             let rx = wiring::run_on_pool(&ctx.services.pool, move |tx| {
+                let mut target = target;
+                let mut temp = None;
+                if let Some((archive, inner)) = archive_src {
+                    match archive_target(&service, &archive, &inner, &target, &fmt, &cancel) {
+                        Ok((t, dir)) => {
+                            target = t;
+                            temp = Some(dir);
+                        }
+                        Err(preview) => {
+                            if !cancel.is_cancelled() {
+                                let _ = tx.send_blocking(Msg {
+                                    generation,
+                                    update: Update::Ready(preview),
+                                });
+                            }
+                            return;
+                        }
+                    }
+                }
                 let preview = worker::build(&target, view, &fmt, &cancel);
+                if let Some(dir) = temp {
+                    service.remove_temp(&dir);
+                }
                 if cancel.is_cancelled() {
                     return;
                 }
@@ -399,6 +461,65 @@ impl QuickView {
             },
             || {},
         );
+    }
+}
+
+/// Largest archive entry extracted for a text preview (the pane shows a screenful).
+const ARCHIVE_TEXT_LIMIT: u64 = 1 << 20;
+/// Largest image extracted for a preview.
+const ARCHIVE_IMAGE_LIMIT: u64 = 8 << 20;
+
+/// Extract (a bounded part of) an archive entry for [`worker::build`]. `Ok` = the target now
+/// pointing at the temp file and its directory (the caller deletes it); `Err` = the preview to
+/// show instead (info table for what is not worth extracting, never a password prompt).
+fn archive_target(
+    service: &crate::panel::archive::ArchiveService,
+    archive: &std::path::Path,
+    inner: &std::path::Path,
+    t: &Target,
+    fmt: &StatusFormat,
+    cancel: &CancelToken,
+) -> Result<(Target, std::path::PathBuf), Preview> {
+    let info = |note: &str| Preview::Info {
+        rows: worker::info_rows(t, tr("Archive entry").to_owned(), fmt),
+        note: Some(note.to_owned()),
+    };
+    if !matches!(t.kind, ofm_core::EntryKind::File) {
+        return Err(info(tr("Not a regular file")));
+    }
+    let image = worker::is_image_name(&t.name);
+    if image && t.size > ARCHIVE_IMAGE_LIMIT {
+        return Err(info(tr("Too large to preview inside an archive")));
+    }
+    let limit = if image {
+        ARCHIVE_IMAGE_LIMIT
+    } else {
+        ARCHIVE_TEXT_LIMIT
+    };
+    match crate::panel::archive_extract::extract_entry(
+        service,
+        archive,
+        inner,
+        Some(limit),
+        true,
+        cancel,
+    ) {
+        Ok(x) => {
+            let mut target = t.clone();
+            target.path = x.file;
+            if x.truncated {
+                target.size = limit.min(t.size);
+            }
+            Ok((target, x.dir))
+        }
+        Err(crate::panel::archive_extract::ExtractFail::Cancelled) => {
+            Err(Preview::Message(String::new()))
+        }
+        Err(crate::panel::archive_extract::ExtractFail::Archive(
+            ofm_vfs::archive::ArchiveError::NeedsPassword(_)
+            | ofm_vfs::archive::ArchiveError::WrongPassword(_),
+        )) => Err(info(tr("Encrypted: open it (F3) to enter the password"))),
+        Err(e) => Err(info(&e.text())),
     }
 }
 

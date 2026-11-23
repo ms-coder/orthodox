@@ -30,6 +30,7 @@ pub fn marker(e: &Entry) -> char {
         EntryKind::Symlink { target: None } => '!',
         EntryKind::Symlink { .. } => '@',
         EntryKind::Other => '=',
+        EntryKind::File if e.mode & crate::panel::archive::ARCHIVE_ENCRYPTED != 0 => '\u{1F512}',
         EntryKind::File if e.mode & 0o111 != 0 => '*',
         EntryKind::File => ' ',
     }
@@ -202,6 +203,18 @@ mod tests {
         assert_eq!(name_cell(&up), " ..");
         assert_eq!(name_cell(&dir), "/sub");
         assert_eq!(time_cell(&up, "%Y"), "");
+    }
+
+    #[test]
+    fn encrypted_archive_entries_get_a_lock() {
+        let locked = file(
+            "s.txt",
+            0o100_644 | crate::panel::archive::ARCHIVE_ENCRYPTED,
+        );
+        assert_eq!(marker(&locked), '\u{1F512}');
+        assert_eq!(marker(&file("p.txt", 0o100_644)), ' ');
+        // The flag is above the permission bits: the mode string is unaffected.
+        assert_eq!(mode_string(&locked), mode_string(&file("p.txt", 0o100_644)));
     }
 
     #[test]
