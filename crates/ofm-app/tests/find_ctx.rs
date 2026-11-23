@@ -515,6 +515,54 @@ fn panelize_selected_rows_only_when_several_are_selected() {
     });
 }
 
+/// F3: the viewer opens on the hit's file, and for a content hit it scrolls down to the match
+/// (the Find window has no start-offset API, so `actions::view` polls until the document is in).
+fn f3_opens_the_viewer_and_scrolls_a_content_hit_to_its_match() {
+    let Some(env) = setup("io.github.mscoder.OfmFindCtx9") else {
+        return;
+    };
+    // A tall file: the match sits far below the first screen, so only a real jump scrolls.
+    let path = env.left.path().join("tall.txt");
+    let mut body = String::new();
+    for i in 0..2000u32 {
+        body.push_str(&format!("{i:06} padding padding padding\n"));
+    }
+    let byte_offset = body.len() as u64;
+    body.push_str("the needle line\n");
+    std::fs::write(&path, body).unwrap();
+    let mut hit = hit_for(&path);
+    hit.content = Some(ofm_search::ContentHit {
+        first: ofm_search::ContentMatch {
+            line: 2001,
+            byte_offset,
+            snippet: "the needle line".into(),
+            snippet_match: 4..10,
+        },
+        count: 1,
+    });
+    let w = open_find(
+        &env,
+        Fake {
+            batches: vec![vec![hit]],
+            delay: Duration::ZERO,
+            warnings: 0,
+            hold: false,
+            ended: Arc::default(),
+        },
+    );
+    w.start();
+    pump_until("finished", || finished(&w));
+    w.select_rows(&[0]);
+    w.view_selected(); // F3
+    let Some(session) = ofm_app::viewer::current(&env.ctx) else {
+        panic!("F3 did not open a viewer");
+    };
+    pump_until("viewer scrolled to the match", || session.top() > 0);
+    // A plain hit (no content) opens the viewer at the top.
+    w.select_rows(&[0]);
+    assert!(session.top() > 0);
+}
+
 /// Screenshots of the Find window with results, in every theme (`target/screenshots/find-*.png`).
 fn screenshots() {
     if std::process::Command::new("import")
@@ -603,6 +651,8 @@ fn find_scenarios() {
     panelize_shows_a_list_panel_and_file_ops_map_to_real_paths();
     eprintln!("== panelize_selected_rows_only_when_several_are_selected");
     panelize_selected_rows_only_when_several_are_selected();
+    eprintln!("== f3_opens_the_viewer_and_scrolls_a_content_hit_to_its_match");
+    f3_opens_the_viewer_and_scrolls_a_content_hit_to_its_match();
     eprintln!("== screenshots");
     screenshots();
 }
