@@ -806,7 +806,7 @@ fn dropping_the_receiver_stops_the_search() {
 // ------------------------------------------------------------------- archives
 
 #[test]
-fn stub_archive_backend_warns_once() {
+fn corrupt_archives_warn_for_each_archive() {
     let dir = tempfile::tempdir().unwrap();
     for name in ["a.zip", "b.zip", "c.zip"] {
         let mut bytes = Vec::new();
@@ -818,16 +818,20 @@ fn stub_archive_backend_warns_once() {
     let mut q = query_for(dir.path());
     q.search_archives = true;
     let r = run(q);
-    // The archives themselves are still name hits; the backends are stubs, so exactly one
-    // warning goes out and the plain file still works.
-    assert!(r.names().contains(&"a.zip".to_owned()));
+    // The archives themselves are still name hits, and the plain file still works. With real
+    // backends, each malformed archive gets its own corruption warning.
+    for name in ["a.zip", "b.zip", "c.zip"] {
+        assert!(r.names().contains(&name.to_owned()));
+        assert!(
+            r.warnings.iter().any(|w| {
+                w.path == dir.path().join(name) && w.message.contains("corrupt archive")
+            }),
+            "missing corruption warning for {name}: {:?}",
+            r.warnings
+        );
+    }
     assert!(r.names().contains(&"plain.txt".to_owned()));
-    let archive_warnings: Vec<_> = r
-        .warnings
-        .iter()
-        .filter(|w| w.message.contains("not available yet"))
-        .collect();
-    assert_eq!(archive_warnings.len(), 1, "warnings: {:?}", r.warnings);
+    assert_eq!(r.warnings.len(), 3, "warnings: {:?}", r.warnings);
 }
 
 #[test]
