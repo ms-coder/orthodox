@@ -14,7 +14,9 @@
 //! while the rest of the menu is kept.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ofm_core::mask::{Mask, MaskOpts};
 use ofm_core::menu_expand;
@@ -24,6 +26,9 @@ use crate::defaults;
 use crate::error::{ConfigError, Warning};
 use crate::io;
 use crate::paths::ConfigPaths;
+
+/// Fresh temp names for the default-menu installation (see [`write_temp`]).
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// File name of a per-directory menu.
 pub const LOCAL_MENU_FILE: &str = ".ofm-menu.toml";
@@ -116,12 +121,36 @@ fn fallback(file: PathBuf, message: String) -> (UserMenu, Vec<Warning>) {
     )
 }
 
+/// How the freshly written temp file is moved to its final name without ever replacing an
+/// existing one. Production starts at [`Publish::HardLink`] and walks down the chain on
+/// filesystems that lack support (finding 5); tests force a specific layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Publish {
+    /// `link(2)`: atomic no-clobber wherever hard links exist.
+    HardLink,
+    /// `renameat2(2)` with `RENAME_NOREPLACE`: same guarantee, different primitive.
+    RenameNoReplace,
+    /// `open(2)` with `O_EXCL` on the final name: works everywhere (FAT, FUSE), but the
+    /// file already exists while it is written, so a reader in that window sees an
+    /// incomplete menu — a tiny, documented compromise. An existing file is still never
+    /// touched.
+    CreateNew,
+}
+
 /// Create the global `menu.toml` with the built-in defaults, but only when it does not
 /// exist yet (first use). Returns whether the file was created; an existing file — a user's
-/// own menu or leftovers of a crashed write — is never touched. Publication goes through
-/// `link(2)`, which fails atomically when the target already exists, so not even a race
-/// between two starting instances can overwrite anything.
+/// own menu or leftovers of a crashed write — is never touched. Publication prefers
+/// `link(2)` (fails atomically when the target already exists, so not even a race between
+/// two starting instances can overwrite anything) and degrades on filesystems without hard
+/// links (FAT, some FUSE mounts) through a no-clobber rename to `O_EXCL` on the final name;
+/// see [`Publish`].
 pub fn install_default_global(paths: &ConfigPaths) -> Result<bool, ConfigError> {
+    install_with(paths, Publish::HardLink)
+}
+
+/// [`install_default_global`] starting publication at `first` — the entry point that lets
+/// tests force the hard-link-free layers.
+fn install_with(paths: &ConfigPaths, first: Publish) -> Result<bool, ConfigError> {
     let file = paths.menu_file();
     let dir = match file.parent() {
         Some(d) if !d.as_os_str().is_empty() => d,
@@ -131,31 +160,295 @@ pub fn install_default_global(paths: &ConfigPaths) -> Result<bool, ConfigError> 
         path: dir.to_path_buf(),
         source: e,
     })?;
-    let mut tmp = std::ffi::OsString::from(".");
-    tmp.push(file.file_name().unwrap_or_default());
-    tmp.push(format!(".default.{}", std::process::id()));
-    let tmp = dir.join(tmp);
-    let result = (|| -> Result<bool, ConfigError> {
-        std::fs::write(&tmp, defaults::MENU).map_err(|e| ConfigError::Io {
-            path: tmp.clone(),
-            source: e,
-        })?;
-        match std::fs::hard_link(&tmp, &file) {
-            Ok(()) => Ok(true),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-            Err(e) => Err(ConfigError::Io {
-                path: file.clone(),
-                source: e,
-            }),
-        }
-    })();
+    let tmp = write_temp(dir, &file)?;
+    let result = publish(&tmp, &file, first);
+    // No-op once the temp was linked/renamed away; cleans up after a failed publication.
     let _ = std::fs::remove_file(&tmp);
     result
+}
+
+/// Write the default menu to a fresh `.<name>.default.<pid>.<n>` temp file in `dir`
+/// (`create_new` + fsync). A stale leftover that already owns the name (recycled pid) is
+/// removed and retried once; the name embeds our pid, so removing it cannot hit another
+/// running instance.
+fn write_temp(dir: &Path, file: &Path) -> Result<PathBuf, ConfigError> {
+    for _ in 0..2 {
+        let mut name = std::ffi::OsString::from(".");
+        name.push(file.file_name().unwrap_or_default());
+        name.push(format!(
+            ".default.{}.{}",
+            std::process::id(),
+            TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let tmp = dir.join(name);
+        let wrote = (|| -> std::io::Result<()> {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp)?;
+            f.write_all(defaults::MENU.as_bytes())?;
+            f.sync_all()
+        })();
+        match wrote {
+            Ok(()) => return Ok(tmp),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = std::fs::remove_file(&tmp);
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(ConfigError::Io {
+                    path: file.to_path_buf(),
+                    source: e,
+                });
+            }
+        }
+    }
+    Err(ConfigError::Io {
+        path: dir.to_path_buf(),
+        source: std::io::Error::other("the default-menu temp name is repeatedly taken"),
+    })
+}
+
+/// Publish `tmp` as `file`, trying the strategies from `first` downwards. Only "not
+/// supported here" errors (FAT refusing hard links, a filesystem without `RENAME_NOREPLACE`)
+/// fall through to the next layer; anything real (permissions, full disk) is returned.
+fn publish(tmp: &Path, file: &Path, first: Publish) -> Result<bool, ConfigError> {
+    let chain: &[Publish] = match first {
+        Publish::HardLink => &[
+            Publish::HardLink,
+            Publish::RenameNoReplace,
+            Publish::CreateNew,
+        ],
+        Publish::RenameNoReplace => &[Publish::RenameNoReplace, Publish::CreateNew],
+        Publish::CreateNew => &[Publish::CreateNew],
+    };
+    for how in chain {
+        match publish_one(tmp, file, *how) {
+            Ok(created) => return Ok(created),
+            Err(e) if unsupported_for_publication(&e) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    // Invariant: `chain` is never empty, so the loop always returned.
+    unreachable!("publication chain is never empty")
+}
+
+/// One publication attempt; `Ok(false)` = the file already existed and was left alone.
+fn publish_one(tmp: &Path, file: &Path, how: Publish) -> Result<bool, ConfigError> {
+    let io = |e: std::io::Error| ConfigError::Io {
+        path: file.to_path_buf(),
+        source: e,
+    };
+    match how {
+        Publish::HardLink => match std::fs::hard_link(tmp, file) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => Err(io(e)),
+        },
+        Publish::RenameNoReplace => match rename_noreplace(tmp, file) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => Err(io(e)),
+        },
+        Publish::CreateNew => {
+            let mut f = match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(file)
+            {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+                Err(e) => return Err(io(e)),
+            };
+            f.write_all(defaults::MENU.as_bytes())
+                .and_then(|()| f.sync_all())
+                .map_err(io)?;
+            Ok(true)
+        }
+    }
+}
+
+/// Errors that mean "this filesystem/kernel does not have that primitive" (finding 5):
+/// publication degrades to the next layer. Everything else is a real failure.
+fn unsupported_for_publication(err: &ConfigError) -> bool {
+    match err {
+        ConfigError::Io { source, .. } => matches!(
+            source.raw_os_error(),
+            Some(libc::EPERM)
+                | Some(libc::EMLINK)
+                | Some(libc::ENOSYS)
+                | Some(libc::EOPNOTSUPP)
+                | Some(libc::EXDEV)
+                | Some(libc::EINVAL)
+        ),
+        _ => false,
+    }
+}
+
+/// `renameat2(2)` with `RENAME_NOREPLACE`, via the raw syscall (glibc's wrapper post-dates
+/// some setups we support): renames without ever replacing an existing destination.
+#[cfg(unix)]
+fn rename_noreplace(src: &Path, dst: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    // Kernel flag (include/uapi/linux/fs.h); the libc crate does not export it.
+    const RENAME_NOREPLACE: libc::c_ulong = 1;
+    let c_path = |p: &Path| -> std::io::Result<std::ffi::CString> {
+        std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path contains a NUL byte")
+        })
+    };
+    let src = c_path(src)?;
+    let dst = c_path(dst)?;
+    let res = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            src.as_ptr(),
+            libc::AT_FDCWD,
+            dst.as_ptr(),
+            RENAME_NOREPLACE,
+        )
+    };
+    if res == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Platforms without `renameat2` (non-unix only) report `ENOSYS` so publication falls
+/// through to `O_EXCL`.
+#[cfg(not(unix))]
+fn rename_noreplace(_src: &Path, _dst: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::from_raw_os_error(libc::ENOSYS))
 }
 
 /// `dir`/`.ofm-menu.toml`.
 pub fn local_menu_path(dir: &Path) -> PathBuf {
     dir.join(LOCAL_MENU_FILE)
+}
+
+/// Largest `.ofm-menu.toml` we are willing to read (finding 6): the file sits in every
+/// browsed directory and is read on panel updates, so it must stay small.
+const MAX_LOCAL_MENU_BYTES: usize = 256 * 1024;
+
+/// Read a local menu file with a bounded, regular-files-only strategy (finding 6).
+/// `Ok(None)` = the file does not exist. On unix the file is opened with `O_NONBLOCK` (a
+/// FIFO without a writer must not wedge the panel thread), `O_NOFOLLOW` (a symlinked menu
+/// is refused: trust is bound to one canonical file, and following the link would hash
+/// whatever it currently points at) and `O_NOCTTY`; `fstat` on the descriptor then rejects
+/// special files and oversize content before a byte is read, and the read itself stays
+/// capped for the file-grew-in-between case. Every refusal is [`ConfigError::ReadRefused`]
+/// with a message that says what the file is.
+fn read_local_menu_bounded(file: &Path) -> Result<Option<Vec<u8>>, ConfigError> {
+    let refused = |message: String| ConfigError::ReadRefused {
+        path: file.to_path_buf(),
+        message,
+    };
+    let oversize = |len: u64| {
+        refused(format!(
+            "is {len} bytes, larger than the {} KiB limit for local menus; not loaded",
+            MAX_LOCAL_MENU_BYTES / 1024
+        ))
+    };
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_NOCTTY);
+        let f = match opts.open(file) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            // O_NOFOLLOW surfaces a symlink as ELOOP; say what that means.
+            Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+                return Err(refused(
+                    "is a symlink, not a regular file; not loaded".into(),
+                ));
+            }
+            Err(e) => {
+                return Err(ConfigError::Io {
+                    path: file.to_path_buf(),
+                    source: e,
+                });
+            }
+        };
+        let meta = f.metadata().map_err(|e| ConfigError::Io {
+            path: file.to_path_buf(),
+            source: e,
+        })?;
+        if !meta.file_type().is_file() {
+            return Err(refused(format!(
+                "is a {}, not a regular file; not loaded",
+                file_kind(&meta)
+            )));
+        }
+        if meta.len() > MAX_LOCAL_MENU_BYTES as u64 {
+            return Err(oversize(meta.len()));
+        }
+        // The file may grow between fstat and read, so the read is capped as well.
+        let mut bytes = Vec::new();
+        f.take(MAX_LOCAL_MENU_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| ConfigError::Io {
+                path: file.to_path_buf(),
+                source: e,
+            })?;
+        if bytes.len() > MAX_LOCAL_MENU_BYTES {
+            return Err(oversize(bytes.len() as u64));
+        }
+        Ok(Some(bytes))
+    }
+    #[cfg(not(unix))]
+    {
+        // Minimal fallback for non-unix builds (OFM targets Linux): same limits, checked
+        // around a plain read.
+        let meta = match std::fs::metadata(file) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(ConfigError::Io {
+                    path: file.to_path_buf(),
+                    source: e,
+                });
+            }
+        };
+        if !meta.file_type().is_file() {
+            return Err(refused("is not a regular file; not loaded".into()));
+        }
+        if meta.len() > MAX_LOCAL_MENU_BYTES as u64 {
+            return Err(oversize(meta.len()));
+        }
+        let bytes = std::fs::read(file).map_err(|e| ConfigError::Io {
+            path: file.to_path_buf(),
+            source: e,
+        })?;
+        if bytes.len() > MAX_LOCAL_MENU_BYTES {
+            return Err(oversize(bytes.len() as u64));
+        }
+        Ok(Some(bytes))
+    }
+}
+
+/// Human name of a non-regular file's type, for [`ConfigError::ReadRefused`] messages.
+#[cfg(unix)]
+fn file_kind(meta: &std::fs::Metadata) -> &'static str {
+    use std::os::unix::fs::FileTypeExt;
+    let t = meta.file_type();
+    if t.is_fifo() {
+        "FIFO"
+    } else if t.is_socket() {
+        "socket"
+    } else if t.is_dir() {
+        "directory"
+    } else if t.is_char_device() {
+        "character device"
+    } else if t.is_block_device() {
+        "block device"
+    } else {
+        "special file"
+    }
 }
 
 /// Parse local-menu text with entry validation (line information relative to `text`).
@@ -270,20 +563,14 @@ impl TrustStore {
     }
 
     /// Trust state of `dir`'s `.ofm-menu.toml`: [`LocalMenuStatus::Absent`] without a file,
-    /// an I/O error only for real failures (unreadable file, …).
+    /// an I/O error only for real failures (unreadable file, …). The file is read with
+    /// [`read_local_menu_bounded`].
     pub fn local_menu_status(&self, dir: &Path) -> Result<LocalMenuStatus, ConfigError> {
         let file = local_menu_path(dir);
-        let bytes = match std::fs::read(&file) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(LocalMenuStatus::Absent);
-            }
-            Err(e) => {
-                return Err(ConfigError::Io {
-                    path: file,
-                    source: e,
-                });
-            }
-            Ok(bytes) => bytes,
+        let bytes = match read_local_menu_bounded(&file) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return Ok(LocalMenuStatus::Absent),
+            Err(e) => return Err(e),
         };
         let hash = hex(&sha256::digest(&bytes));
         let text = String::from_utf8_lossy(&bytes).into_owned();
@@ -807,6 +1094,26 @@ item = [{ title = "t", command = "oops %q" }]
         write(&file, "version = 1\n");
         assert!(!install_default_global(&paths).unwrap());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "version = 1\n");
+    }
+
+    #[test]
+    fn install_default_global_works_without_hard_link_support() {
+        // FAT / some FUSE mounts refuse hard links (finding 5): forced through the
+        // no-clobber rename and the O_EXCL layers the default menu still installs once,
+        // never overwrites, and leaves no temp files behind.
+        for forced in [Publish::RenameNoReplace, Publish::CreateNew] {
+            let cfg = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let paths = paths_for(cfg.path(), state.path());
+            let file = cfg.path().join("menu.toml");
+            assert!(install_with(&paths, forced).unwrap(), "{forced:?}");
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), defaults::MENU);
+            assert_eq!(std::fs::read_dir(cfg.path()).unwrap().count(), 1);
+            write(&file, "version = 1\n");
+            assert!(!install_with(&paths, forced).unwrap(), "{forced:?}");
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), "version = 1\n");
+            assert_eq!(std::fs::read_dir(cfg.path()).unwrap().count(), 1);
+        }
     }
 
     #[test]

@@ -3,6 +3,8 @@
 //! location, the load generation and navigation history. Views (`FileList`, status line, tab bar)
 //! observe controllers through [`PanelController::changed`]; commands act on controllers.
 
+pub mod archive;
+pub mod archive_extract;
 mod controller;
 mod history;
 mod host;

@@ -20,17 +20,19 @@ use super::password::PasswordProvider;
 use super::reader::ArchiveReader;
 
 pub mod sevenz;
+pub mod stream;
 pub mod tar;
 pub mod zip;
 
-/// Dispatch to the backend for `format`.
-pub fn open(
+/// Dispatch to the backend for `format`. The reader borrows `passwords` (visited lazily for
+/// encrypted entries), hence the `+ 'p` on the trait object.
+pub fn open<'p>(
     format: ArchiveFormat,
     path: &Path,
-    passwords: &dyn PasswordProvider,
+    passwords: &'p dyn PasswordProvider,
     limits: &ArchiveLimits,
     cancel: &CancelToken,
-) -> Result<Box<dyn ArchiveReader>, ArchiveError> {
+) -> Result<Box<dyn ArchiveReader + 'p>, ArchiveError> {
     match format {
         ArchiveFormat::Zip => zip::open(path, passwords, limits, cancel),
         ArchiveFormat::SevenZ => sevenz::open(path, passwords, limits, cancel),

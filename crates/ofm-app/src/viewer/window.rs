@@ -161,6 +161,7 @@ pub fn open(ctx: &Rc<AppContext>, siblings: Vec<PathBuf>, idx: usize) -> Option<
         let (weak_ctx, session2) = (Rc::downgrade(ctx), Rc::clone(&session));
         window.connect_close_request(move |_| {
             session2.shutdown();
+            session2.run_on_close();
             if let Some(ctx) = weak_ctx.upgrade() {
                 ctx.theme.changed.disconnect(theme_id);
                 if let Some(host) = ctx.ext.get::<ViewerHost>() {

@@ -99,15 +99,17 @@ pub fn copy_stream(
 /// worker thread; may take long for big archives, checks `cancel`) and return a reader.
 ///
 /// `passwords` is consulted when the headers are encrypted (7z) or on the first encrypted entry
-/// (zip); wrap it in a `PasswordSource` to remember the accepted password. Errors: `NotAnArchive`
-/// (not a supported format: open the file normally), `Corrupt`, `Unsupported`, `NeedsPassword`,
-/// `WrongPassword`, `LimitExceeded`, `Cancelled`, `Io`.
-pub fn open_archive(
+/// (zip); wrap it in a `PasswordSource` to remember the accepted password. The returned reader
+/// borrows `passwords` (it is asked lazily while streaming encrypted entries), so the provider
+/// must outlive the reader — callers hold their shared `PasswordSource` for the whole operation.
+/// Errors: `NotAnArchive` (not a supported format: open the file normally), `Corrupt`,
+/// `Unsupported`, `NeedsPassword`, `WrongPassword`, `LimitExceeded`, `Cancelled`, `Io`.
+pub fn open_archive<'p>(
     path: &Path,
-    passwords: &dyn PasswordProvider,
+    passwords: &'p dyn PasswordProvider,
     limits: &ArchiveLimits,
     cancel: &CancelToken,
-) -> Result<Box<dyn ArchiveReader>, ArchiveError> {
+) -> Result<Box<dyn ArchiveReader + 'p>, ArchiveError> {
     let format = detect_format(path)?.ok_or_else(|| ArchiveError::NotAnArchive(path.to_owned()))?;
     backend::open(format, path, passwords, limits, cancel)
 }
@@ -119,7 +121,7 @@ mod tests {
     use crate::archive::NoPassword;
 
     #[test]
-    fn stub_backends_fail_with_a_typed_error() {
+    fn truncated_zip_fails_with_a_typed_error() {
         let dir = tempfile::tempdir().unwrap();
         let zip = dir.path().join("x.zip");
         std::fs::write(&zip, b"PK\x03\x04").unwrap();
@@ -131,7 +133,11 @@ mod tests {
                 &CancelToken::new(),
             )
         };
-        assert!(matches!(open(&zip), Err(ArchiveError::NotImplemented(_))));
+        // Magic bytes say zip, the file is truncated: a typed error, never a panic or Ok.
+        assert!(!matches!(
+            open(&zip),
+            Ok(_) | Err(ArchiveError::NotAnArchive(_))
+        ));
         let plain = dir.path().join("plain.txt");
         std::fs::write(&plain, b"hello").unwrap();
         assert!(matches!(open(&plain), Err(ArchiveError::NotAnArchive(_))));

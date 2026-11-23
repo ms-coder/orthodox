@@ -63,6 +63,17 @@ pub fn show(ctx: &Rc<AppContext>, text: &str) {
     show_with(ctx, text, true);
 }
 
+/// Hide the message row now (an operation that showed a sticky message ended).
+pub fn hide(ctx: &Rc<AppContext>) {
+    let Some(state) = ctx.ext.get::<CompareState>() else {
+        return;
+    };
+    if let Some(row) = state.row.borrow().clone() {
+        row.serial.set(row.serial.get().wrapping_add(1));
+        row.revealer.set_reveal_child(false);
+    }
+}
+
 /// Show `text` until the next message replaces it (progress of a running comparison).
 pub fn show_sticky(ctx: &Rc<AppContext>, text: &str) {
     show_with(ctx, text, false);
