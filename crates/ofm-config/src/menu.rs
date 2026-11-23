@@ -328,6 +328,129 @@ pub fn local_menu_path(dir: &Path) -> PathBuf {
     dir.join(LOCAL_MENU_FILE)
 }
 
+/// Largest `.ofm-menu.toml` we are willing to read (finding 6): the file sits in every
+/// browsed directory and is read on panel updates, so it must stay small.
+const MAX_LOCAL_MENU_BYTES: usize = 256 * 1024;
+
+/// Read a local menu file with a bounded, regular-files-only strategy (finding 6).
+/// `Ok(None)` = the file does not exist. On unix the file is opened with `O_NONBLOCK` (a
+/// FIFO without a writer must not wedge the panel thread), `O_NOFOLLOW` (a symlinked menu
+/// is refused: trust is bound to one canonical file, and following the link would hash
+/// whatever it currently points at) and `O_NOCTTY`; `fstat` on the descriptor then rejects
+/// special files and oversize content before a byte is read, and the read itself stays
+/// capped for the file-grew-in-between case. Every refusal is [`ConfigError::ReadRefused`]
+/// with a message that says what the file is.
+fn read_local_menu_bounded(file: &Path) -> Result<Option<Vec<u8>>, ConfigError> {
+    let refused = |message: String| ConfigError::ReadRefused {
+        path: file.to_path_buf(),
+        message,
+    };
+    let oversize = |len: u64| {
+        refused(format!(
+            "is {len} bytes, larger than the {} KiB limit for local menus; not loaded",
+            MAX_LOCAL_MENU_BYTES / 1024
+        ))
+    };
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_NOCTTY);
+        let f = match opts.open(file) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            // O_NOFOLLOW surfaces a symlink as ELOOP; say what that means.
+            Err(e) if e.raw_os_error() == Some(libc::ELOOP) => {
+                return Err(refused(
+                    "is a symlink, not a regular file; not loaded".into(),
+                ));
+            }
+            Err(e) => {
+                return Err(ConfigError::Io {
+                    path: file.to_path_buf(),
+                    source: e,
+                });
+            }
+        };
+        let meta = f.metadata().map_err(|e| ConfigError::Io {
+            path: file.to_path_buf(),
+            source: e,
+        })?;
+        if !meta.file_type().is_file() {
+            return Err(refused(format!(
+                "is a {}, not a regular file; not loaded",
+                file_kind(&meta)
+            )));
+        }
+        if meta.len() > MAX_LOCAL_MENU_BYTES as u64 {
+            return Err(oversize(meta.len()));
+        }
+        // The file may grow between fstat and read, so the read is capped as well.
+        let mut bytes = Vec::new();
+        f.take(MAX_LOCAL_MENU_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| ConfigError::Io {
+                path: file.to_path_buf(),
+                source: e,
+            })?;
+        if bytes.len() > MAX_LOCAL_MENU_BYTES {
+            return Err(oversize(bytes.len() as u64));
+        }
+        Ok(Some(bytes))
+    }
+    #[cfg(not(unix))]
+    {
+        // Minimal fallback for non-unix builds (OFM targets Linux): same limits, checked
+        // around a plain read.
+        let meta = match std::fs::metadata(file) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(ConfigError::Io {
+                    path: file.to_path_buf(),
+                    source: e,
+                });
+            }
+        };
+        if !meta.file_type().is_file() {
+            return Err(refused("is not a regular file; not loaded".into()));
+        }
+        if meta.len() > MAX_LOCAL_MENU_BYTES as u64 {
+            return Err(oversize(meta.len()));
+        }
+        let bytes = std::fs::read(file).map_err(|e| ConfigError::Io {
+            path: file.to_path_buf(),
+            source: e,
+        })?;
+        if bytes.len() > MAX_LOCAL_MENU_BYTES {
+            return Err(oversize(bytes.len() as u64));
+        }
+        Ok(Some(bytes))
+    }
+}
+
+/// Human name of a non-regular file's type, for [`ConfigError::ReadRefused`] messages.
+#[cfg(unix)]
+fn file_kind(meta: &std::fs::Metadata) -> &'static str {
+    use std::os::unix::fs::FileTypeExt;
+    let t = meta.file_type();
+    if t.is_fifo() {
+        "FIFO"
+    } else if t.is_socket() {
+        "socket"
+    } else if t.is_dir() {
+        "directory"
+    } else if t.is_char_device() {
+        "character device"
+    } else if t.is_block_device() {
+        "block device"
+    } else {
+        "special file"
+    }
+}
+
 /// Parse local-menu text with entry validation (line information relative to `text`).
 /// Used by [`TrustStore::local_menu_status`]; exposed for previews and tests.
 pub fn parse_local(text: &str, file: &Path) -> (UserMenu, Vec<Warning>) {
@@ -440,20 +563,14 @@ impl TrustStore {
     }
 
     /// Trust state of `dir`'s `.ofm-menu.toml`: [`LocalMenuStatus::Absent`] without a file,
-    /// an I/O error only for real failures (unreadable file, …).
+    /// an I/O error only for real failures (unreadable file, …). The file is read with
+    /// [`read_local_menu_bounded`].
     pub fn local_menu_status(&self, dir: &Path) -> Result<LocalMenuStatus, ConfigError> {
         let file = local_menu_path(dir);
-        let bytes = match std::fs::read(&file) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(LocalMenuStatus::Absent);
-            }
-            Err(e) => {
-                return Err(ConfigError::Io {
-                    path: file,
-                    source: e,
-                });
-            }
-            Ok(bytes) => bytes,
+        let bytes = match read_local_menu_bounded(&file) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return Ok(LocalMenuStatus::Absent),
+            Err(e) => return Err(e),
         };
         let hash = hex(&sha256::digest(&bytes));
         let text = String::from_utf8_lossy(&bytes).into_owned();
