@@ -34,6 +34,14 @@ pub struct History {
     pub targets: Vec<String>,
     /// Hotlist (kept in order, user editable).
     pub hotlist: Vec<Bookmark>,
+    /// Find files (Alt+F7): name masks.
+    pub find_masks: Vec<String>,
+    /// Find files: "containing text" patterns.
+    pub find_texts: Vec<String>,
+    /// Find files: "search in" directory lists.
+    pub find_roots: Vec<String>,
+    /// Panelize command lines.
+    pub panelize_commands: Vec<String>,
 }
 
 impl Default for History {
@@ -44,6 +52,10 @@ impl Default for History {
             masks: Vec::new(),
             targets: Vec::new(),
             hotlist: Vec::new(),
+            find_masks: Vec::new(),
+            find_texts: Vec::new(),
+            find_roots: Vec::new(),
+            panelize_commands: Vec::new(),
         }
     }
 }
@@ -82,7 +94,15 @@ impl History {
     /// to [`MAX_HISTORY`].
     pub fn save(&self, paths: &ConfigPaths) -> Result<(), ConfigError> {
         let mut h = self.clone();
-        for l in [&mut h.commands, &mut h.masks, &mut h.targets] {
+        for l in [
+            &mut h.commands,
+            &mut h.masks,
+            &mut h.targets,
+            &mut h.find_masks,
+            &mut h.find_texts,
+            &mut h.find_roots,
+            &mut h.panelize_commands,
+        ] {
             l.truncate(MAX_HISTORY);
         }
         io::save_toml_private(&paths.history_file(), &h)

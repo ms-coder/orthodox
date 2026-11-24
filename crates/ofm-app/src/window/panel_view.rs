@@ -277,7 +277,11 @@ impl PanelViewHandles {
         if self.held.get() {
             return;
         }
-        self.path_label.set_text(&ctrl.location().display_lossy());
+        self.path_label
+            .set_text(&crate::search::lists::location_label(
+                &ctrl.services().lists,
+                &ctrl.location(),
+            ));
         let fmt = self.status_format();
         let (left, summary) = match ctrl.state() {
             LoadState::Loading => (tr("Loading...").to_owned(), String::new()),

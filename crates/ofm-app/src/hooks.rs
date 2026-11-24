@@ -14,8 +14,8 @@ use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
 use crate::window::{MainWindow, PanelView};
 use crate::{
-    chrome, cmdline, compare, desktop, dialogs, jobs, navigation, quickview, terminal, usermenu,
-    viewer, widgets, window,
+    chrome, cmdline, compare, desktop, dialogs, jobs, navigation, quickview, search, terminal,
+    usermenu, viewer, widgets, window,
 };
 
 /// Register command handlers. Every module registers only commands it owns (OWNERSHIP.md);
@@ -34,6 +34,7 @@ pub fn install_commands(reg: &mut CommandRegistry) {
     viewer::install_commands(reg); // T5.2a: file.view, viewer.*
     compare::install_commands(reg); // T8.1c: panel.compare_dirs
     usermenu::install_commands(reg); // T8.2b: menu.user, menu.edit, menu.edit_local
+    search::install_commands(reg); // T7.3: search.find, search.panelize_*
 }
 
 /// Create module-owned state and store it with `ctx.ext.insert(Rc::new(..))`.
@@ -49,6 +50,7 @@ pub fn install_state(ctx: &Rc<AppContext>) {
     viewer::install_state(ctx); // T5.2a: ViewerHost in ctx.ext
     compare::install_state(ctx); // T8.1c: CompareState in ctx.ext
     usermenu::install_state(ctx); // T8.2b: UserMenuState in ctx.ext
+    search::install_state(ctx); // T7.3: FindState in ctx.ext
     crate::panel::archive::install_state(ctx); // T6.3: archive state + password prompts
 }
 
@@ -60,6 +62,7 @@ pub fn install_panel_view(ctx: &Rc<AppContext>, view: &PanelView) {
     cmdline::install_panel_view(ctx, view); // T4.2: reserved
     quickview::install_panel_view(ctx, view); // T5.2b: preview pane over the file list
     desktop::install_panel_view(ctx, view); // T8.4: file drops
+    search::install_panel_view(ctx, view); // T7.3: vanished-row message for list panels
 }
 
 /// Fill window regions once the whole `MainWindow` exists (menu bar, F-key bar, status line).

@@ -10,6 +10,7 @@ pub mod compare;
 pub mod conflict;
 pub mod copy;
 pub mod delete;
+pub mod find;
 pub mod hotlist;
 pub mod link;
 pub mod mask;

@@ -13,6 +13,7 @@
 //! - `window`, `theme`, `chrome`: T2.2
 //! - `navigation`, `dialogs::mask`, `dialogs::hotlist`: T2.3
 //! - `jobs`, `dialogs::{copy,conflict,delete,mkdir,link,properties}`: T3.3
+//! - `search`, `dialogs::find`: T7.3 (find files, panelize; ADR-0009)
 //! - `terminal`: T4.1 (ADR-0003), `cmdline`: T4.2 (ADR-0003)
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
@@ -31,6 +32,7 @@ pub mod keys;
 pub mod navigation;
 pub mod panel;
 pub mod quickview;
+pub mod search;
 pub mod signal;
 pub mod terminal;
 pub mod theme;
