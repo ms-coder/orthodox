@@ -7,15 +7,17 @@ use std::any::{Any, TypeId};
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use ofm_config::{Config, ConfigPaths, Keymap};
-use ofm_core::{CommandId, Location};
+use ofm_core::{CommandId, Location, LocationKind};
 use ofm_vfs::VfsRegistry;
 use ofm_vfs::pool::IoPool;
 
 use crate::dispatch::{CommandDispatcher, ExecResult};
 use crate::panel::archive::ArchiveService;
 use crate::panel::{PanelController, PanelHost, Side};
+use crate::search::lists::ListHub;
 use crate::signal::Signal;
 use crate::theme::ThemeHost;
 use crate::window::MainWindow;
@@ -27,6 +29,9 @@ pub struct Services {
     pub vfs: VfsRegistry,
     /// Shared I/O pool (4 threads) for listing/stat/preview work.
     pub pool: IoPool,
+    /// Panelized lists (search results, command output; T7.3, ADR-0009). Registered with `vfs`
+    /// as the provider of `Location::List`.
+    pub lists: Arc<ListHub>,
     /// Archive provider, passwords and temp directories (F26); its provider is registered in
     /// `vfs` for `Location::Archive`.
     pub archives: ArchiveService,
@@ -35,12 +40,15 @@ pub struct Services {
 impl Services {
     /// Production services: local provider + 4 I/O threads.
     pub fn new() -> Self {
+        let lists = Arc::new(ListHub::new());
         let archives = ArchiveService::new();
         let mut vfs = VfsRegistry::with_local();
+        vfs.register(LocationKind::List, Arc::new(lists.provider()));
         archives.register(&mut vfs);
         Services {
             vfs,
             pool: IoPool::new(4),
+            lists,
             archives,
         }
     }

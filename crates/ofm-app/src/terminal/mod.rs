@@ -127,6 +127,24 @@ impl TerminalHandle {
         }
     }
 
+    /// [`run_program`](Self::run_program) that also calls `on_exit` with the raw wait status
+    /// (0 = exited successfully) after the program exited and the panels are back. Not called
+    /// when the program cannot be started (then `on_error` is).
+    pub fn run_program_notify(
+        &self,
+        argv: &[std::ffi::OsString],
+        cwd: Option<&std::path::Path>,
+        on_error: impl Fn(String) + 'static,
+        on_exit: impl FnOnce(i32) + 'static,
+    ) -> Result<(), String> {
+        match self.ui.borrow().as_ref() {
+            Some(ui) => {
+                ui.run_program_notify(argv, cwd, Box::new(on_error), Some(Box::new(on_exit)))
+            }
+            None => Err(crate::i18n::tr("The terminal is not available.").to_owned()),
+        }
+    }
+
     /// Show the terminal full size (hide the panels — what Ctrl+O or running a command does).
     pub fn show(&self) {
         match self.ui.borrow().as_ref() {

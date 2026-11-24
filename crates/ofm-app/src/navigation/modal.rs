@@ -62,6 +62,9 @@ impl ModalStack {
 /// Register `dialog.ok` and `dialog.cancel`.
 pub fn install_commands(reg: &mut CommandRegistry) {
     reg.register(cmd::DIALOG_OK, |ctx| {
+        if crate::search::route_dialog_key(ctx, crate::search::DialogKey::Ok) {
+            return; // the (non-modal) Find window has the focus
+        }
         let top = ctx.ext.get::<ModalStack>().and_then(|s| s.top());
         if let Some((dialog, on_ok)) = top
             && on_ok()
@@ -70,6 +73,9 @@ pub fn install_commands(reg: &mut CommandRegistry) {
         }
     });
     reg.register(cmd::DIALOG_CANCEL, |ctx| {
+        if crate::search::route_dialog_key(ctx, crate::search::DialogKey::Cancel) {
+            return;
+        }
         if let Some((dialog, _)) = ctx.ext.get::<ModalStack>().and_then(|s| s.top()) {
             dialog.close();
         }
