@@ -58,10 +58,12 @@ FAT/NTFS-made entries before `push`). Extraction adds a second line of defence (
 
 **Password model.** `PasswordProvider::password(archive, retry) -> Option<String>` is a blocking
 callback on a worker; the app implements it with a `Responder` and polls the job's `CancelToken`.
-`None` = user cancelled = `NeedsPassword`. `PasswordSource` wraps a provider with a per-archive
-in-memory cache, filled by `accepted()` once a backend has verified a password (CRC/MAC); the panel
-and extract jobs share one source, so the user is asked once. A wrong password triggers `retry = true`
-up to `MAX_PASSWORD_ATTEMPTS` (3), then `WrongPassword`. One password per archive; never persisted.
+`None` on the initial request = user cancelled / no password = `NeedsPassword`. After a password was
+rejected, `None` means the provider has no further attempt and the result stays `WrongPassword`.
+`PasswordSource` wraps a provider with a per-archive in-memory cache, filled by `accepted()` once a
+backend has verified a password (CRC/MAC); the panel and extract jobs share one source, so the user is
+asked once. A wrong password triggers `retry = true` up to `MAX_PASSWORD_ATTEMPTS` (3), then
+`WrongPassword`. One password per archive; never persisted.
 Searches use `NoPassword` and skip encrypted archives with a warning.
 
 **Streaming and memory.** Entry data is never loaded whole: `visit` hands a `&mut dyn Read` per entry,

@@ -411,7 +411,9 @@ impl TarReader {
                 }
                 let mut entry = entry.map_err(|e| map_io(&archive, e))?;
                 let mut stream = EntryStream::new(&mut entry, cancel, &archive, target.size);
-                f(target, &mut stream)?;
+                // The bytes come from the target, but the visited entry is the hardlink itself.
+                // Visiting `target` again would make consumers publish the target a second time.
+                f(link_entry, &mut stream)?;
                 let seen = stream.bytes_read();
                 drain(&mut stream, &archive, cancel)?;
                 let total = seen.max(stream.bytes_read());

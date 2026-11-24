@@ -303,7 +303,13 @@ impl ZipReader<'_> {
         let mut attempts = 0;
         let pw = loop {
             let Some(pw) = self.passwords.password(archive, attempts > 0) else {
-                return Err(ArchiveError::NeedsPassword(archive.to_owned()));
+                return Err(if attempts == 0 {
+                    ArchiveError::NeedsPassword(archive.to_owned())
+                } else {
+                    // The provider declined another attempt after a password was rejected. Preserve
+                    // that rejection: this is not an archive for which no password was supplied.
+                    ArchiveError::WrongPassword(archive.to_owned())
+                });
             };
             match self.archive.by_index_decrypt(zip_i, pw.as_bytes()) {
                 Ok(_) => break pw,
