@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use adw::prelude::*;
+use gtk::glib;
 
 use crate::context::AppContext;
 

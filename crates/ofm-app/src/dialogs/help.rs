@@ -10,8 +10,8 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use ofm_config::Keymap;
-use ofm_core::commands::ALL;
 use ofm_core::KeyContext;
+use ofm_core::commands::ALL;
 
 use crate::context::AppContext;
 use crate::i18n::tr;
@@ -124,7 +124,7 @@ pub fn present(ctx: &Rc<AppContext>) {
     // Search field: filters the rows while typing.
     let search = gtk::SearchEntry::new();
     search.set_widget_name("ofm-help-search");
-    search.set_placeholder_text(tr("Search command, description or key"));
+    search.set_placeholder_text(Some(tr("Search command, description or key")));
     search.update_property(&[gtk::accessible::Property::Label(tr("Search commands"))]);
     column.append(&search);
 
@@ -142,11 +142,7 @@ pub fn present(ctx: &Rc<AppContext>) {
     if !problems.is_empty() {
         let mut group = Group::new(&list, tr("Config warnings"));
         for text in &problems {
-            group.push_row(
-                &list,
-                &format!("\u{2022} {text}"),
-                text.to_lowercase(),
-            );
+            group.push_row(&list, &format!("\u{2022} {text}"), text.to_lowercase());
         }
         groups.push(group);
     }
@@ -212,7 +208,7 @@ mod tests {
     use ofm_core::CommandId;
 
     fn far_keymap() -> Keymap {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = ofm_testkit::temp::TempDir::new().unwrap();
         let paths = ofm_config::ConfigPaths::with_dirs(tmp.path().join("c"), tmp.path().join("s"));
         Keymap::load(&paths, ofm_config::Preset::Far, None).0
     }

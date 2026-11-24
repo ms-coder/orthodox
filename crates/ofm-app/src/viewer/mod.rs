@@ -127,18 +127,22 @@ fn viewable(controller: &PanelController) -> Option<(Vec<PathBuf>, usize)> {
 /// cancellable, the result appears in the size column as always).
 fn file_view(ctx: &Rc<AppContext>) {
     let controller = ctx.active_controller();
-    match viewable(&controller) {
-        Some((files, idx)) => window::open(ctx, files, idx),
-        None => {
-            if controller
-                .model()
-                .cursor_entry()
-                .is_some_and(|e| e.kind == EntryKind::Dir)
-            {
-                ctx.execute(cmd::FILE_CALC_SIZE);
-            }
-        }
+    if let Some((files, idx)) = viewable(&controller) {
+        window::open(ctx, files, idx);
+        return;
     }
+    // Not a viewable file: a directory under the cursor (not `..`) starts the size calculation.
+    if cursor_dir(&controller) {
+        ctx.execute(cmd::FILE_CALC_SIZE);
+    }
+}
+
+/// Whether the cursor of `controller` is on a real directory (the synthetic `..` row excluded).
+fn cursor_dir(controller: &PanelController) -> bool {
+    controller
+        .model()
+        .cursor_entry()
+        .is_some_and(|e| e.kind == EntryKind::Dir && e.name != "..")
 }
 
 fn with_session(ctx: &Rc<AppContext>, f: impl FnOnce(&Rc<Session>)) {

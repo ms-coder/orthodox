@@ -10,7 +10,7 @@
 //! panel command fires behind the menu.
 
 use std::cell::RefCell;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 use gtk::gdk;
 use gtk::glib;
@@ -120,7 +120,11 @@ fn open_at_cursor(ctx: &Rc<AppContext>) {
         return;
     };
     let side = ctx.active_side();
-    let list = if side == 0 { &win.left.list } else { &win.right.list };
+    let list = if side == 0 {
+        &win.left.list
+    } else {
+        &win.right.list
+    };
     // A remembered click on exactly this list opens the menu at the pointer.
     let rect = ctx
         .ext
@@ -204,11 +208,7 @@ fn open(ctx: &Rc<AppContext>, list: &FileList, rect: Option<gdk::Rectangle>) {
             if let Some(ctx) = weak_ctx.upgrade()
                 && let Some(slot) = ctx.ext.get::<MenuSlot>()
             {
-                let is_current = slot
-                    .open
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|m| m.popover == *p);
+                let is_current = slot.open.borrow().as_ref().is_some_and(|m| m.popover == *p);
                 if is_current {
                     slot.open.borrow_mut().take();
                     p.unparent();
@@ -222,7 +222,9 @@ fn open(ctx: &Rc<AppContext>, list: &FileList, rect: Option<gdk::Rectangle>) {
     let first = menu.rows.first().map(|r| r.button.clone());
     popover.popup();
     if let Some(b) = first {
-        glib::idle_add_local_once(move || b.grab_focus());
+        glib::idle_add_local_once(move || {
+            b.grab_focus();
+        });
     }
 }
 

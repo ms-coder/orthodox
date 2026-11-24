@@ -181,7 +181,10 @@ mod tests {
 
     #[test]
     fn hint_counts() {
-        assert_eq!(problems_hint(1), "1 problem in config (see Help > Config warnings)");
+        assert_eq!(
+            problems_hint(1),
+            "1 problem in config (see Help > Config warnings)"
+        );
         assert_eq!(
             problems_hint(3),
             "3 problems in config (see Help > Config warnings)"
