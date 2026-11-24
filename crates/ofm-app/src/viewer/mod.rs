@@ -122,12 +122,23 @@ fn viewable(controller: &PanelController) -> Option<(Vec<PathBuf>, usize)> {
     idx.map(|i| (list, i))
 }
 
-/// Open the viewer on the file under the active panel's cursor (directories: nothing happens).
+/// Open the viewer on the file under the active panel's cursor. F3 on a directory (F19) does not
+/// open a viewer but starts the existing `file.calc_size` flow for it instead (async,
+/// cancellable, the result appears in the size column as always).
 fn file_view(ctx: &Rc<AppContext>) {
-    let Some((files, idx)) = viewable(&ctx.active_controller()) else {
-        return;
-    };
-    window::open(ctx, files, idx);
+    let controller = ctx.active_controller();
+    match viewable(&controller) {
+        Some((files, idx)) => window::open(ctx, files, idx),
+        None => {
+            if controller
+                .model()
+                .cursor_entry()
+                .is_some_and(|e| e.kind == EntryKind::Dir)
+            {
+                ctx.execute(cmd::FILE_CALC_SIZE);
+            }
+        }
+    }
 }
 
 fn with_session(ctx: &Rc<AppContext>, f: impl FnOnce(&Rc<Session>)) {

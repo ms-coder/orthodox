@@ -6,10 +6,12 @@
 //! they are built from the command registry (`ofm_core::commands::ALL`) and the keymap, and run
 //! commands via `ctx.execute(cmd)` only.
 
+pub mod contextmenu;
 pub mod fkeybar;
 mod labels;
 pub mod menubar;
 pub mod menus;
+pub mod notice;
 pub mod statusline;
 
 use std::cell::RefCell;
@@ -41,8 +43,8 @@ pub struct ChromeState {
     pub keymap_changed: Signal<()>,
 }
 
-/// Register `app.menu`, `app.theme_next`, `app.reload_config`. (`app.quit` and the window
-/// commands are in `window/commands.rs`; `app.preferences` stays unimplemented until M9.)
+/// Register `app.menu`, `app.theme_next`, `app.reload_config`, `app.help`, `app.preferences` and
+/// the panel context menu. (`app.quit` and the window commands are in `window/commands.rs`.)
 pub fn install_commands(reg: &mut CommandRegistry) {
     reg.register(cmd::APP_MENU, |ctx| {
         let bar = ctx
@@ -63,11 +65,20 @@ pub fn install_commands(reg: &mut CommandRegistry) {
         }
     });
     reg.register(cmd::APP_RELOAD_CONFIG, reload_config);
+    reg.register(cmd::APP_HELP, |ctx| {
+        crate::dialogs::help::present(ctx);
+    });
+    reg.register(cmd::APP_PREFERENCES, |ctx| {
+        crate::dialogs::preferences::present(ctx);
+    });
+    contextmenu::install_commands(reg);
 }
 
 /// Create chrome state in `ctx.ext`.
 pub fn install_state(ctx: &Rc<AppContext>) {
     ctx.ext.insert(Rc::new(ChromeState::default()));
+    notice::install_state(ctx);
+    contextmenu::install_state(ctx);
 }
 
 /// Build F-key bar / menu bar into the window slots.
@@ -88,6 +99,10 @@ pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
     }
     *state.menubar.borrow_mut() = Some(menubar);
     *state.fkeybar.borrow_mut() = Some(fkeys);
+    // After the bars (so its key controller is added last and runs first).
+    contextmenu::install_ui(ctx, win);
+    // The config-problems hint stored before the window existed (see `app::build_context`).
+    notice::show_pending(ctx);
 }
 
 /// Everything `app.reload_config` loads on the worker.
@@ -130,6 +145,12 @@ fn reload_config(ctx: &Rc<AppContext>) {
 fn apply_reloaded(ctx: &Rc<AppContext>, r: Reloaded) {
     for w in &r.warnings {
         tracing::warn!(file = ?w.file, "{}", w.message);
+    }
+    // Problems of the reload reach the user like at startup (status line + dialogs).
+    let n = r.warnings.len();
+    crate::dialogs::preferences::record(ctx, r.warnings);
+    if n > 0 {
+        notice::show(ctx, &crate::dialogs::preferences::problems_hint(n));
     }
     let theme_name = r.config.theme.name.clone();
     file_list::configure(&r.config.panels);

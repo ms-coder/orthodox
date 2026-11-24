@@ -52,15 +52,11 @@ pub fn initial_locations(
 /// thread": CLAUDE.md invariant 2), install all command handlers and module state. Needs
 /// `gtk::init()` (the theme host creates a `CssProvider`) but no window.
 pub fn build_context(init: AppInit) -> Rc<AppContext> {
-    let (config, warnings) = Config::load(&init.paths);
-    for w in &warnings {
-        tracing::warn!(file = ?w.file, "{}", w.message);
-    }
-    let (keymap, warnings) = Keymap::load(&init.paths, config.preset(), config.typing());
-    for w in &warnings {
-        tracing::warn!(file = ?w.file, "{}", w.message);
-    }
-    let (themes, warnings) = Theme::discover(&init.paths);
+    let (config, mut warnings) = Config::load(&init.paths);
+    let (keymap, w) = Keymap::load(&init.paths, config.preset(), config.typing());
+    warnings.extend(w);
+    let (themes, w) = Theme::discover(&init.paths);
+    warnings.extend(w);
     for w in &warnings {
         tracing::warn!(file = ?w.file, "{}", w.message);
     }
@@ -88,6 +84,14 @@ pub fn build_context(init: AppInit) -> Rc<AppContext> {
     }
     ctx.set_dispatcher(CommandDispatcher::new(registry));
     crate::hooks::install_state(&ctx);
+    // Config problems must reach the user, not only the log: they are listed in the Preferences
+    // and Help dialogs, and the status line shows a hint once the window exists
+    // (`notice::show_pending` in `chrome::install_ui`).
+    let n = warnings.len();
+    crate::dialogs::preferences::record(&ctx, warnings);
+    if n > 0 {
+        crate::chrome::notice::show(&ctx, &crate::dialogs::preferences::problems_hint(n));
+    }
     ctx
 }
 

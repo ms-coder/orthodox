@@ -292,6 +292,8 @@ fn build_row(ctx: &Rc<AppContext>, popover: &gtk::Popover, cmd: CommandId) -> Ro
     button.set_child(Some(&content));
     button.set_has_frame(false);
     button.add_css_class("ofm-menu-item");
+    // A command without a handler (not implemented yet) is greyed out, not silently dead.
+    button.set_sensitive(ctx.command_available(cmd));
     button.update_property(&[gtk::accessible::Property::Label(title)]);
     {
         let popover = popover.clone();

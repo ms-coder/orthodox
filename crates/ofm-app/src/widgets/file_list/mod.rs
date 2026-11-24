@@ -129,6 +129,12 @@ impl FileList {
         self.imp().window()
     }
 
+    /// The rectangle of the cursor's row, in widget coordinates (`None` when empty); the panel
+    /// context menu points at it when opened from the keyboard.
+    pub fn cursor_row_rect(&self) -> Option<RowRect> {
+        self.imp().cursor_row_rect()
+    }
+
     /// The row under (x, y) in widget coordinates (`None` over the header, the frame and the
     /// empty area below the last entry); used by drop targets.
     pub fn row_at(&self, x: f64, y: f64) -> Option<RowRect> {
@@ -204,9 +210,11 @@ impl FileList {
                 }
             }
         });
-        self.connect_context_menu(move |_, _, _| {
+        self.connect_context_menu(move |list, x, y| {
             if let Some(ctx) = weak.upgrade() {
-                ctx.execute(cmd::PANEL_CONTEXT_MENU);
+                // Still the `panel.context_menu` command (invariant 5): the click position is
+                // remembered so the menu opens at the pointer instead of the cursor row.
+                crate::chrome::contextmenu::open_from_click(&ctx, list, x, y);
             }
         });
     }

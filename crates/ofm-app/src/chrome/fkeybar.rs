@@ -125,7 +125,10 @@ impl FKeyBar {
             cell.command.set(cmd);
             let text = cmd.map(short_label).unwrap_or_default();
             cell.label.set_text(&text);
-            cell.button.set_sensitive(cmd.is_some());
+            // A key without a command, or a command without a handler (not implemented yet),
+            // shows an empty, insensitive cell instead of silently doing nothing.
+            let available = cmd.is_some_and(|c| ctx.command_available(c));
+            cell.button.set_sensitive(available);
             if cmd.is_some() {
                 cell.button.remove_css_class("empty");
             } else {

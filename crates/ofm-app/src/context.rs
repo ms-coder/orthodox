@@ -203,6 +203,14 @@ impl AppContext {
         }
     }
 
+    /// Whether `cmd` has a registered handler: menus and the F-key bar show such commands as
+    /// available and grey out (or hide) the rest.
+    pub fn command_available(&self, cmd: CommandId) -> bool {
+        self.dispatcher
+            .get()
+            .is_some_and(|d| d.registry().has(cmd))
+    }
+
     // ---- window -------------------------------------------------------------------------------
     /// Register the main window (once, by `MainWindow::new`).
     pub fn set_window(&self, w: Rc<MainWindow>) {

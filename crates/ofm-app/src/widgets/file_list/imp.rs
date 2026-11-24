@@ -459,6 +459,24 @@ impl FileList {
         })
     }
 
+    /// The rectangle of the cursor's row (the context menu points at it when opened from the
+    /// keyboard); `None` when the list is empty or not laid out yet.
+    pub(super) fn cursor_row_rect(&self) -> Option<super::RowRect> {
+        let ctrl = self.ctrl.borrow().clone()?;
+        let idx = ctrl.model().cursor()?;
+        let geo = self.geo.borrow();
+        let g = geo.as_ref()?;
+        let (col, row) = g.grid.cell_of(self.first.get(), idx)?;
+        let (ox, oy) = g.cell_origin(col, row);
+        Some(super::RowRect {
+            index: idx,
+            x: f64::from(ox),
+            y: f64::from(oy),
+            width: f64::from(g.cell_w),
+            height: f64::from(g.row_h),
+        })
+    }
+
     pub(super) fn on_press(
         &self,
         button: u32,
