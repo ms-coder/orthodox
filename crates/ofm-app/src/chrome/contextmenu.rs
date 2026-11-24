@@ -201,10 +201,11 @@ fn open(ctx: &Rc<AppContext>, list: &FileList, rect: Option<gdk::Rectangle>) {
         popover.set_pointing_to(Some(&r));
     }
 
+    let shown = popover.clone();
     let menu = Rc::new(ContextMenu { popover, rows });
     {
         let weak_ctx = Rc::downgrade(ctx);
-        popover.connect_closed(move |p| {
+        shown.connect_closed(move |p| {
             if let Some(ctx) = weak_ctx.upgrade()
                 && let Some(slot) = ctx.ext.get::<MenuSlot>()
             {
@@ -220,7 +221,7 @@ fn open(ctx: &Rc<AppContext>, list: &FileList, rect: Option<gdk::Rectangle>) {
     // Fresh key hints, focus on the first row, then show.
     menu.refresh_accels(ctx);
     let first = menu.rows.first().map(|r| r.button.clone());
-    popover.popup();
+    menu.popover.popup();
     if let Some(b) = first {
         glib::idle_add_local_once(move || {
             b.grab_focus();
