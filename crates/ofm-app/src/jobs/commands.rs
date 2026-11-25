@@ -146,6 +146,7 @@ fn show_dir_size(
             cache.store(panel, location, entry.name.clone(), entry.mtime_ns, bytes);
         }
         entry.size = bytes;
+        entry.size_known = true;
         panel.mutate_view(|m| m.apply_update(vec![entry], &[]));
     }
 }

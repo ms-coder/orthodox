@@ -52,6 +52,9 @@ pub struct Entry {
     pub kind: EntryKind,
     /// Size in bytes (0 for directories until calculated).
     pub size: u64,
+    /// For directories: `size` is a calculated recursive total (`file.calc_size`), not the
+    /// file system's own directory size. The panel shows the number instead of `<DIR>` then.
+    pub size_known: bool,
     /// Modification time, nanoseconds since the Unix epoch.
     pub mtime_ns: i128,
     /// `st_mode` (type and permission bits).
@@ -71,6 +74,7 @@ impl Entry {
             name: name.into(),
             kind,
             size: 0,
+            size_known: false,
             mtime_ns: 0,
             mode: 0,
             uid: 0,

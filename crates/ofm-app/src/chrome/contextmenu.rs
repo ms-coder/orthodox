@@ -9,7 +9,7 @@
 //! (focus), Enter (run the focused entry), Esc (close) and swallows everything else, so no
 //! panel command fires behind the menu.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk::gdk;
@@ -64,6 +64,11 @@ struct Row {
 pub struct ContextMenu {
     popover: gtk::Popover,
     rows: Vec<Row>,
+    /// The list the menu is parented to: keyboard focus returns here when the menu closes
+    /// from the keyboard or an activation (a click outside leaves the focus alone).
+    list: FileList,
+    /// Set when the close should return the focus to `list`.
+    restore_focus: Cell<bool>,
 }
 
 /// Slot for the open menu and the last secondary click in `ctx.ext`.
@@ -230,7 +235,12 @@ fn open(ctx: &Rc<AppContext>, list: &FileList, rect: gdk::Rectangle) {
     popover.set_parent(list);
     popover.set_pointing_to(Some(&rect));
 
-    let menu = Rc::new(ContextMenu { popover, rows });
+    let menu = Rc::new(ContextMenu {
+        popover,
+        rows,
+        list: list.clone(),
+        restore_focus: Cell::new(false),
+    });
     {
         let weak_ctx = Rc::downgrade(ctx);
         let weak_menu = Rc::downgrade(&menu);
@@ -241,6 +251,13 @@ fn open(ctx: &Rc<AppContext>, list: &FileList, rect: gdk::Rectangle) {
                 && slot.current().is_some_and(|m| Rc::ptr_eq(&m, &menu))
             {
                 *slot.open.borrow_mut() = None;
+                // Keyboard close or activation: hiding the focused menu button lets GTK
+                // fall back to the window's default widget (the command line) - take the
+                // focus back to the panel instead, so the panel keys keep working. (A
+                // dialog opened by the command grabs its own focus right after.)
+                if menu.restore_focus.take() {
+                    menu.list.grab_focus();
+                }
                 menu.popover.unparent();
             }
         });
@@ -294,6 +311,12 @@ fn build_row(ctx: &Rc<AppContext>, popover: &gtk::Popover, cmd: CommandId) -> Ro
         let popover = popover.clone();
         let weak = Rc::downgrade(ctx);
         button.connect_clicked(move |_| {
+            // Activation returns the focus to the panel once the menu is gone.
+            if let Some(ctx) = weak.upgrade()
+                && let Some(menu) = current(&ctx)
+            {
+                menu.restore_focus.set(true);
+            }
             popover.popdown();
             // Run after the menu is gone, so a dialog opened by the command starts clean.
             let weak = weak.clone();
@@ -318,9 +341,16 @@ impl ContextMenu {
     /// Handle a key press while the menu is open: returns true when the key was consumed (all
     /// keys are, except bare modifiers). Mirrors `MenuBar::handle_key`.
     fn handle_key(&self, key: gdk::Key) -> bool {
+        tracing::debug!("context menu handle_key {key:?}");
         match key {
-            gdk::Key::Escape => self.popover.popdown(),
-            gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter => self.activate_focused(),
+            gdk::Key::Escape => {
+                self.restore_focus.set(true);
+                self.popover.popdown();
+            }
+            gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter => {
+                self.restore_focus.set(true);
+                self.activate_focused();
+            }
             gdk::Key::Up => self.move_focus(-1, false),
             gdk::Key::Down => self.move_focus(1, false),
             gdk::Key::Home => self.move_focus(-1, true),

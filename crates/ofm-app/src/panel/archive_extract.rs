@@ -594,6 +594,7 @@ fn show_sizes(
         };
         if let Some(mut e) = entry {
             e.size = totals.bytes;
+            e.size_known = true;
             updated.push(e);
         }
     }

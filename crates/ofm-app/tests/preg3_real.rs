@@ -42,6 +42,9 @@ fn trees() -> (TreeSpec, TreeSpec) {
 }
 
 fn launch(config: &str) -> Running {
+    let log = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/e2e-preg3.log");
+    unsafe { std::env::set_var("OFM_E2E_LOG", &log) };
+    unsafe { std::env::set_var("RUST_LOG", "debug") };
     let (l, r) = trees();
     Running::launch_with(config, &l, &r)
 }
@@ -84,10 +87,10 @@ fn context_menu_opens_runs_and_closes_with_real_keys() {
 
     // Esc closes it: the panels are back unchanged.
     s.keys(&["Escape"]);
-    assert!(
-        wait_until(Duration::from_secs(10), || diff(&plain, &s.shot()) < 50),
-        "Esc did not close the context menu"
-    );
+    let closed = wait_until(Duration::from_secs(10), || diff(&plain, &s.shot()) < 50);
+    eprintln!("DEBUG esc diff = {}", diff(&plain, &s.shot()));
+    save(&s, "preg3-after-esc2");
+    assert!(closed, "Esc did not close the context menu");
 
     // The Menu key opens it too; Down + Enter runs the second entry ("View") on a.txt.
     s.keys(&["Down", "Down"]); // `..` -> sub -> a.txt

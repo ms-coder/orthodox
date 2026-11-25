@@ -462,6 +462,7 @@ impl ArchiveIndex {
             name: e.path.file_name().unwrap_or_default().to_owned(),
             kind,
             size: e.size,
+            size_known: false,
             mtime_ns: e.mtime_ns,
             mode: type_bits | e.mode,
             uid: e.uid,

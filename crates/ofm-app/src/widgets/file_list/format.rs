@@ -58,7 +58,8 @@ pub fn ext_of(e: &Entry) -> String {
     }
 }
 
-/// Size cell: `<DIR>` for directories, `<UP>` for the parent row, else the formatted size.
+/// Size cell: `<DIR>` for directories (the calculated total once `file.calc_size` ran on the
+/// folder), `<UP>` for the parent row, else the formatted size.
 pub fn size_cell(e: &Entry, fmt: SizeFormat) -> String {
     if is_parent(e) {
         return tr("<UP>").to_owned();
@@ -67,7 +68,7 @@ pub fn size_cell(e: &Entry, fmt: SizeFormat) -> String {
         EntryKind::Dir
         | EntryKind::Symlink {
             target: Some(TargetKind::Dir),
-        } => tr("<DIR>").to_owned(),
+        } if !e.size_known => tr("<DIR>").to_owned(),
         EntryKind::Other => tr("<DEV>").to_owned(),
         _ => format_size(e.size, fmt),
     }
@@ -198,6 +199,11 @@ mod tests {
     fn dir_and_parent_cells() {
         let dir = Entry::new("sub", EntryKind::Dir);
         assert_eq!(size_cell(&dir, SizeFormat::Binary), "<DIR>");
+        // A calculated folder size replaces the marker (F19, `file.calc_size`).
+        let mut sized = Entry::new("sub", EntryKind::Dir);
+        sized.size = 3;
+        sized.size_known = true;
+        assert_eq!(size_cell(&sized, SizeFormat::Binary), "3 B");
         let up = Entry::new("..", EntryKind::Dir);
         assert_eq!(size_cell(&up, SizeFormat::Binary), "<UP>");
         assert_eq!(name_cell(&up), " ..");
