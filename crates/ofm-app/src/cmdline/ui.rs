@@ -400,6 +400,10 @@ pub(crate) fn execute(ctx: &Rc<AppContext>) {
                 // that the shell expands back to the exact bytes (see insert_name).
                 handle.send_line(text.as_bytes());
                 handle.show();
+                // `[terminal] return_to_panels`: the panels come back when the command ends.
+                if ctx.config.borrow().terminal.return_to_panels {
+                    super::return_panel::arm(ctx);
+                }
             } else {
                 tracing::warn!("cmdline.execute: no terminal handle installed");
             }
