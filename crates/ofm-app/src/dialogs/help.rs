@@ -135,6 +135,7 @@ pub fn present(ctx: &Rc<AppContext>) {
     scrolled.set_hscrollbar_policy(gtk::PolicyType::Never);
     scrolled.set_vexpand(true);
     let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    list.set_widget_name("ofm-help-list");
     let mut groups: Vec<Group> = Vec::new();
 
     // Config problems first (the status line's "see Help > Config warnings" points here).

@@ -78,14 +78,20 @@ pub fn present(ctx: &Rc<AppContext>) {
     // File paths.
     column.append(&ui::label(tr("Configuration files:")));
     let paths = ctx.paths.clone();
-    for (what, path) in [
-        (tr("config.toml"), paths.config_file()),
-        (tr("keymap.toml (own bindings)"), paths.keymap_file()),
-        (tr("themes directory"), paths.themes_dir()),
+    for (what, path, id) in [
+        (tr("config.toml"), paths.config_file(), "config"),
+        (
+            tr("keymap.toml (own bindings)"),
+            paths.keymap_file(),
+            "keymap",
+        ),
+        (tr("themes directory"), paths.themes_dir(), "themes"),
     ] {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let name = ui::caption(what);
+        name.set_widget_name(&format!("ofm-prefs-name-{id}"));
         let path_label = gtk::Label::new(Some(&path.to_string_lossy()));
+        path_label.set_widget_name(&format!("ofm-prefs-path-{id}"));
         path_label.set_xalign(0.0);
         path_label.set_hexpand(true);
         path_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -117,6 +123,7 @@ pub fn present(ctx: &Rc<AppContext>) {
             tr("problems in the configuration:")
         )));
         let list = ui::label(&problems.join("\n"));
+        list.set_widget_name("ofm-prefs-problems");
         list.set_selectable(true);
         list.set_wrap(true);
         column.append(&list);

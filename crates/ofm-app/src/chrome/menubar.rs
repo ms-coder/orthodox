@@ -127,6 +127,16 @@ impl MenuBar {
             .map(|r| r.accel.text().to_string())
     }
 
+    /// Whether the row of `cmd` in menu `i` can be clicked: the command has a handler (tests).
+    pub fn row_enabled(&self, i: usize, cmd: CommandId) -> Option<bool> {
+        self.menus
+            .get(i)?
+            .rows
+            .iter()
+            .find(|r| r.cmd == cmd)
+            .map(|r| r.button.is_sensitive())
+    }
+
     /// Re-read the key hints of menu `i` from the current keymap.
     fn refresh_accels(&self, i: usize) {
         let (Some(menu), Some(ctx)) = (self.menus.get(i), self.ctx.upgrade()) else {

@@ -14,6 +14,7 @@ use adw::prelude::*;
 use gtk::glib;
 
 use crate::context::AppContext;
+use crate::i18n::tr;
 
 /// How long a message stays visible.
 const SHOWN_FOR: Duration = Duration::from_secs(6);
@@ -66,6 +67,14 @@ pub fn last_text(ctx: &AppContext) -> Option<String> {
         .and_then(|s| s.last.borrow().clone())
 }
 
+/// Whether the message row is showing (tests).
+pub fn is_shown(ctx: &AppContext) -> bool {
+    ctx.ext
+        .get::<NoticeState>()
+        .and_then(|s| s.row.borrow().clone())
+        .is_some_and(|r| r.revealer.reveals_child())
+}
+
 /// Build the row on first use, above the F-key bar.
 fn ensure_row(ctx: &Rc<AppContext>, state: &Rc<NoticeState>) -> Option<Rc<Row>> {
     if let Some(row) = state.row.borrow().clone() {
@@ -77,8 +86,9 @@ fn ensure_row(ctx: &Rc<AppContext>, state: &Rc<NoticeState>) -> Option<Rc<Row>> 
         .hexpand(true)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .css_classes(["ofm-status"])
+        .name("ofm-notice")
         .build();
-    label.update_property(&[gtk::accessible::Property::Label("Status message")]);
+    label.update_property(&[gtk::accessible::Property::Label(tr("Status message"))]);
     label.set_accessible_role(gtk::AccessibleRole::Status);
     let box_ = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     box_.add_css_class("ofm-statusbox");

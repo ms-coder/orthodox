@@ -25,7 +25,7 @@ use crate::widgets::file_list::FileList;
 use crate::window::MainWindow;
 
 /// One row of the menu.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Entry {
     /// A registry command.
     Cmd(CommandId),
@@ -81,6 +81,44 @@ impl MenuSlot {
     }
 }
 
+/// The menu that is open now, if any.
+pub fn current(ctx: &AppContext) -> Option<Rc<ContextMenu>> {
+    ctx.ext
+        .get::<MenuSlot>()
+        .and_then(|s| s.current())
+        .filter(|m| m.is_open())
+}
+
+/// Is a context menu open?
+pub fn is_open(ctx: &AppContext) -> bool {
+    current(ctx).is_some()
+}
+
+/// The rows to build when `available` tells whether a command has a registered handler (pure):
+/// entries without one are not shown, and separators that would then lead, trail or repeat go
+/// with them.
+fn shown_entries(available: impl Fn(CommandId) -> bool) -> Vec<Entry> {
+    let mut out: Vec<Entry> = Vec::new();
+    for entry in ENTRIES {
+        match entry {
+            Sep => {
+                if !out.is_empty() && out.last() != Some(&Sep) {
+                    out.push(Sep);
+                }
+            }
+            Cmd(cmd) => {
+                if available(*cmd) {
+                    out.push(*entry);
+                }
+            }
+        }
+    }
+    if out.last() == Some(&Sep) {
+        out.pop();
+    }
+    out
+}
+
 /// Register `panel.context_menu` (keyboard: open at the cursor row).
 pub fn install_commands(reg: &mut CommandRegistry) {
     reg.register(cmd::PANEL_CONTEXT_MENU, open_at_cursor);
@@ -101,7 +139,7 @@ pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
         let Some(ctx) = weak.upgrade() else {
             return glib::Propagation::Proceed;
         };
-        let Some(menu) = ctx.ext.get::<MenuSlot>().and_then(|s| s.current()) else {
+        let Some(menu) = current(&ctx) else {
             return glib::Propagation::Proceed;
         };
         match menu.handle_key(key) {
@@ -114,7 +152,7 @@ pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
 
 /// `panel.context_menu` (Shift+F10, Menu key): open at the active panel's cursor row. When the
 /// command was triggered by a secondary click ([`open_from_click`]) the menu points at the
-/// pointer instead.
+/// pointer instead. (The click activated the clicked panel first, so it is the active one.)
 fn open_at_cursor(ctx: &Rc<AppContext>) {
     let Some(win) = ctx.window() else {
         return;
@@ -142,10 +180,10 @@ fn open_at_cursor(ctx: &Rc<AppContext>) {
                 )
             })
         });
-    let Some(rect) = rect else {
-        return; // empty panel: nothing to act on
-    };
-    open(ctx, list, Some(rect));
+    // An empty panel has no cursor row: the menu opens over the middle of the list.
+    let rect =
+        rect.unwrap_or_else(|| gdk::Rectangle::new(list.width() / 2, list.height() / 2, 1, 1));
+    open(ctx, list, rect);
 }
 
 /// Secondary click at (x, y) of `list` (widget coordinates; the FileList emits the signal):
@@ -158,12 +196,12 @@ pub fn open_from_click(ctx: &Rc<AppContext>, list: &FileList, x: f64, y: f64) {
     ctx.execute(cmd::PANEL_CONTEXT_MENU);
 }
 
-/// Build and show the menu over `list`, pointing at `rect` (centre of `list` when `None`).
-fn open(ctx: &Rc<AppContext>, list: &FileList, rect: Option<gdk::Rectangle>) {
+/// Build and show the menu over `list`, pointing at `rect`.
+fn open(ctx: &Rc<AppContext>, list: &FileList, rect: gdk::Rectangle) {
     let Some(slot) = ctx.ext.get::<MenuSlot>() else {
         return;
     };
-    close(ctx, &slot);
+    dismiss(&slot);
 
     let popover = gtk::Popover::new();
     popover.add_css_class("ofm-menu");
@@ -174,19 +212,12 @@ fn open(ctx: &Rc<AppContext>, list: &FileList, rect: Option<gdk::Rectangle>) {
 
     let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let mut rows = Vec::new();
-    let mut pending_sep = false;
-    for entry in ENTRIES {
+    // Entries whose command is unregistered are simply not shown.
+    for entry in shown_entries(|c| ctx.command_available(c)) {
         match entry {
-            Sep => pending_sep = true,
+            Sep => column.append(&gtk::Separator::new(gtk::Orientation::Horizontal)),
             Cmd(cmd) => {
-                if !ctx.command_available(*cmd) {
-                    continue; // no handler: the entry is simply not shown
-                }
-                if pending_sep && !rows.is_empty() {
-                    column.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-                }
-                pending_sep = false;
-                let row = build_row(ctx, &popover, *cmd);
+                let row = build_row(ctx, &popover, cmd);
                 column.append(&row.button);
                 rows.push(row);
             }
@@ -197,23 +228,20 @@ fn open(ctx: &Rc<AppContext>, list: &FileList, rect: Option<gdk::Rectangle>) {
     }
     popover.set_child(Some(&column));
     popover.set_parent(list);
-    if let Some(r) = rect {
-        popover.set_pointing_to(Some(&r));
-    }
+    popover.set_pointing_to(Some(&rect));
 
-    let shown = popover.clone();
     let menu = Rc::new(ContextMenu { popover, rows });
     {
         let weak_ctx = Rc::downgrade(ctx);
-        shown.connect_closed(move |p| {
-            if let Some(ctx) = weak_ctx.upgrade()
+        let weak_menu = Rc::downgrade(&menu);
+        // Closed by any means (Esc, click outside, a command): forget it and unparent it.
+        menu.popover.connect_closed(move |_| {
+            if let (Some(ctx), Some(menu)) = (weak_ctx.upgrade(), weak_menu.upgrade())
                 && let Some(slot) = ctx.ext.get::<MenuSlot>()
+                && slot.current().is_some_and(|m| Rc::ptr_eq(&m, &menu))
             {
-                let is_current = slot.open.borrow().as_ref().is_some_and(|m| m.popover == *p);
-                if is_current {
-                    slot.open.borrow_mut().take();
-                    p.unparent();
-                }
+                *slot.open.borrow_mut() = None;
+                menu.popover.unparent();
             }
         });
     }
@@ -229,11 +257,20 @@ fn open(ctx: &Rc<AppContext>, list: &FileList, rect: Option<gdk::Rectangle>) {
     }
 }
 
-/// Close the open menu (if any).
-pub fn close(_ctx: &Rc<AppContext>, slot: &Rc<MenuSlot>) {
-    if let Some(menu) = slot.open.borrow_mut().take() {
+/// Close the open menu (if any). Closing runs the popover's `closed` handler, which forgets
+/// the menu and unparents the popover.
+fn dismiss(slot: &Rc<MenuSlot>) {
+    if let Some(menu) = slot.open.borrow().clone() {
         menu.popover.popdown();
+        *slot.open.borrow_mut() = None;
         menu.popover.unparent();
+    }
+}
+
+/// Close the open context menu (if any).
+pub fn close(ctx: &AppContext) {
+    if let Some(slot) = ctx.ext.get::<MenuSlot>() {
+        dismiss(&slot);
     }
 }
 
@@ -324,6 +361,18 @@ impl ContextMenu {
         self.rows[target].button.grab_focus();
     }
 
+    /// Run the row of `cmd` like a click on it (the command runs after the menu is gone);
+    /// false when `cmd` has no row.
+    pub fn activate(&self, cmd: CommandId) -> bool {
+        match self.rows.iter().find(|r| r.cmd == cmd) {
+            Some(r) => {
+                r.button.emit_clicked();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Command ids of the shown rows (tests).
     pub fn shown_commands(&self) -> Vec<CommandId> {
         self.rows.iter().map(|r| r.cmd).collect()
@@ -362,5 +411,45 @@ mod tests {
         for pair in ENTRIES.windows(2) {
             assert!(!matches!(pair, [Sep, Sep]));
         }
+    }
+
+    #[test]
+    fn unregistered_commands_are_not_shown() {
+        // Everything registered: the definition as is (separators included).
+        assert_eq!(shown_entries(|_| true), ENTRIES.to_vec());
+        // Nothing registered: no rows at all, not even a lone separator.
+        assert!(shown_entries(|_| false).is_empty());
+        // The first group and the last three entries are unregistered: their separators go too.
+        let out = shown_entries(|c| {
+            !matches!(
+                c,
+                cmd::PANEL_OPEN
+                    | cmd::FILE_VIEW
+                    | cmd::FILE_EDIT
+                    | cmd::SELECT_BY_MASK
+                    | cmd::PANEL_COMPARE_DIRS
+                    | cmd::FILE_BATCH_RENAME
+            )
+        });
+        assert_eq!(
+            out,
+            vec![
+                Cmd(cmd::FILE_COPY),
+                Cmd(cmd::FILE_MOVE),
+                Cmd(cmd::FILE_RENAME),
+                Cmd(cmd::FILE_DELETE),
+                Sep,
+                Cmd(cmd::FILE_PROPERTIES),
+                Cmd(cmd::FILE_COPY_PATH),
+            ]
+        );
+        // A hole in the middle leaves exactly one separator between its neighbours.
+        let out = shown_entries(|c| {
+            !matches!(
+                c,
+                cmd::FILE_COPY | cmd::FILE_MOVE | cmd::FILE_RENAME | cmd::FILE_DELETE
+            )
+        });
+        assert_eq!(out.iter().filter(|e| **e == Sep).count(), 1, "{out:?}");
     }
 }

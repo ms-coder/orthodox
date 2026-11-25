@@ -143,6 +143,13 @@ impl FKeyBar {
         }
     }
 
+    /// Whether cell `n` (1..=10) takes clicks: it shows a command that has a handler (tests).
+    pub fn is_enabled(&self, n: usize) -> bool {
+        n.checked_sub(1)
+            .and_then(|i| self.cells.get(i))
+            .is_some_and(|c| c.button.is_sensitive())
+    }
+
     /// Texts of the ten labels (tests).
     pub fn labels(&self) -> Vec<String> {
         self.cells
