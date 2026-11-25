@@ -170,8 +170,14 @@ pub fn typed_char(
 }
 
 /// Open quick search on the active panel with `c` already typed (what a key press does).
+/// `[panels] filter_as_you_type = true` turns typing into filter mode instead (F06).
 pub fn start_with(ctx: &Rc<AppContext>, c: char) {
-    open_active(ctx, Mode::Search, &c.to_string());
+    let mode = if ctx.config.borrow().panels.filter_as_you_type {
+        Mode::Filter
+    } else {
+        Mode::Search
+    };
+    open_active(ctx, mode, &c.to_string());
 }
 
 /// Bar of the active side.

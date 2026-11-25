@@ -131,7 +131,8 @@ pub fn present(ctx: &Rc<AppContext>, permanent: bool) {
     }
     let perm = gtk::CheckButton::with_mnemonic(tr("Delete _permanently (skip the Trash)"));
     perm.set_widget_name("ofm-delete-permanent");
-    perm.set_active(permanent);
+    // [jobs] trash = false makes permanent deletion the default (Shift+Del forces it anyway).
+    perm.set_active(permanent || !ctx.config.borrow().jobs.trash);
     column.append(&perm);
 
     let cancel = ui::button(tr("Cancel"));

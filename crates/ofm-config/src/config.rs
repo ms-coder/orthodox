@@ -23,7 +23,6 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "confirm_quit_with_jobs",
             "confirm_delete",
             "confirm_overwrite",
-            "one_panel_mode",
             "inhibit_system_shortcuts",
         ],
     ),
@@ -155,8 +154,6 @@ pub struct General {
     pub confirm_delete: bool,
     /// Ask on overwrite.
     pub confirm_overwrite: bool,
-    /// One-panel mode.
-    pub one_panel_mode: bool,
     /// Ask the desktop to hand its shortcuts (GNOME: Alt+F2 run dialog, Alt+F7/F8/F10 window
     /// management, ...) to OFM while its window has the focus. The compositor may ask the user
     /// once; Super+Esc gives the shortcuts back. Needed for the Alt+Fn keys of the far/tc/mc
@@ -298,7 +295,6 @@ impl Default for General {
             confirm_delete: true,
             confirm_overwrite: true,
             inhibit_system_shortcuts: true,
-            one_panel_mode: false,
         }
     }
 }
