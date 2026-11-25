@@ -45,6 +45,9 @@ const MATCHER_POLL: Duration = Duration::from_millis(50);
 struct Task {
     path: PathBuf,
     entry: Entry,
+    /// The outer file passed the reporting filters. Archive probing ignores this, but plain-file
+    /// content search must still honour it.
+    passes_filters: bool,
 }
 
 /// Pending hit batch and its flush deadline.
@@ -358,25 +361,28 @@ impl Engine {
                 }
             } else {
                 shared.files.fetch_add(1, Ordering::Relaxed);
-                if self
-                    .filter
-                    .accepts(&w.path, w.kind, w.md.len(), mtime_ns(&w.md))
-                {
+                let passes_filters =
+                    self.filter
+                        .accepts(&w.path, w.kind, w.md.len(), mtime_ns(&w.md));
+                if passes_filters {
                     // Without a content query the file itself is the hit; the pool only
                     // refines (archives inside). With one, only a content match hits.
                     if !self.has_content {
                         shared.push_hit(tree_hit(w));
                     }
-                    if self.has_content || self.search_archives {
-                        let task = Task {
-                            path: w.path.clone(),
-                            entry: tree_hit(w).entry,
-                        };
-                        if let Some(tx) = tasks
-                            && !send_task(shared, tx, task)
-                        {
-                            return false;
-                        }
+                }
+                // Archive filters apply to the entries, not to the outer container. Probe every
+                // file when archive search is enabled; plain files still need passes_filters.
+                if self.search_archives || (self.has_content && passes_filters) {
+                    let task = Task {
+                        path: w.path.clone(),
+                        entry: tree_hit(w).entry,
+                        passes_filters,
+                    };
+                    if let Some(tx) = tasks
+                        && !send_task(shared, tx, task)
+                    {
+                        return false;
                     }
                 }
             }
@@ -469,6 +475,9 @@ impl Engine {
                 }
                 ArchiveCheck::PlainFile => {} // fall through to plain content search
             }
+        }
+        if !task.passes_filters {
+            return; // archive probing is filter-independent; plain content hits are not
         }
         let Some(spec) = self.content.as_ref() else {
             return; // name-only search: plain files were already reported
