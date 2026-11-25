@@ -205,7 +205,9 @@ fn sevenz_mode(f: &ArchiveEntry) -> Option<u32> {
     if !f.has_windows_attributes || f.windows_attributes & 0x8000 == 0 {
         return None;
     }
-    Some((f.windows_attributes >> 16) & 0o7777)
+    // Keep the file-type bits: `sevenz_kind` needs S_IFLNK/S_IFREG. IndexBuilder masks
+    // permissions to 0o7777 when it stores the entry.
+    Some(f.windows_attributes >> 16)
 }
 
 /// Read a symlink entry's target text (UTF-16LE with or without BOM, else raw bytes).
@@ -352,5 +354,22 @@ impl ArchiveReader for SevenzReader {
             f(entry, &mut (&[0u8; 0][..]))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn posix_symlink_attributes_determine_the_kind() {
+        let entry = ArchiveEntry {
+            has_stream: true,
+            has_windows_attributes: true,
+            windows_attributes: 0x8000 | (0o120777 << 16),
+            ..ArchiveEntry::default()
+        };
+        assert_eq!(sevenz_kind(&entry), ArchiveEntryKind::Symlink);
+        assert_eq!(sevenz_mode(&entry), Some(0o120777));
     }
 }
