@@ -242,3 +242,6 @@ Deferred to M9: N4 NFS retransmitted link() EEXIST can leave moved item at sourc
 - GLM: ONLY `glm-5.4` (strong; Claude Code model id `glm-5.4[1m]`, set by scripts/glm.sh; plain `glm-5.4` in other tools) or `glm-5.3-flash` (small; note the hyphen: `glm-5.3flash` is rejected as unknown). Never glm-5.3 or older: `scripts/glm.sh` now refuses other models (GLM_MODEL env). Z.ai also lists glm-5.3-flashx (not allowed by Igor's rule; unknown price).
 - Kimi: default `k3-256k`; `k3.1-pro` for hard jobs; never the `-highspeed` variants; `kimi-for-coding` (K2.8) is the expensive one.
 - T8.11 restarted on glm-5.4 (WIP committed first, ea6a218 on branch m8/T8.11-preg3-ui). M6/M7 security review (read-only, GLM-5.4, throwaway checkout ../orthodox-wt-review-m6) running; full check #5 (main with T6.4/T7.3/T8.3c) running. Wrapper lesson: `timeout` killed only the wrapper script, leaving a claude process hung 26 h: now `timeout -k 30` and kill by exact PID after a stall.
+
+## 2026-11-25 — full check green on main
+T6.5 merged (archive_real flakes were test-side: typed keys after F7 reached the command line; harness now waits for Xvfb). `./scripts/locked-check.sh` passes completely for the first time since M6/M7/M8 merges. Running: T8.11 (pre-G3 UI gaps) and M6/M7 security review, both GLM glm-5.4[1m].

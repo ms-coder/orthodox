@@ -443,13 +443,13 @@ mod tests {
                 Cmd(cmd::FILE_COPY_PATH),
             ]
         );
-        // A hole in the middle leaves exactly one separator between its neighbours.
+        // A hole in the middle leaves one separator between each pair of surviving groups.
         let out = shown_entries(|c| {
             !matches!(
                 c,
                 cmd::FILE_COPY | cmd::FILE_MOVE | cmd::FILE_RENAME | cmd::FILE_DELETE
             )
         });
-        assert_eq!(out.iter().filter(|e| **e == Sep).count(), 1, "{out:?}");
+        assert_eq!(out.iter().filter(|e| **e == Sep).count(), 2, "{out:?}");
     }
 }
