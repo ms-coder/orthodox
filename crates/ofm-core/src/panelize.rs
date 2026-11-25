@@ -182,7 +182,9 @@ pub fn run_panelize_timed(
             "stdout not piped (by construction it is)",
         ))
     })?;
-    let (tx, rx) = std_mpsc::channel::<Result<Vec<u8>, std::io::Error>>();
+    // Bound queued stdout chunks as well as the parser's carry: a fast writer must apply
+    // back-pressure instead of growing this channel while the consumer processes paths.
+    let (tx, rx) = std_mpsc::sync_channel::<Result<Vec<u8>, std::io::Error>>(4);
     let reader = std::thread::spawn(move || {
         let mut buf = [0u8; 64 * 1024];
         loop {
@@ -363,8 +365,10 @@ impl<'a> PathParser<'a> {
         let sep = self.sep();
         loop {
             let Some(i) = self.carry.iter().position(|b| *b == sep) else {
-                if !self.discarding && self.carry.len() > MAX_ITEM_BYTES {
-                    // No end in sight and already longer than any real path: drop it.
+                if self.carry.len() > MAX_ITEM_BYTES || self.discarding {
+                    // No end in sight and already longer than any real path: drop everything
+                    // buffered so far. Keep doing this on every chunk while discarding, otherwise
+                    // separator-free output would grow `carry` without bound.
                     self.carry.clear();
                     self.discarding = true;
                 }
@@ -495,6 +499,20 @@ mod tests {
         parser.feed(b"\n", &mut got);
         parser.finish(&mut got);
         assert!(got.is_empty());
+        assert_eq!(parser.dropped_long, 1);
+    }
+
+    #[test]
+    fn discarded_item_stays_bounded_across_separator_free_chunks() {
+        let mut parser = PathParser::new(Path::new("/w"), Delimiter::Newline);
+        let mut got = Vec::new();
+        parser.feed(&[b'x'; MAX_ITEM_BYTES + 1], &mut got);
+        for _ in 0..128 {
+            parser.feed(&[b'x'; 4096], &mut got);
+            assert!(parser.carry.len() <= MAX_ITEM_BYTES);
+        }
+        parser.feed(b"\nok\n", &mut got);
+        assert_eq!(got, [PathBuf::from("/w/ok")]);
         assert_eq!(parser.dropped_long, 1);
     }
 
