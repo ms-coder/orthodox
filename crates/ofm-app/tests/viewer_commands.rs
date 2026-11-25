@@ -144,10 +144,22 @@ fn viewer_window_scenario() {
         );
     };
 
-    // Directories do not open a viewer; nothing is shown and nothing breaks.
+    // F3 on a directory opens no viewer but starts the size calculation (F19, T8.11): the
+    // calculated size lands in the entry (the empty dir totals 0 bytes, never the fs size).
     cursor_to("adir");
+    let fs_size = ctx
+        .active_controller()
+        .model()
+        .cursor_entry()
+        .map(|e| e.size);
     execute(&ctx, cmd::FILE_VIEW);
     assert!(host.is_empty());
+    pump_until("dir size calculated", || {
+        ctx.active_controller()
+            .model()
+            .cursor_entry()
+            .is_some_and(|e| Some(e.size) != fs_size && e.size == 0)
+    });
     // Viewer commands without a viewer are harmless.
     execute(&ctx, cmd::VIEWER_TOGGLE_HEX);
 
