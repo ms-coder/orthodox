@@ -25,9 +25,10 @@ pub struct ReturnWatch {
 impl ReturnWatch {
     /// Run `on_end` once when `host` next reports [`ShellState::Idle`]. Replaces a pending
     /// return (a second command started from the command line).
-    pub fn arm(&self, host: &Rc<ShellHost>, on_end: impl Fn() + 'static) {
+    pub fn arm(self: &Rc<Self>, host: &Rc<ShellHost>, on_end: impl Fn() + 'static) {
         self.cancel(host);
         let weak = Rc::downgrade(self);
+        let host2 = Rc::clone(host);
         let id = host.changed.connect(move |state| {
             if *state != ShellState::Idle {
                 return;
@@ -35,7 +36,7 @@ impl ReturnWatch {
             let Some(watch) = weak.upgrade() else { return };
             // One shot: forget the subscription before acting.
             if let Some(id) = watch.pending.borrow_mut().take() {
-                host.changed.disconnect(id);
+                host2.changed.disconnect(id);
             }
             on_end();
         });
@@ -50,13 +51,14 @@ impl ReturnWatch {
     }
 
     /// Whether a command's end is awaited.
+    #[cfg(test)]
     pub fn is_armed(&self) -> bool {
         self.pending.borrow().is_some()
     }
 }
 
 /// Arm the return for the command the command line just started (if a shell is installed).
-pub fn arm(ctx: &AppContext) {
+pub fn arm(ctx: &Rc<AppContext>) {
     let watch = ctx.ext.get::<ReturnWatch>().unwrap_or_else(|| {
         let watch = Rc::new(ReturnWatch::default());
         ctx.ext.insert(Rc::clone(&watch));
@@ -65,9 +67,11 @@ pub fn arm(ctx: &AppContext) {
     let Some(host) = terminal::shell_host(ctx) else {
         return;
     };
+    let weak = Rc::downgrade(ctx);
     watch.arm(&host, move || {
         // Only while the terminal is still up: Ctrl+O during the command already returned.
-        if let Some(h) = terminal::handle(ctx) {
+        let Some(ctx) = weak.upgrade() else { return };
+        if let Some(h) = terminal::handle(&ctx) {
             h.hide();
         }
     });
@@ -80,7 +84,7 @@ mod tests {
     #[test]
     fn returns_once_at_the_first_prompt_and_not_before() {
         let host = Rc::new(ShellHost::new());
-        let watch = ReturnWatch::default();
+        let watch = Rc::new(ReturnWatch::default());
         let ends = Rc::new(std::cell::Cell::new(0));
         let count = Rc::clone(&ends);
         watch.arm(&host, move || count.set(count.get() + 1));
@@ -102,7 +106,7 @@ mod tests {
     #[test]
     fn a_second_command_replaces_the_pending_return() {
         let host = Rc::new(ShellHost::new());
-        let watch = ReturnWatch::default();
+        let watch = Rc::new(ReturnWatch::default());
         let first = Rc::new(std::cell::Cell::new(0));
         let second = Rc::new(std::cell::Cell::new(0));
         let (a, b) = (Rc::clone(&first), Rc::clone(&second));
