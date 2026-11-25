@@ -17,7 +17,7 @@
 //! entries without a data stream (empty files, directories) in file order. That is the natural
 //! "archive order" for a solid format; directory entries are delivered before/without data.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
@@ -44,6 +44,9 @@ const MAX_SYMLINK_TARGET: u64 = 64 * 1024;
 struct SevenzReader {
     reader: SzReader<std::fs::File>,
     index: Arc<ArchiveIndex>,
+    /// Original 7z file position -> index id. The stored root (`./`) has no index id, so original
+    /// positions cannot be used directly as ids.
+    file_to_id: HashMap<u32, u32>,
     /// Number of stored (pushed) entries; ids at or beyond this are synthetic directories.
     stored: u32,
 }
@@ -111,11 +114,13 @@ pub fn open<'p>(
     // Classify and build the index.
     let mut builder = IndexBuilder::new(path, ArchiveFormat::SevenZ, *limits);
     let mut stored = 0u32;
-    for raw in metas {
+    let mut file_to_id = HashMap::new();
+    for (i, raw) in metas.into_iter().enumerate() {
         if cancel.is_cancelled() {
             return Err(ArchiveError::Cancelled);
         }
-        if builder.push(raw)?.is_some() {
+        if let Some(id) = builder.push(raw)? {
+            file_to_id.insert(i as u32, id.0);
             stored += 1;
         }
     }
@@ -124,6 +129,7 @@ pub fn open<'p>(
     Ok(Box::new(SevenzReader {
         reader,
         index: Arc::new(index),
+        file_to_id,
         stored,
     }))
 }
@@ -320,7 +326,10 @@ impl ArchiveReader for SevenzReader {
                         });
                         return Ok(EntryDecision::Stop);
                     };
-                    let id = EntryId(i as u32);
+                    let Some(id) = self.file_to_id.get(&(i as u32)).copied().map(EntryId) else {
+                        // Stored root (`./`) and any other entry omitted by the index.
+                        return Ok(EntryDecision::Continue);
+                    };
                     if !wanted.contains(&id.0) {
                         // Unselected: leave unread; the library drains and verifies it.
                         return Ok(EntryDecision::Continue);
@@ -358,8 +367,60 @@ impl ArchiveReader for SevenzReader {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_entry_does_not_shift_stream_ids() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("root.7z");
+        let mut writer = sevenz_rust2::ArchiveWriter::create(&path).unwrap();
+        writer
+            .push_archive_entry(
+                ArchiveEntry {
+                    name: "./".to_owned(),
+                    is_directory: true,
+                    ..ArchiveEntry::default()
+                },
+                None::<&[u8]>,
+            )
+            .unwrap();
+        for (name, data) in [("a.txt", &b"aa"[..]), ("b.txt", &b"bb"[..])] {
+            writer
+                .push_archive_entry(
+                    ArchiveEntry {
+                        name: name.to_owned(),
+                        has_stream: true,
+                        ..ArchiveEntry::default()
+                    },
+                    Some(data),
+                )
+                .unwrap();
+        }
+        writer.finish().unwrap();
+
+        let mut reader = open(
+            &path,
+            &crate::archive::NoPassword,
+            &ArchiveLimits::default(),
+            &CancelToken::new(),
+        )
+        .unwrap();
+        for (name, expected) in [("a.txt", b"aa"), ("b.txt", b"bb")] {
+            let id = reader.index().lookup(Path::new(name)).unwrap().id;
+            let mut data = Vec::new();
+            reader
+                .visit(&[id], &CancelToken::new(), &mut |_, stream| {
+                    stream
+                        .read_to_end(&mut data)
+                        .map_err(|e| map_io(&path, e))?;
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(data, expected);
+        }
+    }
 
     #[test]
     fn posix_symlink_attributes_determine_the_kind() {
