@@ -79,7 +79,7 @@ pub fn open<'p>(
     })?;
 
     let stored = id_to_pos.len() as u32;
-    let index = builder.finish();
+    let index = builder.finish()?;
     Ok(Box::new(TarReader {
         path: path.to_owned(),
         format,

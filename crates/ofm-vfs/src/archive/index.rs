@@ -254,7 +254,8 @@ impl IndexBuilder {
 
     /// Build the lookup tables: last entry wins for a duplicated path, missing parent directories
     /// are synthesized, and an entry below a non-directory entry is flagged `InvalidName`.
-    pub fn finish(mut self) -> ArchiveIndex {
+    /// Synthetic directories count toward `max_entries` just like stored entries.
+    pub fn finish(mut self) -> Result<ArchiveIndex, ArchiveError> {
         let mut by_path: HashMap<PathBuf, EntryId> = HashMap::new();
         for e in self.entries.iter().filter(|e| e.is_safe()) {
             by_path.insert(e.path.clone(), e.id);
@@ -285,6 +286,9 @@ impl IndexBuilder {
                 if a.as_os_str().is_empty() || by_path.contains_key(a) {
                     continue;
                 }
+                if self.entries.len() >= self.limits.max_entries {
+                    return Err(self.limit(LimitKind::EntryCount));
+                }
                 let id = EntryId(self.entries.len() as u32);
                 let mut e = synthetic_dir(id, a);
                 e.mtime_ns = 0;
@@ -302,14 +306,14 @@ impl IndexBuilder {
         }
         let mut warnings = self.warnings;
         warnings.total_size_exceeds_warn = warnings.total_bytes > self.limits.warn_total_bytes;
-        ArchiveIndex {
+        Ok(ArchiveIndex {
             archive: self.archive,
             format: self.format,
             entries: self.entries,
             by_path,
             children,
             warnings,
-        }
+        })
     }
 }
 
@@ -505,7 +509,7 @@ mod tests {
         b.push(file("a/b/c.txt", 3)).unwrap();
         b.push(RawEntry::new("./", ArchiveEntryKind::Dir)).unwrap();
         b.push(file("top.txt", 1)).unwrap();
-        let ix = b.finish();
+        let ix = b.finish().unwrap();
         assert_eq!(names(ix.list_dir(Path::new(""))), ["top.txt", "a"]);
         assert_eq!(names(ix.list_dir(Path::new("a"))), ["a/b"]);
         assert_eq!(names(ix.list_dir(Path::new("a/b"))), ["a/b/c.txt"]);
@@ -527,7 +531,7 @@ mod tests {
         b.push(link("ok", "d/f")).unwrap();
         b.push(file("ok/inside", 1)).unwrap(); // through a (safe) symlink
         b.push(file("d/f", 1)).unwrap();
-        let ix = b.finish();
+        let ix = b.finish().unwrap();
         assert_eq!(ix.warnings().unsafe_entries, 5);
         assert_eq!(names(ix.list_dir(Path::new(""))), ["ok", "d"]);
         let reasons: Vec<_> = ix
@@ -555,7 +559,7 @@ mod tests {
         let mut b = builder();
         b.push(file("l/x", 1)).unwrap();
         b.push(link("l", "elsewhere")).unwrap();
-        let ix = b.finish();
+        let ix = b.finish().unwrap();
         assert_eq!(ix.warnings().unsafe_entries, 1);
         assert!(ix.lookup(Path::new("l/x")).is_none());
     }
@@ -567,7 +571,7 @@ mod tests {
         b.push(file("d/f", 2)).unwrap();
         b.push(file("d/g", 3)).unwrap();
         b.push(file("other", 4)).unwrap();
-        let ix = b.finish();
+        let ix = b.finish().unwrap();
         assert_eq!(ix.lookup(Path::new("d/f")).unwrap().size, 2);
         let sel = ix.select(&[PathBuf::from("d")]);
         let paths: Vec<_> = sel
@@ -586,10 +590,22 @@ mod tests {
         let mut b = builder();
         b.push(file("real/f", 1)).unwrap();
         b.push(link("alias", "real")).unwrap();
-        let ix = b.finish();
+        let ix = b.finish().unwrap();
         assert_eq!(names(ix.list_dir(Path::new("alias"))), ["real/f"]);
         let row = ix.to_entry(ix.lookup(Path::new("alias")).unwrap());
         assert!(row.kind.is_dir_like());
+    }
+
+    #[test]
+    fn synthetic_directories_count_toward_entry_limit() {
+        let limits = ArchiveLimits {
+            max_entries: 2,
+            ..ArchiveLimits::default()
+        };
+        let mut b = IndexBuilder::new("/a.zip", ArchiveFormat::Zip, limits);
+        b.push(file("a/b/c.txt", 1)).unwrap();
+        let ix = b.finish().unwrap();
+        assert!(ix.entries().len() <= limits.max_entries);
     }
 
     #[test]
@@ -617,12 +633,12 @@ mod tests {
                 ..
             })
         ));
-        assert!(b.finish().warnings().total_size_exceeds_warn);
+        assert!(b.finish().unwrap().warnings().total_size_exceeds_warn);
 
         let mut b = builder();
         let mut bomb = file("bomb", 10 << 20);
         bomb.packed_size = Some(100);
         b.push(bomb).unwrap();
-        assert_eq!(b.finish().warnings().suspicious_ratio_entries, 1);
+        assert_eq!(b.finish().unwrap().warnings().suspicious_ratio_entries, 1);
     }
 }
