@@ -245,3 +245,6 @@ Deferred to M9: N4 NFS retransmitted link() EEXIST can leave moved item at sourc
 
 ## 2026-11-25 — full check green on main
 T6.5 merged (archive_real flakes were test-side: typed keys after F7 reached the command line; harness now waits for Xvfb). `./scripts/locked-check.sh` passes completely for the first time since M6/M7/M8 merges. Running: T8.11 (pre-G3 UI gaps) and M6/M7 security review, both GLM glm-5.4[1m].
+
+## 2026-11-25 (evening) — M6/M7 security review: BLOCK, fixes queued
+Review by Kimi k3.1-pro saved as docs/REVIEW-M6M7.md (11 findings; no archive-only zip-slip; resource limits, 7z password/ids, archive search, F3/F4 on archive hits, extract dir TOCTOU). Lead confirmed #2, #4, #7 in code. Fix job prompt: scratchpad job-fix-review.txt (branch m8/fix-m6m7-review) — to run when Kimi/GLM quota returns (both exhausted at ~17:10 CET; GLM resets 21:48 server time). T8.11 WIP committed in its worktree (branch m8/T8.11-preg3-ui; has preg3_real.rs tests, compiles last I knew, unfinished). G3 is blocked until the fixes + T8.11 are merged and the full check is green.
