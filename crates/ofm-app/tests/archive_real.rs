@@ -180,12 +180,11 @@ fn zip_navigate_extract_refuse_and_view() {
         b"inner\n"
     );
 
-    // Read-only: F7 + a typed name creates nothing and the dialog never appears.
+    // Read-only: F7 is refused and creates nothing. Do not type a would-be dialog response here:
+    // with no dialog, Far sends printable keys to the command line and Return executes them.
+    // In particular, running `newdir` makes terminal cwd synchronization leave the archive panel.
     s.keys(&["F7"]);
     save(&s, "archive-readonly-message");
-    type_text(&s, "newdir");
-    s.keys(&["Return"]);
-    std::thread::sleep(Duration::from_millis(300));
     assert!(!right.join("newdir").exists() && !left.join("newdir").exists());
 
     // F3 on hello.txt: the viewer opens; a private temp dir exists meanwhile and is gone after Esc.
