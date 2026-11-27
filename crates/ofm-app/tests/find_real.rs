@@ -337,13 +337,16 @@ fn archive_hit_dialogs_belong_to_the_find_window() {
     s.keys(&["Escape"]);
     std::thread::sleep(Duration::from_secs(1));
     assert_eq!(ofm_windows(&s).len(), windows, "Esc closed the Find window");
-    // Cancelling the prompt is reported ("A password is required"), over the Find window too;
-    // Enter closes that message and nothing else.
-    save(&s, "t811-find-password-cancelled");
-    s.keys(&["Return"]);
-    wait_until("the message closed", 15, || {
+    // Cancelling is not an error: no message follows, the Find window is as before.
+    wait_until("no message after cancelling", 15, || {
         before.diff_pixels(&s.shot()) < 5_000
     });
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        before.diff_pixels(&s.shot()) < 5_000,
+        "a message appeared after cancelling the prompt"
+    );
+    save(&s, "t811-find-password-cancelled");
     assert_eq!(ofm_windows(&s).len(), windows);
     s.keys(&["F3"]);
     wait_until("the password prompt again", 15, || {
