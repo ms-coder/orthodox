@@ -4,12 +4,12 @@
 //! entry runs through `AppContext::execute` (invariant 5). A right click on an unselected row
 //! has already moved the cursor there (the FileList does that before emitting `context-menu`).
 //!
-//! Keys while the menu is open work like in the F9 menu bar: a window-level capture controller
-//! ([`install_ui`], added after the dispatcher's, so it runs first) handles Up/Down/Home/End
-//! (focus), Enter (run the focused entry), Esc (close) and swallows everything else, so no
-//! panel command fires behind the menu.
+//! Keys while the menu is open: a capture controller on the popover handles Up/Down/Home/End
+//! (focus), Enter (run the focused entry), Esc/Menu (close) and swallows everything else. It has
+//! to sit on the popover: GTK starts the propagation of its key events there, so neither a
+//! window-level controller nor the dispatcher sees them.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk::gdk;
@@ -22,7 +22,6 @@ use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
 use crate::i18n::tr;
 use crate::widgets::file_list::FileList;
-use crate::window::MainWindow;
 
 /// One row of the menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,11 +63,12 @@ struct Row {
 pub struct ContextMenu {
     popover: gtk::Popover,
     rows: Vec<Row>,
-    /// The list the menu is parented to: keyboard focus returns here when the menu closes
-    /// from the keyboard or an activation (a click outside leaves the focus alone).
+    /// The list the menu is parented to.
     list: FileList,
-    /// Set when the close should return the focus to `list`.
-    restore_focus: Cell<bool>,
+    /// The window's focus widget before the menu opened (usually none: panel keys go through the
+    /// window's dispatcher). Put back on close; hiding the focused menu button would otherwise
+    /// let GTK move the focus to the command line, which then eats the panel keys.
+    prior_focus: Option<gtk::Widget>,
 }
 
 /// Slot for the open menu and the last secondary click in `ctx.ext`.
@@ -132,27 +132,6 @@ pub fn install_commands(reg: &mut CommandRegistry) {
 /// Create the slot.
 pub fn install_state(ctx: &Rc<AppContext>) {
     ctx.ext.insert(Rc::new(MenuSlot::default()));
-}
-
-/// Install the window-level key controller described in the module docs (call after the
-/// dispatcher's controller exists, i.e. from `chrome::install_ui`).
-pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
-    let keys = gtk::EventControllerKey::new();
-    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-    let weak = Rc::downgrade(ctx);
-    keys.connect_key_pressed(move |_, key, _, _| {
-        let Some(ctx) = weak.upgrade() else {
-            return glib::Propagation::Proceed;
-        };
-        let Some(menu) = current(&ctx) else {
-            return glib::Propagation::Proceed;
-        };
-        match menu.handle_key(key) {
-            true => glib::Propagation::Stop,
-            false => glib::Propagation::Proceed,
-        }
-    });
-    win.window.add_controller(keys);
 }
 
 /// `panel.context_menu` (Shift+F10, Menu key): open at the active panel's cursor row. When the
@@ -235,11 +214,12 @@ fn open(ctx: &Rc<AppContext>, list: &FileList, rect: gdk::Rectangle) {
     popover.set_parent(list);
     popover.set_pointing_to(Some(&rect));
 
+    let prior_focus = list.root().and_then(|r| r.focus());
     let menu = Rc::new(ContextMenu {
         popover,
         rows,
         list: list.clone(),
-        restore_focus: Cell::new(false),
+        prior_focus,
     });
     {
         let weak_ctx = Rc::downgrade(ctx);
@@ -251,16 +231,23 @@ fn open(ctx: &Rc<AppContext>, list: &FileList, rect: gdk::Rectangle) {
                 && slot.current().is_some_and(|m| Rc::ptr_eq(&m, &menu))
             {
                 *slot.open.borrow_mut() = None;
-                // Keyboard close or activation: hiding the focused menu button lets GTK
-                // fall back to the window's default widget (the command line) - take the
-                // focus back to the panel instead, so the panel keys keep working. (A
-                // dialog opened by the command grabs its own focus right after.)
-                if menu.restore_focus.take() {
-                    menu.list.grab_focus();
+                // A dialog opened by the command takes the focus right after this.
+                if let Some(root) = menu.list.root() {
+                    root.set_focus(menu.prior_focus.as_ref());
                 }
                 menu.popover.unparent();
             }
         });
+    }
+    {
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak_menu = Rc::downgrade(&menu);
+        keys.connect_key_pressed(move |_, key, _, _| match weak_menu.upgrade() {
+            Some(menu) if menu.handle_key(key) => glib::Propagation::Stop,
+            _ => glib::Propagation::Proceed,
+        });
+        menu.popover.add_controller(keys);
     }
     *slot.open.borrow_mut() = Some(Rc::clone(&menu));
     // Fresh key hints, focus on the first row, then show.
@@ -313,12 +300,6 @@ fn build_row(ctx: &Rc<AppContext>, popover: &gtk::Popover, cmd: CommandId) -> Ro
         let popover = popover.clone();
         let weak = Rc::downgrade(ctx);
         button.connect_clicked(move |_| {
-            // Activation returns the focus to the panel once the menu is gone.
-            if let Some(ctx) = weak.upgrade()
-                && let Some(menu) = current(&ctx)
-            {
-                menu.restore_focus.set(true);
-            }
             popover.popdown();
             // Run after the menu is gone, so a dialog opened by the command starts clean.
             let weak = weak.clone();
@@ -345,14 +326,8 @@ impl ContextMenu {
     fn handle_key(&self, key: gdk::Key) -> bool {
         tracing::debug!("context menu handle_key {key:?}");
         match key {
-            gdk::Key::Escape => {
-                self.restore_focus.set(true);
-                self.popover.popdown();
-            }
-            gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter => {
-                self.restore_focus.set(true);
-                self.activate_focused();
-            }
+            gdk::Key::Escape | gdk::Key::Menu => self.popover.popdown(),
+            gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter => self.activate_focused(),
             gdk::Key::Up => self.move_focus(-1, false),
             gdk::Key::Down => self.move_focus(1, false),
             gdk::Key::Home => self.move_focus(-1, true),

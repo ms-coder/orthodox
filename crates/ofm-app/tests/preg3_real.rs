@@ -42,9 +42,6 @@ fn trees() -> (TreeSpec, TreeSpec) {
 }
 
 fn launch(config: &str) -> Running {
-    let log = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/e2e-preg3.log");
-    unsafe { std::env::set_var("OFM_E2E_LOG", &log) };
-    unsafe { std::env::set_var("RUST_LOG", "debug") };
     let (l, r) = trees();
     Running::launch_with(config, &l, &r)
 }
@@ -88,8 +85,6 @@ fn context_menu_opens_runs_and_closes_with_real_keys() {
     // Esc closes it: the panels are back unchanged.
     s.keys(&["Escape"]);
     let closed = wait_until(Duration::from_secs(10), || diff(&plain, &s.shot()) < 50);
-    eprintln!("DEBUG esc diff = {}", diff(&plain, &s.shot()));
-    save(&s, "preg3-after-esc2");
     assert!(closed, "Esc did not close the context menu");
 
     // The Menu key opens it too; Down + Enter runs the second entry ("View") on a.txt.
@@ -131,12 +126,11 @@ fn f1_opens_help_and_esc_closes_it() {
     save(&s, "preg3-help");
 
     // Typing filters the list: a rare substring changes the dialog visibly.
+    let unfiltered = s.shot();
     s.keys(&["b", "a", "t", "c", "h"]);
     assert!(
-        wait_until(Duration::from_secs(5), || {
-            let now = s.shot();
-            diff(&plain, &now) > 10000
-        }),
+        wait_until(Duration::from_secs(5), || diff(&unfiltered, &s.shot())
+            > 1000),
         "the Help search did not filter"
     );
     std::thread::sleep(Duration::from_millis(300));
@@ -153,10 +147,6 @@ fn f1_opens_help_and_esc_closes_it() {
 /// appears in the size column (full view).
 #[test]
 fn f3_on_a_directory_calculates_its_size() {
-    // Single-threaded test target: set before any app spawn (debug aid for this harness).
-    let log = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/e2e-preg3.log");
-    unsafe { std::env::set_var("OFM_E2E_LOG", &log) };
-    unsafe { std::env::set_var("RUST_LOG", "debug") };
     if !tools_available() {
         return;
     }

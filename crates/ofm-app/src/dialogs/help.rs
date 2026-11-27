@@ -4,7 +4,8 @@
 //! "Config warnings" — the status line points here.
 //!
 //! Esc closes (the dialog keymap section's `dialog.cancel`, like every dialog); typing in the
-//! search field filters the rows by command id, description or key.
+//! search field filters the rows by command id, description or key. Tab goes search field ->
+//! list (scrolls with the keyboard) -> Close.
 
 use std::rc::Rc;
 
@@ -94,7 +95,6 @@ impl Group {
         label.set_xalign(0.0);
         label.set_hexpand(true);
         label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        label.set_selectable(true);
         label.add_css_class("ofm-help-row");
         label.update_property(&[gtk::accessible::Property::Label(text)]);
         list.append(&label);
@@ -132,8 +132,11 @@ pub fn present(ctx: &Rc<AppContext>) {
     let all_rows = rows(&ctx.keymap.borrow());
     let scrolled = gtk::ScrolledWindow::new();
     scrolled.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    scrolled.set_hscrollbar_policy(gtk::PolicyType::Never);
     scrolled.set_vexpand(true);
+    // One Tab stop for the whole list; PageUp/PageDown, Home/End and Ctrl+arrows scroll it.
+    scrolled.set_widget_name("ofm-help-scroll");
+    scrolled.set_focusable(true);
+    scrolled.update_property(&[gtk::accessible::Property::Label(tr("Command list"))]);
     let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
     list.set_widget_name("ofm-help-list");
     let mut groups: Vec<Group> = Vec::new();

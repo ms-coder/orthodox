@@ -99,10 +99,8 @@ pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
     }
     *state.menubar.borrow_mut() = Some(menubar);
     *state.fkeybar.borrow_mut() = Some(fkeys);
-    // After the bars (so its key controller is added last and runs first).
-    contextmenu::install_ui(ctx, win);
     // The config-problems hint stored before the window existed (see `app::build_context`).
-    notice::show_pending(ctx);
+    notice::show_pending(ctx, win);
 }
 
 /// Everything `app.reload_config` loads on the worker.

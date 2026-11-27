@@ -2,9 +2,9 @@
 //! and compare-result rows) that hides itself after a few seconds. Users of [`show`]: dispatching
 //! a command without a handler ("Not available yet") and the config-problems hint at startup.
 //!
-//! The row is built lazily on the first [`show`] after the main window exists, so nothing has to
-//! be added to `hooks.rs`; the state itself is created by `chrome::install_state`. Without a
-//! window (headless tests) the text is only remembered in [`NoticeState::last`].
+//! The row is built by [`show_pending`] from `chrome::install_ui`, which also shows a message
+//! stored before the window existed; the state itself is created by `chrome::install_state`.
+//! Without a window (headless tests) the text is only remembered in [`NoticeState::last`].
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -15,6 +15,7 @@ use gtk::glib;
 
 use crate::context::AppContext;
 use crate::i18n::tr;
+use crate::window::MainWindow;
 
 /// How long a message stays visible.
 const SHOWN_FOR: Duration = Duration::from_secs(6);
@@ -75,21 +76,30 @@ pub fn is_shown(ctx: &AppContext) -> bool {
         .is_some_and(|r| r.revealer.reveals_child())
 }
 
-/// Build the row on first use, above the F-key bar.
-fn ensure_row(ctx: &Rc<AppContext>, state: &Rc<NoticeState>) -> Option<Rc<Row>> {
-    if let Some(row) = state.row.borrow().clone() {
-        return Some(row);
+/// Build the row above the F-key bar and show a message stored before the window existed (the
+/// startup warnings, see `app::build_context`). Called from `chrome::install_ui`, which runs
+/// before the window is registered in the context: hence the `win` argument.
+pub fn show_pending(ctx: &Rc<AppContext>, win: &MainWindow) {
+    let Some(state) = ctx.ext.get::<NoticeState>() else {
+        return;
+    };
+    *state.row.borrow_mut() = Some(build_row(win));
+    let pending = state.last.borrow().clone();
+    if let Some(text) = pending {
+        show(ctx, &text);
     }
-    let win = ctx.window()?;
+}
+
+fn build_row(win: &MainWindow) -> Rc<Row> {
     let label = gtk::Label::builder()
         .xalign(0.0)
         .hexpand(true)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .css_classes(["ofm-status"])
         .name("ofm-notice")
+        .accessible_role(gtk::AccessibleRole::Status)
         .build();
     label.update_property(&[gtk::accessible::Property::Label(tr("Status message"))]);
-    label.set_accessible_role(gtk::AccessibleRole::Status);
     let box_ = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     box_.add_css_class("ofm-statusbox");
     box_.append(&label);
@@ -98,24 +108,9 @@ fn ensure_row(ctx: &Rc<AppContext>, state: &Rc<NoticeState>) -> Option<Rc<Row>> 
     revealer.set_child(Some(&box_));
     revealer.set_reveal_child(false);
     win.fkeybar_slot.prepend(&revealer);
-    let row = Rc::new(Row {
+    Rc::new(Row {
         revealer,
         label,
         serial: Cell::new(0),
-    });
-    *state.row.borrow_mut() = Some(Rc::clone(&row));
-    Some(row)
-}
-
-/// Show the stored message once the window exists (startup path: the warnings are stored before
-/// `MainWindow` is built). Called from `chrome::install_ui`.
-pub fn show_pending(ctx: &Rc<AppContext>) {
-    let Some(state) = ctx.ext.get::<NoticeState>() else {
-        return;
-    };
-    if ensure_row(ctx, &state).is_some()
-        && let Some(text) = state.last.borrow().clone()
-    {
-        show(ctx, &text);
-    }
+    })
 }
