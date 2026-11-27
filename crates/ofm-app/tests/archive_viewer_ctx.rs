@@ -14,6 +14,7 @@
 
 use std::ffi::OsString;
 use std::process::Command;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gtk::glib;
@@ -23,7 +24,7 @@ use ofm_app::context::{AppContext, AppInit};
 use ofm_app::panel::{LEFT, LoadState};
 use ofm_app::window::MainWindow;
 use ofm_config::ConfigPaths;
-use ofm_core::{Location, cmd};
+use ofm_core::{Entry, EntryKind, Location, cmd};
 use ofm_testkit::tree::{FileSpec, TreeSpec};
 
 fn pump_until(what: &str, mut done: impl FnMut() -> bool) {
@@ -138,4 +139,34 @@ fn viewer_temp_dir_is_removed_when_the_viewer_closes() {
     pump_until("temp dir removed", || {
         ctx.services.archives.temp_count() == 0
     });
+
+    // F24: F3 and F4 on an archive search hit use the same bounded, read-only viewer path.
+    let hit = ofm_search::Hit {
+        location: Location::Archive {
+            archive: left.path().join("test.zip"),
+            inner: "hello.txt".into(),
+        },
+        entry: Entry::new("hello.txt", EntryKind::File),
+        content: None,
+    };
+    for action in [
+        ofm_app::search::actions::view
+            as fn(&Rc<AppContext>, &ofm_search::Hit) -> Result<(), String>,
+        ofm_app::search::actions::edit,
+    ] {
+        action(&ctx, &hit).unwrap();
+        pump_until("viewer open for archive search hit", || {
+            ofm_app::viewer::current(&ctx).is_some()
+        });
+        ctx.execute(cmd::VIEWER_CLOSE);
+        pump_until("search-hit viewer closed", || {
+            ctx.ext
+                .get::<ofm_app::viewer::ViewerHost>()
+                .unwrap()
+                .is_empty()
+        });
+        pump_until("search-hit temp dir removed", || {
+            ctx.services.archives.temp_count() == 0
+        });
+    }
 }

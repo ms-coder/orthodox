@@ -4,8 +4,10 @@
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 
 use adw::prelude::*;
+use gtk::glib;
 use ofm_core::{KeyContext, cmd};
 use ofm_viewer::Encoding;
 
@@ -49,6 +51,29 @@ fn status_label(css: &str) -> gtk::Label {
         .xalign(0.0)
         .single_line_mode(true)
         .build()
+}
+
+/// Scroll to a byte offset once the asynchronously opened document has a viewport.
+/// Gives up after about three seconds or when the viewer closes.
+pub fn jump_to_offset_when_ready(session: &Rc<Session>, offset: u64) {
+    if offset == 0 {
+        return;
+    }
+    let session = Rc::clone(session);
+    let mut tries = 0u32;
+    glib::timeout_add_local(Duration::from_millis(75), move || {
+        tries += 1;
+        if !session.is_empty() {
+            session.jump_to(offset);
+            if session.top() > 0 || tries > 40 {
+                return glib::ControlFlow::Break;
+            }
+        }
+        if tries > 40 || !session.window.is_visible() {
+            return glib::ControlFlow::Break;
+        }
+        glib::ControlFlow::Continue
+    });
 }
 
 /// Open a viewer window for `siblings[idx]` (the files `viewer.next_file` steps through).

@@ -79,7 +79,7 @@ pub fn open<'p>(
     })?;
 
     let stored = id_to_pos.len() as u32;
-    let index = builder.finish();
+    let index = builder.finish()?;
     Ok(Box::new(TarReader {
         path: path.to_owned(),
         format,
@@ -127,7 +127,7 @@ fn tar_raw_entry(entry: &tar::Entry<'_, impl Read>, path: &Path) -> Result<RawEn
 }
 
 /// Opens the (possibly decompressed) tar byte stream with codec memory caps applied.
-fn open_tar_stream(
+pub(crate) fn open_tar_stream(
     path: &Path,
     format: ArchiveFormat,
     limits: &ArchiveLimits,

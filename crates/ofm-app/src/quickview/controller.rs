@@ -496,14 +496,8 @@ fn archive_target(
     } else {
         ARCHIVE_TEXT_LIMIT
     };
-    match crate::panel::archive_extract::extract_entry(
-        service,
-        archive,
-        inner,
-        Some(limit),
-        true,
-        cancel,
-    ) {
+    match crate::panel::archive_extract::extract_entry(service, archive, inner, limit, true, cancel)
+    {
         Ok(x) => {
             let mut target = t.clone();
             target.path = x.file;

@@ -9,7 +9,7 @@ use ofm_core::CancelToken;
 
 use super::backend;
 use super::error::ArchiveError;
-use super::format::detect_format;
+use super::format::detect_format_with_limits;
 use super::index::{ArchiveEntry, ArchiveIndex, EntryId};
 use super::limits::ArchiveLimits;
 use super::password::PasswordProvider;
@@ -110,7 +110,8 @@ pub fn open_archive<'p>(
     limits: &ArchiveLimits,
     cancel: &CancelToken,
 ) -> Result<Box<dyn ArchiveReader + 'p>, ArchiveError> {
-    let format = detect_format(path)?.ok_or_else(|| ArchiveError::NotAnArchive(path.to_owned()))?;
+    let format = detect_format_with_limits(path, limits)?
+        .ok_or_else(|| ArchiveError::NotAnArchive(path.to_owned()))?;
     backend::open(format, path, passwords, limits, cancel)
 }
 

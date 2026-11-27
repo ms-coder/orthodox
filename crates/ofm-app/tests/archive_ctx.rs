@@ -122,7 +122,7 @@ fn zip_index(archive: &Path) -> Arc<ofm_vfs::archive::ArchiveIndex> {
     s.size = 100;
     s.encrypted = true;
     b.push(s).unwrap();
-    Arc::new(b.finish())
+    Arc::new(b.finish().unwrap())
 }
 
 struct Fixture {

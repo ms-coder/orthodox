@@ -127,7 +127,7 @@ pub fn open<'p>(
             stored += 1;
         }
     }
-    let index = builder.finish();
+    let index = builder.finish()?;
 
     Ok(Box::new(SevenzReader {
         reader,

@@ -71,7 +71,15 @@ pub fn open<'p>(
         ZipArchive::new(file).map_err(|e| map_zip_err(path, e))
     })?;
 
-    // Phase 1: metadata of every entry (shared borrow, no decompression).
+    if zf.len() > limits.max_entries {
+        return Err(ArchiveError::LimitExceeded {
+            archive: path.to_owned(),
+            kind: crate::archive::LimitKind::EntryCount,
+        });
+    }
+
+    // Phase 1: metadata of every entry (shared borrow, no decompression). The central-directory
+    // count was checked above, so this allocation is bounded by max_entries.
     let mut metas = Vec::with_capacity(zf.len());
     for i in 0..zf.len() {
         if cancel.is_cancelled() {
@@ -126,7 +134,7 @@ pub fn open<'p>(
             id_to_zip.push(i as u32);
         }
     }
-    let index = builder.finish();
+    let index = builder.finish()?;
 
     Ok(Box::new(ZipReader {
         archive: zf,

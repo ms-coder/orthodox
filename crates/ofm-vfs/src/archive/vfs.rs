@@ -292,7 +292,7 @@ mod tests {
         let mut f = RawEntry::new("d/f.txt", ArchiveEntryKind::File);
         f.size = 5;
         b.push(f).unwrap();
-        vfs.preload_index(Path::new("/x/a.zip"), Arc::new(b.finish()));
+        vfs.preload_index(Path::new("/x/a.zip"), Arc::new(b.finish().unwrap()));
         vfs
     }
 
