@@ -23,3 +23,16 @@ Verdict BLOCK. (R)=reasoned from code, not reproduced. Lead verified #2, #4, #7 
 - Password dialogs poll cancellation, closing drops the responder, retries are bounded, and passwords are not logged or persisted.
 - Content files use `O_NONBLOCK` plus `fstat`; regex matching is linear; symlink loops and result-channel back-pressure are handled.
 - Archive write commands/drops are refused; panelized operations map to real paths; same-name self-overwrite protection tests pass.
+
+## Re-review of part 1 (merge 6d59cac; Sonnet reviewer, 2026-11-27): BLOCK
+#2 and #10 fixed. #4 fixed with a side effect. #3 not fully fixed. #11 detection fixed but causes a regression. (V) = reproduced, (R) = reasoned.
+
+- R1 HIGH (V, #3): wrong password never re-prompts. `ofm-vfs/src/archive/backend/sevenz.rs:380,395` sets `delivered=true` before `f` reads, and a wrong password only fails on read: one typo = one prompt, then Io/Checksum error (with COPY coder the visitor first gets garbage). (R) A cached PasswordSource entry that no longer fits is never forgotten. Fix: verify the password (drain first needed encrypted block, CRC ok) with bounded re-prompts before calling `f`.
+- R2 HIGH (V, regression from #11): `sevenz.rs:91-111` symlink target pre-pass runs with the empty password; a plain-header encrypted 7z with one symlink fails `open()` with NeedsPassword (provider never asked), cannot be listed. Fix: only decode unencrypted blocks, or leave target None on password errors.
+- R3 MEDIUM (V, #3): mixed plain + encrypted blocks: `sevenz.rs:395` no prompt after the plain entry sets `delivered`; extract-all never prompts. Same fix as R1; also stop after the last wanted entry.
+- R4 MEDIUM (R): `sevenz.rs:95-109` pre-pass has no cancel check (large solid 7z with a symlink decompresses fully, uncancellable). Check cancel, stop after last symlink.
+- R5 MEDIUM-LOW (R, #4): `ofm-search/src/engine.rs:374`, `archives.rs:45` every file is probed: unreadable non-matching files emit "archive skipped". Stay silent on probe I/O errors when the file does not pass filters.
+- R6 LOW (R, #11): `sevenz.rs:102` with encrypted headers, symlink targets are never read even with the right password -> skipped as unsafe.
+- R7 LOW (R, older): `ofm-search/src/archives.rs:90-96` content query still reports matching directory entries inside archives.
+- Test gaps: wrong-then-right password, mixed archive, end-to-end symlink 7z; encrypted fixture lists coders [LZMA2, AES] but real 7-Zip order appears to be [AES, LZMA2]; `passes_filters` guard, size/mtime filters inside archives, stdout channel bound.
+- Nit: `reopen_for_streaming` parses headers outside `catch_panic` (`sevenz.rs:209`).

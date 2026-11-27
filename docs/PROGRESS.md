@@ -252,3 +252,10 @@ Review by Kimi k3.1-pro saved as docs/REVIEW-M6M7.md (11 findings; no archive-on
 ## 2026-11-25 — review fixes part 1 merged, full check green
 Merged m8/fix-m6m7-review up to b4184f7: findings #2 #3 #4 #10 #11 of docs/REVIEW-M6M7.md (Kimi k3.1-pro; verified only by its tests + full check, lead did not read the code). Kimi window exhausted.
 Open: #8/#9 half-written in WIP commit on m8/fix-m6m7-review (ofm-jobs tests extract_cancel_faults/extract_real do not compile); #1 #5 #6 #7 not confirmed done (check the WIP commit). T8.11: all work incl. WIP committed on m8/T8.11-preg3-ui, workspace compiles, tests not run, not merged. Worktrees: ../orthodox-wt-fix-m6, .claude/worktrees/agent-aa25c62da725a939c. Next on resume: finish both on Kimi, merge, full check, reconcile G3-CHECKLIST, STOP at G3.
+
+## 2026-11-27 — resumed
+- Kimi and GLM back. Running: FIX-M6M7 part 2 (findings #1 #6 #7 #8 #9) on Kimi k3.1-pro (../orthodox-wt-fix-m6, m8/fix-m6m7-review); T8.11 verify/finish on GLM 5.4 (.claude/worktrees/agent-aa25c62da725a939c, m8/T8.11-preg3-ui). Both have main merged in. Job prompts/logs are in the session scratchpad.
+- Decision: REVIEW-M6M7 #5 (external symlink swap of an extraction parent dir) deferred to M9 together with M3 finding m1: same class, both need a dirfd-based `Fs` revision. Tell Igor at G3.
+- Disk: removed `target/` in worktrees of already merged branches (~55 GB).
+- Then: merge both, T8.5 adversarial tests (unmerged), full `locked-check.sh`, reconcile docs/G3-CHECKLIST.md, STOP at G3.
+- 2026-11-27 (update, Igor): GLM is still out of quota -> use Kimi; Sonnet may be used more intensively until the weekly reset on Sunday 2026-11-29. So: T8.11 moved from GLM to a Sonnet ui-engineer (same worktree/branch); #5 is NOT deferred after all: Sonnet fileops-engineer on it (../orthodox-wt-fix5, m8/fix-extract-toctou). This replaces the "defer #5" decision above.
