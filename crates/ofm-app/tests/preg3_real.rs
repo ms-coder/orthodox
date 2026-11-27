@@ -1,6 +1,6 @@
 //! T8.11 real-binary tests (pre-G3 UI gaps): the panel context menu (Shift+F10, Menu key, keys
-//! inside the menu), the Help dialog (F1) and F3 on a directory = size calculation (F19), all
-//! through the real `ofm` under a private Xvfb with real key events (see `real_support`). Skips
+//! inside the menu), the Help dialog (F1), F3 on a directory = size calculation (F19) and
+//! `[terminal] return_to_panels`, all through the real `ofm` under a private Xvfb with real key events (see `real_support`). Skips
 //! when the harness tools are missing. Screenshots land in `target/screenshots/`.
 #![allow(
     clippy::unwrap_used,
@@ -167,5 +167,45 @@ fn f3_on_a_directory_calculates_its_size() {
         window_count(&s),
         1,
         "F3 on a directory must not open the viewer"
+    );
+}
+
+/// Type `sleep 2` into the command line and press Enter; returns the shot of the panels before,
+/// once the terminal has replaced them.
+fn run_sleep(s: &Running) -> Shot {
+    // The shell must be at its first prompt before a line is fed to it.
+    std::thread::sleep(Duration::from_secs(2));
+    let panels = s.shot();
+    s.keys(&["s", "l", "e", "e", "p", "space", "2", "Return"]);
+    assert!(
+        wait_until(Duration::from_secs(10), || diff(&panels, &s.shot())
+            > 100_000),
+        "the command did not bring up the terminal"
+    );
+    panels
+}
+
+/// `[terminal] return_to_panels = true`: the panels come back when the command ends; by default
+/// the terminal stays up.
+#[test]
+fn return_to_panels_brings_the_panels_back() {
+    if !tools_available() {
+        return;
+    }
+    let s = launch("[terminal]\nreturn_to_panels = true\n");
+    let panels = run_sleep(&s);
+    assert!(
+        wait_until(Duration::from_secs(15), || diff(&panels, &s.shot())
+            < 20_000),
+        "the panels did not come back after the command"
+    );
+    drop(s);
+
+    let s = launch("");
+    let panels = run_sleep(&s);
+    std::thread::sleep(Duration::from_secs(4));
+    assert!(
+        diff(&panels, &s.shot()) > 100_000,
+        "by default the terminal stays up"
     );
 }
