@@ -270,7 +270,16 @@ impl PasswordProvider for AppPasswords {
             }
             match waiting.wait_timeout(POLL) {
                 Wait::Answered(answer) => return answer.map(|s| s.to_plain()),
-                Wait::Dropped => return None,
+                Wait::Dropped => {
+                    // The user dismissed the prompt. Browse/view workers have a scope token:
+                    // cancel it so the archive backend returns Cancelled rather than claiming
+                    // afterwards that a password is required. Extract jobs have no scope here;
+                    // their missing-password error is worded truthfully by archive::error_text.
+                    if let Some(cancel) = scope {
+                        cancel.cancel();
+                    }
+                    return None;
+                }
                 Wait::TimedOut => {}
             }
         }
