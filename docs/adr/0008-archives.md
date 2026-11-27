@@ -147,5 +147,5 @@ refines or tightens the text, the code wins and is listed here (tests: `crates/o
   ownership, extracting onto a case-insensitive file system beyond what `copy::Published` covers.
 - **Anchored writes (FIX-M6M7 #5).** After the destination exists, every call below it goes through
   `fs::anchored::AnchoredFs` (ADR-0004 "Anchored access"): replacing a checked parent with a symlink
-  during the job cannot redirect anything. Directory metadata is applied to the directory that was
-  filled while its handle is cached, else to what is found there without following a symlink.
+  during the job cannot redirect anything. Directory metadata is applied only to the directory with
+  the `(dev, ino)` the job created, otherwise it is skipped with a warning.

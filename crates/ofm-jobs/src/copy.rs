@@ -123,7 +123,7 @@ fn fold_component(c: &OsStr) -> OsString {
 
 /// `path` with every component case-folded (also the parent directories: `Photos/a` and
 /// `photos/a` are one entry on a case-insensitive file system).
-fn fold_path(path: &Path) -> PathBuf {
+pub(crate) fn fold_path(path: &Path) -> PathBuf {
     path.components()
         .map(|c| fold_component(c.as_os_str()))
         .collect()

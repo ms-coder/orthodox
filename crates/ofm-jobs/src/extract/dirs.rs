@@ -20,6 +20,7 @@ use super::{Extractor, Fail};
 const DEFAULT_DIR_MODE: u32 = 0o755;
 
 /// One directory of the output tree.
+#[derive(Clone)]
 pub(crate) struct DirInfo {
     /// Where it really is (differs from the nominal path after "rename new").
     pub(crate) actual: PathBuf,
@@ -29,6 +30,16 @@ pub(crate) struct DirInfo {
     pub(crate) mode: u32,
     /// Final mtime in ns; 0 = not known, leave the time the job left it with.
     pub(crate) mtime_ns: i128,
+    /// `(dev, ino)` right after the job created it: final metadata goes to that directory only.
+    pub(crate) id: Option<(u64, u64)>,
+}
+
+/// What [`Extractor::make_dir`] found or created.
+struct Made {
+    actual: PathBuf,
+    created: bool,
+    /// Identity of a created directory (`None`: merged, or it could not be queried).
+    id: Option<(u64, u64)>,
 }
 
 impl Extractor {
@@ -61,7 +72,12 @@ impl Extractor {
                 }
                 Err(f) => return Err(f),
             };
-            let Some((actual, created)) = made else {
+            let Some(Made {
+                actual,
+                created,
+                id,
+            }) = made
+            else {
                 self.blocked.insert(cur_rel);
                 return Ok(None);
             };
@@ -75,6 +91,7 @@ impl Extractor {
                     created,
                     mode: DEFAULT_DIR_MODE,
                     mtime_ns: 0,
+                    id,
                 },
             );
             cur = actual;
@@ -88,7 +105,7 @@ impl Extractor {
         ctx: &mut JobCtx,
         nominal: &Path,
         rel: &Path,
-    ) -> Result<Option<(PathBuf, bool)>, Fail> {
+    ) -> Result<Option<Made>, Fail> {
         let st = self.fake_stat(FileType::Dir, 0o755, 0, 0);
         let src = self.archive.join(rel);
         // One handle of the parent for the probe, the question and the mkdir.
@@ -110,7 +127,13 @@ impl Extractor {
                     ctx.note_skipped();
                     return Ok(None);
                 }
-                Target::Merge(p) => return Ok(Some((p, false))),
+                Target::Merge(p) => {
+                    return Ok(Some(Made {
+                        actual: p,
+                        created: false,
+                        id: None,
+                    }));
+                }
                 // Never produced for a directory (resolve_target refuses overwrite across types).
                 Target::Replace(_) => {
                     ctx.warn(nominal, "overwrite not allowed for a directory; skipped");
@@ -119,8 +142,12 @@ impl Extractor {
                 }
                 Target::Fresh(p) => match self.fs.mkdir(&p, 0o700) {
                     Ok(()) => {
-                        self.note_new_dir(ctx, &p);
-                        return Ok(Some((p, true)));
+                        let id = self.note_new_dir(ctx, &p);
+                        return Ok(Some(Made {
+                            actual: p,
+                            created: true,
+                            id,
+                        }));
                     }
                     // The name appeared since the probe: resolve again.
                     Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -131,11 +158,17 @@ impl Extractor {
     }
 
     /// Record a directory this job created: its identity and name are never overwritable later.
-    fn note_new_dir(&mut self, ctx: &mut JobCtx, dir: &Path) {
-        match self.fs.lstat(dir) {
-            Ok(st) => self.copier.note_published((st.dev, st.ino)),
-            Err(e) => tracing::debug!(path = %dir.display(), error = %e, "lstat new dir"),
-        }
+    fn note_new_dir(&mut self, ctx: &mut JobCtx, dir: &Path) -> Option<(u64, u64)> {
+        let id = match self.fs.lstat(dir) {
+            Ok(st) => {
+                self.copier.note_published((st.dev, st.ino));
+                Some((st.dev, st.ino))
+            }
+            Err(e) => {
+                tracing::debug!(path = %dir.display(), error = %e, "lstat new dir");
+                None
+            }
+        };
         self.copier.note_published_path(dir);
         if self.sync
             && let Some(parent) = dir.parent()
@@ -143,6 +176,7 @@ impl Extractor {
         {
             self.meta_warn(ctx, parent, "directory not synced", &e);
         }
+        id
     }
 
     /// A directory entry of the archive: make sure it exists and remember its final metadata.
@@ -169,25 +203,23 @@ impl Extractor {
     /// Final mode and mtime of the directories this job created, deepest first, so that a
     /// directory that became read-only (or unsearchable) only does so after its contents are in
     /// place. Failures are warnings. Runs after cancel/failure too.
+    ///
+    /// A directory whose handle left the cache is opened again by name, so another directory may
+    /// be found there: metadata is applied only if its `(dev, ino)` is the one recorded at
+    /// creation. Where inode numbers are unstable (vfat) a false mismatch only skips metadata.
     pub(crate) fn finish_dirs(&mut self, ctx: &mut JobCtx) {
-        let mut list: Vec<(usize, PathBuf, u32, i128)> = self
+        let mut list: Vec<(usize, DirInfo)> = self
             .dirs
             .iter()
             .filter(|(_, d)| d.created)
-            .map(|(rel, d)| {
-                (
-                    rel.components().count(),
-                    d.actual.clone(),
-                    d.mode,
-                    d.mtime_ns,
-                )
-            })
+            .map(|(rel, d)| (rel.components().count(), d.clone()))
             .collect();
-        list.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        list.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.actual.cmp(&b.1.actual)));
         let fs = Arc::clone(&self.fs);
-        for (_, path, mode, mtime_ns) in list {
-            // One handle for all three steps, and only ever a directory.
-            let _dir = match self.anchor.hold(&path) {
+        for (_, d) in list {
+            let (path, mode, mtime_ns, id) = (d.actual, d.mode, d.mtime_ns, d.id);
+            // One handle for all steps, and only ever a directory.
+            let dir = match self.anchor.hold(&path) {
                 Ok(d) => d,
                 Err(e) => {
                     self.meta_warn(ctx, &path, "permissions not set", &e);
@@ -199,6 +231,14 @@ impl Extractor {
                 && let Err(e) = fs.sync_dir(&path)
             {
                 self.meta_warn(ctx, &path, "directory not synced", &e);
+            }
+            let found = dir.stat().ok().map(|st| (st.dev, st.ino));
+            if id.is_none() || found != id {
+                let why = std::io::Error::other(
+                    "not verifiably the directory this job created (replaced during extraction?)",
+                );
+                self.meta_warn(ctx, &path, "permissions and times not set", &why);
+                continue;
             }
             // Never setuid/setgid/sticky, never beyond rwx for everyone.
             if let Err(e) = fs.set_mode(&path, mode & 0o777) {

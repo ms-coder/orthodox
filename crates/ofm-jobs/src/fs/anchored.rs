@@ -30,6 +30,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use super::{Fs, FsFile, FsStat, TrashError, real};
+use crate::copy::fold_path;
 
 /// Directory handles kept open (apart from held ones and the root).
 const CACHE_DIRS: usize = 32;
@@ -87,13 +88,21 @@ struct At {
     path: PathBuf,
 }
 
+/// One cached directory handle.
+struct Cached {
+    dir: PathBuf,
+    /// `dir` case-folded, for [`AnchoredFs::forget`].
+    folded: PathBuf,
+    pin: Arc<FsPin>,
+}
+
 /// An [`Fs`] whose access below `root` goes through pinned directory handles.
 pub(crate) struct AnchoredFs {
     inner: Arc<dyn Fs>,
     root: PathBuf,
     root_pin: Arc<FsPin>,
     /// Least recently used first.
-    cache: Mutex<Vec<(PathBuf, Arc<FsPin>)>>,
+    cache: Mutex<Vec<Cached>>,
 }
 
 fn outside(path: &Path) -> io::Error {
@@ -166,9 +175,9 @@ impl AnchoredFs {
         let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
         let i = cache
             .iter()
-            .position(|(p, _)| p.as_os_str() == dir.as_os_str())?;
+            .position(|c| c.dir.as_os_str() == dir.as_os_str())?;
         let hit = cache.remove(i);
-        let pin = Arc::clone(&hit.1);
+        let pin = Arc::clone(&hit.pin);
         cache.push(hit);
         Some(pin)
     }
@@ -179,29 +188,36 @@ impl AnchoredFs {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
-            .filter(|(p, _)| is_at_or_below(dir, p))
-            .max_by_key(|(p, _)| p.as_os_str().len())
-            .map(|(p, pin)| (p.clone(), Arc::clone(pin)))
+            .filter(|c| is_at_or_below(dir, &c.dir))
+            .max_by_key(|c| c.dir.as_os_str().len())
+            .map(|c| (c.dir.clone(), Arc::clone(&c.pin)))
     }
 
     fn remember(&self, dir: &Path, pin: Arc<FsPin>) {
         let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-        cache.push((dir.to_path_buf(), pin));
+        cache.push(Cached {
+            dir: dir.to_path_buf(),
+            folded: fold_path(dir),
+            pin,
+        });
         while cache.len() > CACHE_DIRS {
             // Held handles (count > 1) stay.
-            let Some(i) = cache.iter().position(|(_, p)| Arc::strong_count(p) == 1) else {
+            let Some(i) = cache.iter().position(|c| Arc::strong_count(&c.pin) == 1) else {
                 break;
             };
             cache.remove(i);
         }
     }
 
-    /// The job itself changed what `path` names: handles at or below it are stale.
+    /// The job itself changed what `path` names: handles at or below it are stale. Judged
+    /// ignoring case, because on vfat `foo` and `FOO` are one directory; dropping a handle too
+    /// many only means opening it again.
     fn forget(&self, path: &Path) {
+        let folded = fold_path(path);
         self.cache
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|(p, _)| !is_at_or_below(p, path));
+            .retain(|c| !is_at_or_below(&c.folded, &folded));
     }
 
     /// The handle of directory `dir`: cached, or opened component by component from the nearest
@@ -554,6 +570,19 @@ mod tests {
         fs.create_excl(&d.join("b"), 0o600).unwrap();
         assert!(d.join("b").exists());
         assert!(!root.join("aside/b").exists());
+    }
+
+    /// vfat: renaming `FOO` renames `foo`.
+    #[test]
+    fn renames_drop_handles_of_every_spelling() {
+        let (_t, root, _out, fs) = setup();
+        fs.mkdir(&root.join("foo"), 0o700).unwrap();
+        fs.mkdir(&root.join("FOO"), 0o700).unwrap();
+        fs.sync_dir(&root.join("foo")).unwrap();
+        assert!(fs.cached(&root.join("foo")).is_some());
+        fs.rename_noreplace(&root.join("FOO"), &root.join("aside"))
+            .unwrap();
+        assert!(fs.cached(&root.join("foo")).is_none());
     }
 
     #[test]
