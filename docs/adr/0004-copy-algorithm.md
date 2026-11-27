@@ -26,7 +26,8 @@ Per-file copy:
 6. Publish: `renameat2(RENAME_NOREPLACE)`; if the user chose overwrite, plain `rename` (atomic
    replace). An existing destination is never truncated in place.
 7. On error/cancel: unlink the temp file. The final name is never half-written. Leftover
-   `*.ofm-part-*` from a crash are ignored by listings of the job and may be cleaned on next run.
+   `*.ofm-part-*` from a crash or power loss are left in place; OFM never removes them by itself
+   (see "Stale temp files").
 
 Directories: create with mode 0700 while copying, recurse, set final mode and times post-order.
 Symlinks: recreated (`readlink` + `symlink`) unless `follow_symlinks`. FIFOs/devices/sockets: skipped
@@ -87,7 +88,7 @@ Findings of the T3.5 review, fixed in T3.6a (regression tests: `crates/ofm-jobs/
   are refused, so a FIFO swapped in after `lstat` cannot block the worker (m5). FICLONE /
   `copy_file_range` fall back to the next tier also on `EPERM`, `ETXTBSY` and on `EIO` before the
   tier copied a byte, like coreutils (m6).
-- Still open (M9): openat/unlinkat-based delete/chmod (m1), cleanup of stale `.ofm-part-*` (m7).
+- m1 and m7 were left for M9: see "M9 data-safety fixes" below.
 
 ## Anchored access (FIX-M6M7 #5, 2026-11-27)
 
@@ -97,8 +98,8 @@ then wrote outside the destination. Additive change to the seam: `Fs::pin(path, 
 `FaultOp::Pin`). `fs/anchored.rs` builds `AnchoredFs` on it: an `Fs` that opens every directory below
 one root component by component without following symlinks and performs each call on
 `/proc/self/fd/<handle>/<name>`. The root itself is opened once, following symlinks. Handles are an
-LRU of 32; the parent of the item in progress is held. Only extraction uses it (ADR-0008); copy and
-move are unchanged. Delete/chmod (m1) can reuse it. Needs `/proc` (checked: the job fails otherwise).
+LRU of 32; the parent of the item in progress is held. Extraction uses it (ADR-0008); delete,
+chmod and move reuse its handles (see "Checked directory walks"). Needs `/proc` (checked: the job fails otherwise).
 
 Checks that go with it: final directory mode/mtime are applied only if the directory still has the
 `(dev, ino)` recorded when the job created it (else a warning; on vfat, whose inode numbers are not
@@ -166,3 +167,20 @@ Remaining windows:
   number and is refused (nothing is lost);
 - not covered: trash (one rename of the selected item), the destination side of copy and move,
   non-recursive jobs on other paths (mkdir, link).
+
+### Stale temp files (m7): not cleaned up, on purpose
+
+A temp file normally never outlives its job; only a crash, kill, power loss or a vanished device
+leaves one. Automatic removal cannot be made certain not to delete somebody's data:
+
+- the name proves nothing: it carries no checkable owner, and a user may have a file of that shape
+  (for example a partial copy kept or continued on purpose);
+- liveness cannot be proven: another instance may be writing it, also from another machine on a
+  network share or removable disk, where process ids mean nothing and locks are unreliable;
+- finding them "on next run" needs either a scan of the user's folders or a persistent journal of
+  temp paths, and after a crash a journalled path may name another file (inode numbers do not
+  settle it on vfat).
+
+The cost of leaving one is disk space. No temp file is ever the only copy of anything: a move
+removes a source only after the file is published. The files are hidden; they can be found with the
+mask `.*.ofm-part-*` and deleted by the user.
