@@ -131,3 +131,7 @@ Remaining windows. None of them follows a symlink below the pinned root.
   case-insensitive file system two spellings are one entry, and unlinking `from` would delete the
   only copy. A file system or attribute cache that does not show the new count keeps the old
   behaviour (a conflict is asked, nothing is removed).
+- **Trash without `RENAME_NOREPLACE` (N5).** The move into `files/` goes through the same fallback
+  (`link` + `unlink`, else checked rename) instead of failing with `EINVAL` for every item on NFS
+  and FUSE. The name is already claimed by the `O_EXCL` info file, so another trash user will not
+  take it; the lstat+rename race for directories is the one documented above.
