@@ -102,6 +102,8 @@ pub fn extract_from_reader(
     let archive = index.archive().to_path_buf();
     let selection = normalize_selection(entries)?;
     let ids = index.select(&selection);
+    // A set: the selection can be as large as the archive, and every entry is matched against it.
+    let selection: HashSet<PathBuf> = selection.into_iter().collect();
     report_unsafe(ctx, &index, &selection);
     if ids.is_empty() {
         ctx.warn(&archive, "nothing to extract: no matching entries");
@@ -187,12 +189,26 @@ fn normalize_selection(entries: &[PathBuf]) -> Result<Vec<PathBuf>, JobError> {
         .collect()
 }
 
+/// The outermost selected item that `path` is, or lies below (component-wise, as
+/// `Path::starts_with`; `""` = everything). Costs the depth of `path`, not the size of the selection.
+fn outermost_selected<'a>(selection: &HashSet<PathBuf>, path: &'a Path) -> Option<&'a Path> {
+    // `ancestors` goes from the path upwards, and ends before "" for an absolute (unsafe) path.
+    path.ancestors()
+        .filter(|a| selection.contains(*a))
+        .last()
+        .or_else(|| selection.contains(Path::new("")).then_some(Path::new("")))
+}
+
 /// One warning per unsafe entry below the selection (raw path in the message; the warning's path
 /// is the archive, so no consumer can mistake a hostile name for a real location).
-fn report_unsafe(ctx: &mut JobCtx, index: &ofm_vfs::archive::ArchiveIndex, selection: &[PathBuf]) {
+fn report_unsafe(
+    ctx: &mut JobCtx,
+    index: &ofm_vfs::archive::ArchiveIndex,
+    selection: &HashSet<PathBuf>,
+) {
     let mut n = 0usize;
     for e in index.unsafe_entries() {
-        if !selection.iter().any(|s| e.path.starts_with(s)) {
+        if outermost_selected(selection, &e.path).is_none() {
             continue;
         }
         n += 1;
@@ -281,7 +297,7 @@ pub(crate) struct Extractor {
     /// `SameFile` conflict (never overwritable).
     pub(crate) archive_id: (u64, u64),
     pub(crate) archive_size: u64,
-    selection: Vec<PathBuf>,
+    selection: HashSet<PathBuf>,
     selected: HashSet<EntryId>,
     pub(crate) limits: ArchiveLimits,
     pub(crate) sync: bool,
@@ -306,7 +322,7 @@ impl Extractor {
         anchor: Arc<AnchoredFs>,
         archive: &Path,
         dest_dir: &Path,
-        selection: Vec<PathBuf>,
+        selection: HashSet<PathBuf>,
         ids: &[EntryId],
         opts: &ExtractOpts,
     ) -> Self {
@@ -399,12 +415,8 @@ impl Extractor {
             );
         }
         // Each selected item lands directly in the destination (outermost selection wins).
-        let rel = self
-            .selection
-            .iter()
-            .filter_map(|s| safe::relative_to_selection(&e.path, s).map(|r| (s, r)))
-            .min_by_key(|(s, _)| s.components().count())
-            .map(|(_, r)| r);
+        let rel = outermost_selected(&self.selection, &e.path)
+            .and_then(|s| safe::relative_to_selection(&e.path, s));
         let Some(rel) = rel else {
             return self.skip_entry(
                 ctx,

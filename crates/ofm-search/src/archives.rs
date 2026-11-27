@@ -7,6 +7,7 @@
 //! "archive search not available yet" warning per search and moves on; the code below is
 //! compiled and ready, and the test for it is `#[ignore = "needs T6.1"]`.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -116,11 +117,11 @@ pub(crate) fn search_inside(
     }
     let archive_path = archive.to_owned();
     // `visit` streams in archive order; the visitor checks each entry against the
-    // selection (ids are unique, a small linear scan is fine for v1.0 archive sizes).
-    let selected_paths: Vec<&Path> = content_paths.iter().map(PathBuf::as_path).collect();
+    // selection. A set, so a large archive is not searched in quadratic time.
+    let selected_paths: HashSet<&Path> = content_paths.iter().map(PathBuf::as_path).collect();
     let cancel: &CancelToken = sink.cancel; // copied out: the visitor mutably borrows the sink
     let result = reader.visit(&selected, cancel, &mut |entry, data| {
-        if !selected_paths.iter().any(|p| *p == entry.path) {
+        if !selected_paths.contains(entry.path.as_path()) {
             return Ok(());
         }
         match search_stream(data, spec, cancel) {
