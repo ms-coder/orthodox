@@ -228,6 +228,9 @@ pub fn present(ctx: &Rc<AppContext>, moving: bool) {
 
 // ---- one entry to a private temp file (viewer, quick view) ------------------------------------
 
+/// Largest archive entry F3/F4 will write to a private temp file.
+pub const ARCHIVE_VIEW_LIMIT: u64 = 64 << 20;
+
 /// A file extracted for viewing.
 #[derive(Debug)]
 pub struct Extracted {
@@ -262,13 +265,13 @@ impl ExtractFail {
 }
 
 /// Extract the regular file `inner` of `archive` into a fresh private temp directory, at most
-/// `limit` bytes of it when given. `quiet`: never ask for a password (quick view). Blocking: worker threads only.
+/// `limit` bytes of it. `quiet`: never ask for a password (quick view). Blocking: worker threads only.
 #[allow(clippy::disallowed_methods)] // worker thread
 pub fn extract_entry(
     service: &ArchiveService,
     archive: &Path,
     inner: &Path,
-    limit: Option<u64>,
+    limit: u64,
     quiet: bool,
     cancel: &CancelToken,
 ) -> Result<Extracted, ExtractFail> {
@@ -350,7 +353,7 @@ pub fn extract_entry(
 fn copy_bounded(
     from: &mut dyn Read,
     to: &mut dyn Write,
-    limit: Option<u64>,
+    limit: u64,
     written: &mut u64,
     truncated: &mut bool,
     cancel: &CancelToken,
@@ -361,24 +364,21 @@ fn copy_bounded(
         if cancel.is_cancelled() {
             return Err(ArchiveError::Cancelled);
         }
-        let want = match limit {
-            Some(l) if *written >= l => {
-                // Anything left? Only then is the result truncated.
-                let mut probe = [0u8; 1];
-                if from
-                    .read(&mut probe)
-                    .map_err(|e| ArchiveError::io(archive, e))?
-                    > 0
-                {
-                    *truncated = true;
-                    return Err(ArchiveError::Cancelled);
-                }
-                return Ok(());
+        let want = if *written >= limit {
+            // Anything left? Only then is the result truncated.
+            let mut probe = [0u8; 1];
+            if from
+                .read(&mut probe)
+                .map_err(|e| ArchiveError::io(archive, e))?
+                > 0
+            {
+                *truncated = true;
+                return Err(ArchiveError::Cancelled);
             }
-            Some(l) => buf
-                .len()
-                .min(usize::try_from(l - *written).unwrap_or(buf.len())),
-            None => buf.len(),
+            return Ok(());
+        } else {
+            buf.len()
+                .min(usize::try_from(limit - *written).unwrap_or(buf.len()))
         };
         let n = from
             .read(&mut buf[..want])
@@ -432,7 +432,7 @@ pub fn view_file(ctx: &Rc<AppContext>, archive: PathBuf, inner: PathBuf) {
             &service,
             &archive,
             &inner,
-            None,
+            ARCHIVE_VIEW_LIMIT,
             false,
             &worker_cancel,
         ));
@@ -453,6 +453,15 @@ pub fn view_file(ctx: &Rc<AppContext>, archive: PathBuf, inner: PathBuf) {
                 busy_done(&ctx);
             }
             match result {
+                Ok(x) if current && x.truncated => {
+                    remove_temp_later(&ctx, x.dir);
+                    report_error(
+                        &ctx,
+                        tr(
+                            "Archive entry is too large to view (64 MiB limit). Extract it with F5 instead.",
+                        ),
+                    );
+                }
                 Ok(x) if current => open_in_viewer(&ctx, x),
                 Ok(x) => remove_temp_later(&ctx, x.dir), // cancelled meanwhile
                 Err(ExtractFail::Cancelled) => {}
@@ -678,7 +687,7 @@ mod tests {
         let r = copy_bounded(
             &mut data.as_slice(),
             &mut out,
-            Some(100),
+            100,
             &mut written,
             &mut truncated,
             &cancel,
@@ -692,25 +701,25 @@ mod tests {
         let r = copy_bounded(
             &mut &data[..100],
             &mut out,
-            Some(100),
+            100,
             &mut written,
             &mut truncated,
             &cancel,
             Path::new("/a.zip"),
         );
         assert!(r.is_ok() && !truncated && out.len() == 100);
-        // No limit: everything.
+        // A zero limit writes nothing and still detects that data remains.
         let (mut out, mut written, mut truncated) = (Vec::new(), 0u64, false);
-        copy_bounded(
+        let r = copy_bounded(
             &mut data.as_slice(),
             &mut out,
-            None,
+            0,
             &mut written,
             &mut truncated,
             &cancel,
             Path::new("/a.zip"),
-        )
-        .unwrap();
-        assert_eq!(out.len(), 200_000);
+        );
+        assert!(matches!(r, Err(ArchiveError::Cancelled)));
+        assert!(truncated && out.is_empty() && written == 0);
     }
 }
