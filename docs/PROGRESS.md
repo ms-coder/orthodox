@@ -4,8 +4,15 @@ The lead keeps this file current after every task. A fresh session must be able 
 
 ## Current state
 
-- **Autonomous run to a release candidate** (Igor, 2026-11-27): no stopping at G3/G4; the lead decides open questions; Igor tests the finished result. Order: M8 leftovers -> M9 hardening -> M10 packaging -> `1.0.0-rc.1` (tag v1.0.0-rc.1). Final `v1.0.0` only after Igor has tried it.
-- Full check was green at the G3 hand-over (1507 passed). M6, M7 tagged done.
+- **STOPPED by Igor 2026-11-27 ~16:10 ("we will continue later"). Resume here.** Autonomous run to a release candidate is still authorised (no gate stops; final v1.0.0 only after Igor has tried it). Never use Kimi.
+- main is clean and lint-clean. The last full `./scripts/locked-check.sh` was at the G3 hand-over; **many merges since** (icons, presets, data safety, packaging, polish): run it first.
+- Resume order:
+  1. `locked-check.sh` on main.
+  2. **Fix the fuzz findings** (crash/hang reachable from user files). Branch m9/T9.3-robustness (commits 54d1df4, 822bbb4, WIP; worktree .claude/worktrees/agent-a43e7e4dc89e55ec3). Ignored `BUG:` tests: ofm-viewer: UTF-16 empty regex match at odd end panics (slice out of range); backward regex search with an empty match (e.g. `$`) loops forever ignoring cancel; UTF-16 backward and case-insensitive forward search quadratic on misaligned matches; backward search misses overlapping matches. ofm-vfs: libbz2-rs-sys aborts the process when a damaged bzip2 stream is read again after its error. There may be more: long runs were not all finished and docs/ROBUSTNESS.md is not written.
+  3. Finish T9.5 spec gaps: branch m9/spec-gaps (WIP 6da1ee7, unverified; worktree .claude/worktrees/agent-af35a4c1a35aa7dc1). Items in docs/SPEC-COVERAGE.md plus: F-key bar keeps Shift labels after Shift+F8; high-contrast/large-text check.
+  4. T9.1 performance on an idle machine (docs/PERF.md), fixes; update SPEC-COVERAGE; tag m9-done.
+  5. T10.3: version 1.0.0-rc.1, release build, .deb, tag v1.0.0-rc.1. Recheck USER-GUIDE known limitations. Ask Igor: is github.com/ms-coder/orthodox public, and is copyright holder "mscoder" right?
+- Isolated agents start from origin/main: tell them `git switch -c <branch> <start>`; origin lags until Igor runs `! git push origin main --tags`.
 
 ## G3: please try this
 
