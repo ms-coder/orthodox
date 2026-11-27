@@ -454,6 +454,7 @@ impl Engine {
                         reader.as_mut(),
                         &self.filter,
                         self.content.as_ref(),
+                        self.match_dirs,
                         &mut sink,
                     );
                     return;

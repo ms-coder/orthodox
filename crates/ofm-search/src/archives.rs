@@ -61,12 +61,14 @@ pub(crate) struct ArchiveSink<'a> {
 }
 
 /// Search the entries of an opened archive with the same reporting filters as the tree
-/// walk. The caller wraps this in `catch_unwind` (invariant 7).
+/// walk; `match_dirs` as in the query (a content query never reports directories). The
+/// caller wraps this in `catch_unwind` (invariant 7).
 pub(crate) fn search_inside(
     archive: &Path,
     reader: &mut dyn ArchiveReader,
     filter: &EntryFilter,
     content: Option<&ContentSpec>,
+    match_dirs: bool,
     sink: &mut ArchiveSink<'_>,
 ) {
     let index = reader.index().clone();
@@ -75,10 +77,14 @@ pub(crate) fn search_inside(
     let mut report: Vec<(PathBuf, ofm_core::Entry)> = Vec::new();
     let mut content_paths: Vec<PathBuf> = Vec::new();
     for e in index.entries().iter().filter(|e| e.is_safe()) {
+        if sink.cancel.is_cancelled() {
+            return;
+        }
         sink.files_scanned.fetch_add(1, Ordering::Relaxed);
         let kind = match e.kind {
             ArchiveEntryKind::File | ArchiveEntryKind::Hardlink => EntryKind::File,
-            ArchiveEntryKind::Dir => EntryKind::Dir,
+            ArchiveEntryKind::Dir if match_dirs && content.is_none() => EntryKind::Dir,
+            ArchiveEntryKind::Dir => continue,
             // Symlinks and special entries: never searched, never reported.
             _ => continue,
         };
