@@ -604,8 +604,17 @@ mod tests {
         };
         let mut b = IndexBuilder::new("/a.zip", ArchiveFormat::Zip, limits);
         b.push(file("a/b/c.txt", 1)).unwrap();
-        let ix = b.finish().unwrap();
-        assert!(ix.entries().len() <= limits.max_entries);
+        assert!(matches!(
+            b.finish(),
+            Err(ArchiveError::LimitExceeded {
+                kind: LimitKind::EntryCount,
+                ..
+            })
+        ));
+
+        let mut b = IndexBuilder::new("/a.zip", ArchiveFormat::Zip, limits);
+        b.push(file("a/b.txt", 1)).unwrap();
+        assert_eq!(b.finish().unwrap().entries().len(), 2);
     }
 
     #[test]

@@ -216,7 +216,7 @@ impl MemArchive {
             }
         }
         MemReader {
-            index: Arc::new(b.finish()),
+            index: Arc::new(b.finish().unwrap()),
             datas,
             tamper: None,
             chunk: 4096,
