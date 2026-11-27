@@ -101,7 +101,19 @@ pub(crate) fn search_inside(
         (sink.out)(archive_hit(archive, inner, entry, None));
     }
     let Some(spec) = content else { return };
-    let selected = index.select(&content_paths);
+    // A search never prompts, and one encrypted entry in the selection would fail the whole
+    // visit: leave them out and say so.
+    let (locked, selected): (Vec<_>, Vec<_>) = index
+        .select(&content_paths)
+        .into_iter()
+        .partition(|id| index.get(*id).is_some_and(|e| e.encrypted));
+    if !locked.is_empty() {
+        (sink.warn)(format!(
+            "{}: {} encrypted entries not searched (password required)",
+            archive.display(),
+            locked.len()
+        ));
+    }
     let archive_path = archive.to_owned();
     // `visit` streams in archive order; the visitor checks each entry against the
     // selection (ids are unique, a small linear scan is fine for v1.0 archive sizes).

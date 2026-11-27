@@ -993,6 +993,18 @@ fn size_and_mtime_filters_apply_inside_archives() {
 }
 
 #[test]
+fn encrypted_entries_do_not_hide_the_plain_ones_from_content_search() {
+    let dir = sevenz_fixture(true);
+    let mut q = query_for(dir.path());
+    q.search_archives = true;
+    q.content = Some(ContentQuery::text("needle"));
+    let r = run(q);
+    assert_eq!(inner_hits(&r), ["docs/big.txt", "docs/small.txt"]);
+    assert_eq!(r.warnings.len(), 1, "warnings: {:?}", r.warnings);
+    assert!(r.warnings[0].message.contains("1 encrypted entries"));
+}
+
+#[test]
 fn plain_files_outside_the_filter_are_not_content_hits_when_probing_archives() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), b"needle\n").unwrap();
