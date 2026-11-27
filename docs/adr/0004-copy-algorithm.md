@@ -140,3 +140,29 @@ Remaining windows. None of them follows a symlink below the pinned root.
   said whether the data arrived, and a FUSE server that stores on flush makes an earlier `fsync`
   no proof either. The temp file is removed and the source kept; the item can be retried (an
   extraction job fails, as for any other close error). Cost: a rare spurious error.
+
+### Checked directory walks (m1)
+
+Permanent delete, recursive chmod/chown and the source side of a move (cross-device removal and the
+same-device merge) no longer act on re-resolved paths below a selected item. `fs/walk.rs`
+(`CheckedDir`, on top of `AnchoredFs`) keeps each directory with the `(dev, ino)` the walk saw; every
+operation takes a no-follow handle, checks that it is that directory and that its path still leads
+there, then acts on `/proc/self/fd/<handle>/<name>`. `chmod`/`chown` act on a handle of the very
+object that was `lstat`ed. A mismatch is the usual retry/skip/abort question. These jobs now need
+`Fs::pin` and `/proc` and fail closed without them. Delete and chmod refuse a path ending in `..`.
+
+Remaining windows:
+
+- the folder holding the selected items is resolved by name (following symlinks) when it is first
+  opened;
+- between the check and the call, a directory can still be moved away (the call then hits the
+  checked directory in its new place, never something else), and a name inside it can be replaced
+  (`unlink`/`rmdir`/`rename` act on whatever has the name then; they never follow it). The same for
+  the identity check before a move removes a source;
+- a move still reads a selected file, and directory metadata/xattrs, by path. A redirected read can
+  copy the wrong content but removes nothing: removal requires the copied inode in the checked
+  directory;
+- below depth 128 handles are not held; on vfat a reopened directory may then have a new inode
+  number and is refused (nothing is lost);
+- not covered: trash (one rename of the selected item), the destination side of copy and move,
+  non-recursive jobs on other paths (mkdir, link).

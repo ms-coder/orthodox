@@ -5,7 +5,7 @@
 //!
 //! Files: `mod.rs` (this trait, frozen) · `real.rs` ([`RealFs`], rustix-based) · `faulty.rs`
 //! (`FaultyFs`, feature `testing`) · `anchored.rs` ([`FsPin`] and the handle-anchored view used by
-//! extraction).
+//! extraction) · `walk.rs` (checked directories of delete, chmod and move).
 //!
 //! The wrapper-friendly part of the design: [`FsFile::as_fd`] exposes the descriptor, so the
 //! kernel-assisted copies ([`FsFile::try_clone_from`], [`FsFile::copy_range_from`]) can take
@@ -21,10 +21,12 @@ mod anchored;
 #[cfg(any(test, feature = "testing"))]
 pub mod faulty;
 mod real;
+mod walk;
 
 pub(crate) use anchored::AnchoredFs;
 pub use anchored::FsPin;
 pub use real::RealFs;
+pub(crate) use walk::{CheckedDir, Selection, within};
 
 /// Kind of a file system object, from `st_mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

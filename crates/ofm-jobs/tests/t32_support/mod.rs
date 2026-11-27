@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use ofm_jobs::ops::trash::{TrashEnv, trash_path_with};
 use ofm_jobs::{
-    Answer, ErrorAction, Fs, FsFile, FsStat, Outcome, Question, RealFs, ScriptedSink, TrashError,
+    Answer, ErrorAction, Fs, FsFile, FsPin, FsStat, Outcome, Question, RealFs, ScriptedSink,
+    TrashError,
 };
 
 /// What `Fs::trash` does.
@@ -142,6 +143,9 @@ impl Fs for TestFs {
     }
     fn set_xattr(&self, path: &Path, name: &OsStr, value: &[u8], follow: bool) -> io::Result<()> {
         self.inner.set_xattr(path, name, value, follow)
+    }
+    fn pin(&self, path: &Path, follow: bool) -> io::Result<FsPin> {
+        self.inner.pin(path, follow)
     }
     fn trash(&self, path: &Path) -> Result<(), TrashError> {
         self.hit("trash");

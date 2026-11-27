@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crate::ctx::{ErrorResolution, JobCtx};
 use crate::error::JobError;
-use crate::fs::{Fs, FsFile, FsStat};
+use crate::fs::{CheckedDir, Fs, FsFile, FsStat, within};
 use crate::plan::NAME_MAX;
 
 use super::{CHUNK, Copier, Mode};
@@ -199,13 +199,14 @@ impl Copier {
         src: &Path,
         dest: &Path,
         replace: bool,
+        parent: Option<&CheckedDir>,
     ) -> Result<Written, JobError> {
         loop {
-            match self.try_file(ctx, src, dest, replace) {
+            match self.try_file(ctx, src, dest, replace, parent) {
                 Ok(p) => {
                     self.note_published(p.published.dest_id);
                     if self.mode == Mode::Move {
-                        self.finish_move(ctx, src, &p)?;
+                        self.finish_move(ctx, src, &p, parent)?;
                     }
                     ctx.file_done();
                     return Ok(Written::Done);
@@ -227,6 +228,7 @@ impl Copier {
         ctx: &mut JobCtx,
         src: &Path,
         p: &PublishedItem,
+        parent: Option<&CheckedDir>,
     ) -> Result<(), JobError> {
         if !p.published.source_deletable {
             ctx.warn(src, "copy could not be verified; source kept");
@@ -234,16 +236,18 @@ impl Copier {
         }
         let id = p.source_id;
         let removed = ctx.attempt(src, crate::event::Operation::Move, |fs| {
-            let now = fs.lstat(src)?;
-            if (now.dev, now.ino) != id {
-                return Err(io::Error::other(
-                    "source was replaced during the move; not deleted",
-                ));
-            }
-            match fs.unlink(src) {
-                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-                other => other,
-            }
+            within(fs, parent, src, |fs, src| {
+                let now = fs.lstat(src)?;
+                if (now.dev, now.ino) != id {
+                    return Err(io::Error::other(
+                        "source was replaced during the move; not deleted",
+                    ));
+                }
+                match fs.unlink(src) {
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                    other => other,
+                }
+            })
         })?;
         if removed.is_none() {
             tracing::debug!(path = %src.display(), "source deletion skipped; source kept");
@@ -278,14 +282,18 @@ impl Copier {
         src: &Path,
         dest: &Path,
         replace: bool,
+        parent: Option<&CheckedDir>,
     ) -> Result<PublishedItem, Fail> {
         let fs = ctx.fs();
         ctx.checkpoint()?;
-        let mut sf = if self.follow {
-            fs.open_read_follow(src)
-        } else {
-            fs.open_read(src)
-        }
+        let follow = self.follow;
+        let mut sf = within(&*fs, parent, src, |fs, src| {
+            if follow {
+                fs.open_read_follow(src)
+            } else {
+                fs.open_read(src)
+            }
+        })
         .map_err(at(src))?;
         let st = sf.stat().map_err(at(src))?;
         if !st.is_file() {
@@ -556,13 +564,14 @@ impl Copier {
         st: &FsStat,
         dest: &Path,
         replace: bool,
+        parent: Option<&CheckedDir>,
     ) -> Result<Written, JobError> {
         loop {
-            match self.try_symlink(ctx, src, st, dest, replace) {
+            match self.try_symlink(ctx, src, st, dest, replace, parent) {
                 Ok(p) => {
                     self.note_published(p.published.dest_id);
                     if self.mode == Mode::Move {
-                        self.finish_move(ctx, src, &p)?;
+                        self.finish_move(ctx, src, &p, parent)?;
                     }
                     ctx.file_done();
                     return Ok(Written::Done);
@@ -584,10 +593,11 @@ impl Copier {
         st: &FsStat,
         dest: &Path,
         replace: bool,
+        parent: Option<&CheckedDir>,
     ) -> Result<PublishedItem, Fail> {
         ctx.checkpoint()?;
         let fs = ctx.fs();
-        let target = fs.read_link(src).map_err(at(src))?;
+        let target = within(&*fs, parent, src, |fs, src| fs.read_link(src)).map_err(at(src))?;
         let (dir, name) = split(dest)?;
         let mut created = None;
         for _ in 0..TEMP_TRIES {

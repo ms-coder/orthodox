@@ -829,6 +829,9 @@ mod tests {
         ) -> std::io::Result<()> {
             RealFs.set_xattr(p, n, v, f)
         }
+        fn pin(&self, p: &std::path::Path, f: bool) -> std::io::Result<crate::FsPin> {
+            RealFs.pin(p, f)
+        }
         fn trash(&self, p: &std::path::Path) -> Result<(), crate::TrashError> {
             RealFs.trash(p)
         }
