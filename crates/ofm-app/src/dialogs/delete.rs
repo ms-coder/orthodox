@@ -150,11 +150,13 @@ pub fn present(ctx: &Rc<AppContext>, permanent: bool) {
         dialog.set_focus(Some(&run));
     }
 
-    // The check box switches between the two modes; the texts follow.
+    // The check box switches between the two modes; the texts (and the safe default) follow.
+    let (items, has_dirs) = (paths.len(), targets.has_dirs());
     {
-        let (heading, run, what, dialog) = (
+        let (heading, run, cancel, what, dialog) = (
             heading.clone(),
             run.clone(),
+            cancel.clone(),
             what.clone(),
             dialog.downgrade(),
         );
@@ -168,6 +170,10 @@ pub fn present(ctx: &Rc<AppContext>, permanent: bool) {
                 } else {
                     tr("Delete")
                 });
+                // Alt+P toggles without moving the focus: take it off the Delete button.
+                if default_is_cancel(c.is_active(), items, has_dirs) && run.has_focus() {
+                    d.set_focus(Some(&cancel));
+                }
             }
         });
     }
@@ -197,6 +203,11 @@ pub fn present(ctx: &Rc<AppContext>, permanent: bool) {
     modal::present(ctx, &dialog, move || {
         if ui::activate_focused_button(&ctx_ok) {
             return false;
+        }
+        // Enter with the focus elsewhere (the check box) means the default button; for a
+        // dangerous delete that is Cancel.
+        if default_is_cancel(perm.is_active(), items, has_dirs) {
+            return true;
         }
         confirm()
     });

@@ -489,8 +489,16 @@ fn jobs_scenario() {
     started(&fx, 30);
     assert!(!jobs::allow_close(ctx, &window), "a running job: ask first");
     assert_eq!(fx.modal_depth(), 1);
+    pump_for(400); // the dialog must be mapped before the default focus takes effect
     fx.shot("quit-dialog");
+    // Enter takes the safe default: keep running.
     fx.run(cmd::DIALOG_OK);
+    assert_eq!(fx.modal_depth(), 0);
+    assert!(!cap.controls.borrow().contains(&Control::CancelAll));
+    assert!(!ctrl.quitting() && !ctrl.quit_confirmed());
+    // Quitting takes the destructive button.
+    assert!(!jobs::allow_close(ctx, &window));
+    fx.button("ofm-quit-confirm").emit_clicked();
     assert!(cap.controls.borrow().contains(&Control::CancelAll));
     // The cancelled job still cleans up its temp files: the window must not close yet.
     assert!(ctrl.quitting() && !ctrl.quit_confirmed());

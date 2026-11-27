@@ -61,7 +61,7 @@ fn cancel_then_close(ctx: &Rc<AppContext>, window: &gtk::Window) {
 }
 
 /// Whether the window may close now. With unfinished jobs and `[general] confirm_quit_with_jobs`
-/// a dialog asks first (Enter = quit and cancel the jobs, Esc = keep running); on confirmation the
+/// a dialog asks first (it starts on "Keep running": Enter and Esc both keep running); on confirmation the
 /// jobs are cancelled, and once they have cleaned up `window.close()` is called again. Without the
 /// confirmation setting the jobs are cancelled without asking (and waited for the same way).
 pub fn allow_close(ctx: &Rc<AppContext>, window: &impl IsA<gtk::Window>) -> bool {
@@ -108,7 +108,8 @@ pub fn allow_close(ctx: &Rc<AppContext>, window: &impl IsA<gtk::Window>) -> bool
     quit.add_css_class("destructive-action");
     column.append(&ui::button_row(&[&keep, &quit]));
     dialog.set_child(Some(&modal::with_header(&column)));
-    dialog.set_focus(Some(&quit));
+    keep.set_widget_name("ofm-quit-keep");
+    dialog.set_focus(Some(&keep));
 
     let confirm: Rc<dyn Fn()> = {
         let (ctx, window) = (Rc::clone(ctx), window.as_ref().clone());
@@ -130,14 +131,10 @@ pub fn allow_close(ctx: &Rc<AppContext>, window: &impl IsA<gtk::Window>) -> bool
         }
     });
     let ctx_ok = Rc::clone(ctx);
-    let on_ok = {
-        let confirm = Rc::clone(&confirm);
-        move || {
-            if !ui::activate_focused_button(&ctx_ok) {
-                confirm();
-            }
-            true
-        }
+    // Enter presses the focused button; with none focused it keeps running.
+    let on_ok = move || {
+        ui::activate_focused_button(&ctx_ok);
+        true
     };
     modal::present(ctx, &dialog, on_ok);
     false
