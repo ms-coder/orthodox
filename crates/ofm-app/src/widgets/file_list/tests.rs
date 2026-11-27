@@ -71,6 +71,7 @@ fn gtk_widget_tests() {
         return;
     }
     list_widget_end_to_end();
+    icons_follow_theme_entry_and_font();
     commands_drive_sort_view_and_hidden();
     // Visual self-check: OFM_FILELIST_SHOTS=<dir> writes one PNG per theme and view mode.
     if let Some(dir) = std::env::var_os("OFM_FILELIST_SHOTS") {
@@ -209,6 +210,93 @@ fn render_shots(dir: &std::path::Path) {
     win.close();
 }
 
+/// Visible index of the entry called `name`.
+fn index_of(ctrl: &PanelController, name: &str) -> u32 {
+    let m = ctrl.model();
+    (0..m.visible_len())
+        .find(|i| m.visible(*i).is_some_and(|e| e.name == *name))
+        .unwrap_or_else(|| panic!("{name} not listed"))
+}
+
+fn icons_follow_theme_entry_and_font() {
+    let ctrl = sample_controller();
+    let _ = ctrl.model_mut().set_show_hidden(true);
+    let list = FileList::new();
+    list.set_palette(palette("far-blue"));
+    list.bind(Some(Rc::clone(&ctrl)));
+    let win = gtk::Window::new();
+    win.set_default_size(820, 440);
+    win.set_child(Some(&list));
+    win.present();
+    pump(|| list.window().1 > 0);
+    let icon = |name: &str| list.icon_at(index_of(&ctrl, name));
+
+    assert_eq!(icon("src"), None, "Far Blue is text-only");
+
+    list.set_palette(palette("commander-light"));
+    let name = |n: &str| icon(n).map(|(name, _)| name);
+    for (entry, want) in [
+        ("..", "folder"),
+        ("src", "folder"),
+        ("latest", "folder"),
+        ("photo.jpg", "image-x-generic"),
+        ("main.rs", "text-x-script"),
+        ("run.sh", "application-x-executable"),
+        ("backup-2026.tar.gz", "package-x-generic"),
+        ("broken-link", "emblem-unreadable"),
+        ("link-to-file", "emblem-symbolic-link"),
+        // No rule / a rule without an icon: the generic one.
+        ("notes.txt", "text-x-generic"),
+        (".hidden-config", "text-x-generic"),
+    ] {
+        assert_eq!(name(entry).as_deref(), Some(want), "{entry}");
+    }
+    let (_, normal) = icon("src").expect("icon");
+    assert!(
+        normal >= 12 && f64::from(normal) <= row_height(&list),
+        "{normal}"
+    );
+
+    // Large text: bigger rows, bigger icons.
+    let mut big = Theme::builtin("commander-light").expect("builtin");
+    big.font.size = 26.0;
+    list.set_palette(Rc::new(Palette::from_theme(
+        Rc::new(big),
+        SystemColors::fallback(),
+    )));
+    let (_, large) = icon("src").expect("icon");
+    assert!(large >= 32 && large > normal, "{normal} -> {large}");
+    assert!(f64::from(large) <= row_height(&list));
+
+    // A user theme: its own names (symbolic variant included), unknown names fall back.
+    let mine = Theme::from_toml(
+        "base = \"adwaita\"\n\
+         [[highlight]]\nattr = \"dir\"\nicon = \"go-up\"\n\
+         [[highlight]]\nattr = \"image\"\nicon = \"no-such-icon-xyz\"\n",
+        "mine",
+    )
+    .expect("theme");
+    list.set_palette(Rc::new(Palette::from_theme(
+        Rc::new(mine),
+        SystemColors::fallback(),
+    )));
+    assert_eq!(name("src").as_deref(), Some("go-up"));
+    assert_eq!(name("photo.jpg").as_deref(), Some("text-x-generic"));
+    for mode in [ViewMode::Brief, ViewMode::Full, ViewMode::Custom] {
+        set_view_mode(&ctrl, mode);
+        snapshot_once(&list);
+    }
+
+    // Back to a text-only theme: the column is gone.
+    list.set_palette(palette("far-blue"));
+    assert_eq!(icon("src"), None);
+    win.close();
+}
+
+fn row_height(list: &FileList) -> f64 {
+    list.cursor_row_rect().expect("cursor row").height
+}
+
 fn pump_for(d: Duration) {
     let ctx = glib::MainContext::default();
     let end = Instant::now() + d;
@@ -308,9 +396,17 @@ fn list_widget_end_to_end() {
     assert_eq!(ctrl.model().cursor(), Some(0));
 
     // -- 100k entries: frame time ------------------------------------------------------------
-    for mode in [ViewMode::Brief, ViewMode::Full] {
+    for (theme, mode) in [
+        ("far-blue", ViewMode::Brief),
+        ("far-blue", ViewMode::Full),
+        // With an icon per row.
+        ("commander-light", ViewMode::Brief),
+        ("commander-light", ViewMode::Full),
+    ] {
+        list.set_palette(palette(theme));
         set_view_mode(&ctrl, mode);
         ctrl.cursor_move(CursorMove::Home);
+        assert_eq!(list.icon_at(1).is_some(), theme == "commander-light");
         let before = list.frame_stats();
         let t = Instant::now();
         let steps = 400;
@@ -323,13 +419,13 @@ fn list_widget_end_to_end() {
         assert_eq!(frames, steps);
         let avg = (st.total_us - before.total_us) / frames;
         eprintln!(
-            "{mode:?}: {frames} frames, avg {avg} us, max {} us, wall {:?}",
+            "{theme} {mode:?}: {frames} frames, avg {avg} us, max {} us, wall {:?}",
             st.max_us,
             t.elapsed()
         );
         assert!(
             avg < 16_000,
-            "{mode:?}: average frame {avg} us is not smooth"
+            "{theme} {mode:?}: average frame {avg} us is not smooth"
         );
     }
     win.close();

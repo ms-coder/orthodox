@@ -57,6 +57,7 @@ pub fn build_context(init: AppInit) -> Rc<AppContext> {
     warnings.extend(w);
     let (themes, w) = Theme::discover(&init.paths);
     warnings.extend(w);
+    warnings.extend(crate::theme::icons::warnings(&themes));
     for w in &warnings {
         tracing::warn!(file = ?w.file, "{}", w.message);
     }

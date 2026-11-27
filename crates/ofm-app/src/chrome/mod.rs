@@ -139,7 +139,9 @@ fn reload_config(ctx: &Rc<AppContext>) {
     );
 }
 
-fn apply_reloaded(ctx: &Rc<AppContext>, r: Reloaded) {
+fn apply_reloaded(ctx: &Rc<AppContext>, mut r: Reloaded) {
+    // Icon names can only be checked against the icon theme here, on the GTK thread.
+    r.warnings.extend(theme::icons::warnings(&r.themes));
     for w in &r.warnings {
         tracing::warn!(file = ?w.file, "{}", w.message);
     }

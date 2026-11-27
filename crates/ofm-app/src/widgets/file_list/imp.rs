@@ -22,6 +22,7 @@ use super::FrameStats;
 use super::commands::toggle_sort;
 use super::format::is_parent;
 use super::geo::{Geo, Hit, Metrics};
+use super::icons::{IconCache, icon_px};
 use super::paint::Painter;
 use super::settings;
 use super::text::TextCache;
@@ -55,6 +56,8 @@ pub struct FileList {
     metrics: Cell<Option<Metrics>>,
     geo: RefCell<Option<Geo>>,
     cache: RefCell<TextCache>,
+    /// Rebuilt together with `metrics` (theme, font, scale, system settings).
+    icons: RefCell<IconCache>,
     settings_gen: Cell<u64>,
     scroll_acc: Cell<(f64, f64)>,
     stats: Cell<FrameStats>,
@@ -132,7 +135,7 @@ impl ObjectImpl for FileList {
         drag.connect_prepare(move |_, x, y| weak.upgrade()?.imp().drag_content(x, y));
         obj.add_controller(drag);
 
-        // A new scale factor changes glyph metrics.
+        // A new scale factor changes glyph metrics and icon assets.
         let weak = obj.downgrade();
         obj.connect_scale_factor_notify(move |_| {
             if let Some(list) = weak.upgrade() {
@@ -192,11 +195,13 @@ impl WidgetImpl for FileList {
             LoadState::Idle => tr("(empty)").to_owned(),
         });
         let mut cache = self.cache.borrow_mut();
+        let icons = self.icons.borrow();
         let mut painter = Painter {
             snapshot,
             widget: &obj,
             palette: &palette,
             cache: &mut cache,
+            icons: &icons,
             geo,
             metrics: self.metrics.get().unwrap_or_default(),
             settings: &settings,
@@ -283,6 +288,17 @@ impl FileList {
         self.geo.borrow().clone()
     }
 
+    pub(super) fn icon_at(&self, index: u32) -> Option<(String, i32)> {
+        let ctrl = self.ctrl.borrow().clone()?;
+        let palette = self.palette.borrow().clone()?;
+        let model = ctrl.model();
+        let entry = model.visible(index)?;
+        let rule = ofm_config::highlight::matching_rule(&palette.theme.highlight, entry);
+        let icons = self.icons.borrow();
+        let (name, _) = icons.get(rule, entry)?;
+        Some((name.to_owned(), icons.size()))
+    }
+
     fn invalidate_fonts(&self) {
         self.cache.borrow_mut().clear();
         self.metrics.set(None);
@@ -319,11 +335,26 @@ impl FileList {
         let digits = measure("0000000000");
         let char_w = (digits.size().0 as f32 / pango::SCALE as f32 / 10.0).max(1.0);
         let text_h = measure("Ag\u{25B2}").pixel_size().1 as f32;
+        let row_h = (text_h + 2.0).ceil();
+        let icons = self
+            .palette
+            .borrow()
+            .as_ref()
+            .map_or_else(IconCache::default, |p| {
+                IconCache::build(
+                    &p.theme.highlight,
+                    &obj.display(),
+                    icon_px(row_h),
+                    obj.scale_factor(),
+                )
+            });
         let m = Metrics {
-            row_h: (text_h + 2.0).ceil(),
+            row_h,
             char_w,
             text_h,
+            icon_w: icons.advance(),
         };
+        *self.icons.borrow_mut() = icons;
         self.metrics.set(Some(m));
         m
     }

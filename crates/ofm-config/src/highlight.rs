@@ -100,17 +100,56 @@ fn colour(c: &Option<Color>) -> Option<String> {
     c.as_ref().filter(|c| !c.0.is_empty()).map(|c| c.0.clone())
 }
 
+/// Icon of directories (and "..") in a theme that draws icons, when the matching rule names none.
+pub const DEFAULT_DIR_ICON: &str = "folder";
+/// Icon of everything else in a theme that draws icons, when the matching rule names none.
+pub const DEFAULT_FILE_ICON: &str = "text-x-generic";
+
+/// True for a syntactically valid icon-theme name: ASCII letters, digits, `-`, `_`, `.`, `+`.
+/// Paths are not icon names (themes never make the app read arbitrary image files).
+pub fn is_icon_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.+".contains(&b))
+}
+
+/// The valid icon name of `rule`, if it sets one (invalid names count as unset).
+pub fn rule_icon(rule: &HighlightRule) -> Option<&str> {
+    rule.icon.as_deref().filter(|i| is_icon_name(i))
+}
+
+/// A theme draws an icon column iff at least one of its rules names an icon.
+pub fn uses_icons(rules: &[HighlightRule]) -> bool {
+    rules.iter().any(|r| rule_icon(r).is_some())
+}
+
+/// The built-in icon for `entry`, used when the matching rule has none (or an unknown one).
+pub fn default_icon(entry: &Entry) -> &'static str {
+    if entry.kind.is_dir_like() {
+        DEFAULT_DIR_ICON
+    } else {
+        DEFAULT_FILE_ICON
+    }
+}
+
+/// The first rule matching `entry` (see [`style_for`] for the tests). Unlike `style_for` it
+/// borrows, so the painter can call it per row without cloning strings.
+pub fn matching_rule<'a>(rules: &'a [HighlightRule], entry: &Entry) -> Option<&'a HighlightRule> {
+    rules.iter().find(|r| rule_matches(r, entry))
+}
+
 /// Return the style of the first rule matching `entry` (attr tests: `dir`, `hidden` (dot-file),
 /// `executable` (mode & 0o111, files only), `symlink`, `broken_symlink`, `archive`/`image`/`source`
 /// by built-in extension sets; then `mask` globs). A rule with neither `attr` nor `mask` matches
 /// everything; an unknown `attr` never matches. `None` if no rule matches.
 pub fn style_for(rules: &[HighlightRule], entry: &Entry) -> Option<Style> {
-    let rule = rules.iter().find(|r| rule_matches(r, entry))?;
+    let rule = matching_rule(rules, entry)?;
     Some(Style {
         fg: colour(&rule.fg),
         bg: colour(&rule.bg),
         bold: rule.bold,
-        icon: rule.icon.clone().filter(|i| !i.is_empty()),
+        icon: rule_icon(rule).map(str::to_owned),
     })
 }
 
@@ -197,6 +236,63 @@ mod tests {
         let name = std::ffi::OsString::from_vec(vec![b'a', 0xff, b'.', b'z', b'i', b'p']);
         let e = Entry::new(name, EntryKind::File);
         assert!(style_for(&[rule("archive", "*.zip", "#111")], &e).is_some());
+    }
+
+    #[test]
+    fn icon_names_are_names_not_paths() {
+        for ok in ["folder", "text-x-generic", "a_b.c+d", "x-office-document"] {
+            assert!(is_icon_name(ok), "{ok}");
+        }
+        for bad in ["", "/usr/x.png", "a b", "../x", "a\nb", "\u{e4}"] {
+            assert!(!is_icon_name(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn icons_come_from_the_first_matching_rule() {
+        let mut dir = rule("dir", "", "#111");
+        dir.icon = Some("folder".into());
+        let mut bad = rule("image", "", "#222");
+        bad.icon = Some("/etc/passwd".into());
+        let rules = [dir, bad];
+        assert!(uses_icons(&rules));
+        let d = Entry::new("d", EntryKind::Dir);
+        assert_eq!(
+            matching_rule(&rules, &d).and_then(rule_icon),
+            Some("folder")
+        );
+        // An invalid name counts as unset; the default depends on the kind.
+        let img = file("a.png", 0o644);
+        assert_eq!(matching_rule(&rules, &img).and_then(rule_icon), None);
+        assert_eq!(style_for(&rules, &img).and_then(|s| s.icon), None);
+        assert_eq!(default_icon(&img), DEFAULT_FILE_ICON);
+        assert_eq!(default_icon(&d), DEFAULT_DIR_ICON);
+        assert!(!uses_icons(&rules[1..]), "only an invalid name: no column");
+        assert!(!uses_icons(&[]));
+    }
+
+    #[test]
+    fn shipped_themes_icons_follow_the_spec() {
+        let far = Theme::builtin("far-blue").unwrap();
+        assert!(!uses_icons(&far.highlight), "Far Blue is text-only");
+        for id in ["commander-light", "adwaita"] {
+            let t = Theme::builtin(id).unwrap();
+            let icon = |e: &Entry| {
+                matching_rule(&t.highlight, e)
+                    .and_then(rule_icon)
+                    .map(str::to_owned)
+            };
+            for (entry, want) in [
+                (Entry::new("d", EntryKind::Dir), "folder"),
+                (Entry::new("..", EntryKind::Dir), "folder"),
+                (file("a.zip", 0o644), "package-x-generic"),
+                (file("a.png", 0o644), "image-x-generic"),
+                (file("a.rs", 0o644), "text-x-script"),
+                (file("run", 0o755), "application-x-executable"),
+            ] {
+                assert_eq!(icon(&entry).as_deref(), Some(want), "{id}");
+            }
+        }
     }
 
     #[test]
