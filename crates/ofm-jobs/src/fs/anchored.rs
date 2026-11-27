@@ -209,10 +209,10 @@ impl AnchoredFs {
         }
     }
 
-    /// The job itself changed what `path` names: handles at or below it are stale. Judged
+    /// What `path` names changed (or may have): handles at or below it are stale. Judged
     /// ignoring case, because on vfat `foo` and `FOO` are one directory; dropping a handle too
     /// many only means opening it again.
-    fn forget(&self, path: &Path) {
+    pub(crate) fn forget(&self, path: &Path) {
         let folded = fold_path(path);
         self.cache
             .lock()

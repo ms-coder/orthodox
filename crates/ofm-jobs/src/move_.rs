@@ -16,6 +16,9 @@
 //! post-order when they became empty. Any failure, skip or cancel leaves the remaining sources
 //! where they are: nothing is deleted that has not been completely written and synced.
 //!
+//! Below a selected directory, sources are listed, renamed and removed through checked directory
+//! handles (`fs::walk`, M9): a source directory swapped for a symlink is never followed.
+//!
 //! Symlinks are never followed by a move (they are moved/recreated as links). "Rename in place"
 //! (Shift+F6) arrives as `Move` into the same directory with a literal `rename_mask`.
 
@@ -24,10 +27,11 @@ use std::path::{Path, PathBuf};
 
 use ofm_core::Location;
 
-use crate::copy::{Copier, Mode, Target, noreplace, resolve_target};
+use crate::copy::{Copier, Mode, Target, enter, noreplace, resolve_target};
 use crate::ctx::{ErrorResolution, JobCtx};
 use crate::error::JobError;
 use crate::event::Operation;
+use crate::fs::{CheckedDir, FsStat, within};
 use crate::plan;
 use crate::spec::CopyOpts;
 
@@ -76,7 +80,7 @@ pub fn run_move(
     };
     for (src, name) in sources.iter().zip(&names) {
         ctx.checkpoint()?;
-        mover.item(ctx, src, &dest_dir.join(name), true)?;
+        mover.item(ctx, src, &dest_dir.join(name), None, true)?;
     }
     Ok(())
 }
@@ -87,21 +91,26 @@ struct Mover {
 }
 
 impl Mover {
-    /// Move one item; `top` items are recorded with `ctx.note_created`.
+    /// Move one item (`parent`: the checked directory holding `src`, `None` for a selected
+    /// item); `top` items are recorded with `ctx.note_created`.
     fn item(
         &mut self,
         ctx: &mut JobCtx,
         src: &Path,
         dest: &Path,
+        parent: Option<&CheckedDir>,
         top: bool,
     ) -> Result<(), JobError> {
         ctx.checkpoint()?;
         ctx.set_current(src);
-        let Some(st) = ctx.attempt(src, Operation::Move, |fs| fs.lstat(src))? else {
+        let Some(st) = ctx.attempt(src, Operation::Move, |fs| {
+            within(fs, parent, src, |fs, p| fs.lstat(p))
+        })?
+        else {
             return Ok(());
         };
         if st.dev != self.dest_dev {
-            return self.cross_device(ctx, src, dest, top);
+            return self.copier.copy_item(ctx, src, dest, parent, top);
         }
         let fs = ctx.fs();
         loop {
@@ -115,16 +124,18 @@ impl Mover {
             )?;
             let (to, replace) = match target {
                 Target::Skip => return Ok(()),
-                Target::Merge(d) => return self.merge(ctx, src, &d, top),
+                Target::Merge(d) => return self.merge(ctx, src, &st, &d, parent, top),
                 Target::Fresh(d) => (d, false),
                 Target::Replace(d) => (d, true),
             };
             ctx.checkpoint()?;
-            let r = if replace {
-                fs.rename_replace(src, &to)
-            } else {
-                noreplace::rename_noreplace(&*fs, src, &to, st.is_dir())
-            };
+            let r = within(&*fs, parent, src, |fs, from| {
+                if replace {
+                    fs.rename_replace(from, &to)
+                } else {
+                    noreplace::rename_noreplace(fs, from, &to, st.is_dir())
+                }
+            });
             match r {
                 Ok(()) => {
                     tracing::debug!(from = %src.display(), to = %to.display(), "renamed");
@@ -143,7 +154,7 @@ impl Mover {
                     // Counted as one rename in the plan: add what copying it really involves.
                     let t = plan::count(ctx, &[src.to_path_buf()], false, false)?;
                     ctx.add_total(t.files.saturating_sub(1), t.bytes);
-                    return self.cross_device(ctx, src, dest, top);
+                    return self.copier.copy_item(ctx, src, dest, parent, top);
                 }
                 Err(e) => match ctx.resolve_error(src, Operation::Move, &e)? {
                     ErrorResolution::Retry => {}
@@ -159,10 +170,17 @@ impl Mover {
         &mut self,
         ctx: &mut JobCtx,
         src: &Path,
+        st: &FsStat,
         dest: &Path,
+        parent: Option<&CheckedDir>,
         top: bool,
     ) -> Result<(), JobError> {
-        let Some(mut names) = ctx.attempt(src, Operation::Move, |fs| fs.read_dir(src))? else {
+        let fs = ctx.fs();
+        let entered = ctx.attempt(src, Operation::Move, |_| enter(&fs, parent, src, st))?;
+        let Some(dir) = entered else {
+            return Ok(());
+        };
+        let Some(mut names) = ctx.attempt(src, Operation::Move, |_| dir.list())? else {
             return Ok(());
         };
         names.sort_by(|a, b| {
@@ -174,12 +192,12 @@ impl Mover {
         }
         ctx.add_total(names.len() as u64, 0);
         for name in &names {
-            self.item(ctx, &src.join(name), &dest.join(name), false)?;
+            self.item(ctx, &src.join(name), &dest.join(name), Some(&dir), false)?;
         }
-        let fs = ctx.fs();
+        drop(dir);
         loop {
             ctx.checkpoint()?;
-            match fs.rmdir(src) {
+            match within(&*fs, parent, src, |fs, p| fs.rmdir(p)) {
                 Ok(()) => break,
                 Err(e)
                     if e.raw_os_error() == Some(ENOTEMPTY)
@@ -196,20 +214,5 @@ impl Mover {
         }
         ctx.file_done();
         Ok(())
-    }
-
-    /// Copy with fsync + verify, deleting each source item after its copy is safe.
-    fn cross_device(
-        &mut self,
-        ctx: &mut JobCtx,
-        src: &Path,
-        dest: &Path,
-        top: bool,
-    ) -> Result<(), JobError> {
-        if top {
-            self.copier.copy_top(ctx, src, dest)
-        } else {
-            self.copier.copy_nested(ctx, src, dest)
-        }
     }
 }

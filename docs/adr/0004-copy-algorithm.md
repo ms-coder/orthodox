@@ -26,7 +26,8 @@ Per-file copy:
 6. Publish: `renameat2(RENAME_NOREPLACE)`; if the user chose overwrite, plain `rename` (atomic
    replace). An existing destination is never truncated in place.
 7. On error/cancel: unlink the temp file. The final name is never half-written. Leftover
-   `*.ofm-part-*` from a crash are ignored by listings of the job and may be cleaned on next run.
+   `*.ofm-part-*` from a crash or power loss are left in place; OFM never removes them by itself
+   (see "Stale temp files").
 
 Directories: create with mode 0700 while copying, recurse, set final mode and times post-order.
 Symlinks: recreated (`readlink` + `symlink`) unless `follow_symlinks`. FIFOs/devices/sockets: skipped
@@ -87,7 +88,7 @@ Findings of the T3.5 review, fixed in T3.6a (regression tests: `crates/ofm-jobs/
   are refused, so a FIFO swapped in after `lstat` cannot block the worker (m5). FICLONE /
   `copy_file_range` fall back to the next tier also on `EPERM`, `ETXTBSY` and on `EIO` before the
   tier copied a byte, like coreutils (m6).
-- Still open (M9): openat/unlinkat-based delete/chmod (m1), cleanup of stale `.ofm-part-*` (m7).
+- m1 and m7 were left for M9: see "M9 data-safety fixes" below.
 
 ## Anchored access (FIX-M6M7 #5, 2026-11-27)
 
@@ -97,8 +98,8 @@ then wrote outside the destination. Additive change to the seam: `Fs::pin(path, 
 `FaultOp::Pin`). `fs/anchored.rs` builds `AnchoredFs` on it: an `Fs` that opens every directory below
 one root component by component without following symlinks and performs each call on
 `/proc/self/fd/<handle>/<name>`. The root itself is opened once, following symlinks. Handles are an
-LRU of 32; the parent of the item in progress is held. Only extraction uses it (ADR-0008); copy and
-move are unchanged. Delete/chmod (m1) can reuse it. Needs `/proc` (checked: the job fails otherwise).
+LRU of 32; the parent of the item in progress is held. Extraction uses it (ADR-0008); delete,
+chmod and move reuse its handles (see "Checked directory walks"). Needs `/proc` (checked: the job fails otherwise).
 
 Checks that go with it: final directory mode/mtime are applied only if the directory still has the
 `(dev, ino)` recorded when the job created it (else a warning; on vfat, whose inode numbers are not
@@ -122,3 +123,64 @@ Remaining windows. None of them follows a symlink below the pinned root.
     between the conflict probe and publish (still no-replace unless the user chose overwrite), and
     the temp name between its check and the rename. The hard link source may be replaced at any
     time, also while a question is open; that is detected on the link itself before publishing.
+
+## M9 data-safety fixes (2026-11-27)
+
+- **Retransmitted `link` (N4).** In the `link` + `unlink` fallback, `EEXIST` counts as success only
+  if `from` and `to` are the object `from` was before the call AND its link count grew by exactly
+  one (NFSv3 retransmission of a `link` whose reply was lost). Identity alone is not enough: on a
+  case-insensitive file system two spellings are one entry, and unlinking `from` would delete the
+  only copy. A file system or attribute cache that does not show the new count keeps the old
+  behaviour (a conflict is asked, nothing is removed).
+- **Trash without `RENAME_NOREPLACE` (N5).** The move into `files/` goes through the same fallback
+  (`link` + `unlink`, else checked rename) instead of failing with `EINVAL` for every item on NFS
+  and FUSE. The name is already claimed by the `O_EXCL` info file, so another trash user will not
+  take it; the lstat+rename race for directories is the one documented above.
+- **Interrupted close.** `EINTR` from the checked close counts as a failure (it was treated as
+  success). Linux has released the descriptor, but an interrupted flush (FUSE, CIFS, NFS) has not
+  said whether the data arrived, and a FUSE server that stores on flush makes an earlier `fsync`
+  no proof either. The temp file is removed and the source kept; the item can be retried (an
+  extraction job fails, as for any other close error). Cost: a rare spurious error.
+
+### Checked directory walks (m1)
+
+Permanent delete, recursive chmod/chown and the source side of a move (cross-device removal and the
+same-device merge) no longer act on re-resolved paths below a selected item. `fs/walk.rs`
+(`CheckedDir`, on top of `AnchoredFs`) keeps each directory with the `(dev, ino)` the walk saw; every
+operation takes a no-follow handle, checks that it is that directory and that its path still leads
+there, then acts on `/proc/self/fd/<handle>/<name>`. `chmod`/`chown` act on a handle of the very
+object that was `lstat`ed. A mismatch is the usual retry/skip/abort question. These jobs now need
+`Fs::pin` and `/proc` and fail closed without them. Delete and chmod refuse a path ending in `..`.
+
+Remaining windows:
+
+- the folder holding the selected items is resolved by name (following symlinks) when it is first
+  opened;
+- between the check and the call, a directory can still be moved away (the call then hits the
+  checked directory in its new place, never something else), and a name inside it can be replaced
+  (`unlink`/`rmdir`/`rename` act on whatever has the name then; they never follow it). The same for
+  the identity check before a move removes a source;
+- a move still reads a selected file, and directory metadata/xattrs, by path. A redirected read can
+  copy the wrong content but removes nothing: removal requires the copied inode in the checked
+  directory;
+- below depth 128 handles are not held; on vfat a reopened directory may then have a new inode
+  number and is refused (nothing is lost);
+- not covered: trash (one rename of the selected item), the destination side of copy and move,
+  non-recursive jobs on other paths (mkdir, link).
+
+### Stale temp files (m7): not cleaned up, on purpose
+
+A temp file normally never outlives its job; only a crash, kill, power loss or a vanished device
+leaves one. Automatic removal cannot be made certain not to delete somebody's data:
+
+- the name proves nothing: it carries no checkable owner, and a user may have a file of that shape
+  (for example a partial copy kept or continued on purpose);
+- liveness cannot be proven: another instance may be writing it, also from another machine on a
+  network share or removable disk, where process ids mean nothing and locks are unreliable;
+- finding them "on next run" needs either a scan of the user's folders or a persistent journal of
+  temp paths, and after a crash a journalled path may name another file (inode numbers do not
+  settle it on vfat).
+
+The cost of leaving one is disk space. No temp file is ever the only copy of anything: a move
+removes a source only after the file is published. The files are hidden; they can be found with the
+mask `.*.ofm-part-*` and deleted by the user.
