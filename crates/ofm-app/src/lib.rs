@@ -20,6 +20,7 @@
 pub mod app;
 pub mod batchrename;
 pub mod chrome;
+pub mod cli;
 pub mod cmdline;
 pub mod compare;
 pub mod context;
