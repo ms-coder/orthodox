@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.mscoder.Ofm</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>OFM</name>
+  <summary>Keyboard-first two-panel file manager</summary>
+  <developer id="io.github.mscoder">
+    <name>mscoder</name>
+  </developer>
+  <description>
+    <p>
+      OFM (Orthodox File Manager) is a two-panel file manager for GNOME in the
+      tradition of Norton Commander, Far Manager, Midnight Commander and
+      Total Commander.
+    </p>
+    <ul>
+      <li>Two panels with tabs, selection by mask and quick search</li>
+      <li>Command line and embedded terminal that follow the active panel</li>
+      <li>Copy, move and delete as background jobs, with Trash support</li>
+      <li>Built-in viewer for text and hex, with several encodings</li>
+      <li>Find files, panelize results, read-only archive browsing</li>
+      <li>User menu, rebindable keys and themes</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.mscoder.Ofm.desktop</launchable>
+  <url type="homepage">https://github.com/ms-coder/orthodox</url>
+  <url type="bugtracker">https://github.com/ms-coder/orthodox/issues</url>
+  <provides>
+    <binary>ofm</binary>
+  </provides>
+  <categories>
+    <category>System</category>
+    <category>FileTools</category>
+    <category>FileManager</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-11-27" type="development">
+      <description>
+        <p>First packaged build.</p>
+      </description>
+    </release>
+  </releases>
+</component>
