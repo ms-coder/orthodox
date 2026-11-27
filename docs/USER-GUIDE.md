@@ -47,7 +47,9 @@ ofm [LEFT_DIR [RIGHT_DIR]]
 
 Without folders, OFM restores your last session: tabs, folders, cursor, views and window size.
 With folders, it shows these instead of the stored ones.
-If OFM is already running, a second `ofm` only shows the existing window and ignores the folders.
+If OFM is already running, a second `ofm` shows the existing window. Folders you name open there:
+the first in the active panel, the second in the other one. A locked tab stays as it is and the
+folder opens in a new tab. You can also open a folder with OFM from other applications.
 
 ### Copy, move, rename, delete
 
@@ -258,7 +260,6 @@ The command IDs are in the last column of the tables below.
   OFM never removes them. Find them with the mask `.*.ofm-part-*` and delete them yourself.
 - Hard links among copied files become separate copies. Sockets, pipes and device files are skipped.
 - The viewer cannot select or copy text, and ignores case only for ASCII letters when searching.
-- A second `ofm` command does not open its folders in the running window.
 - GNOME may take keys such as `Alt+F2` before OFM sees them.
 - The interface is in English only.
 - `mc` key sequences such as `Ctrl+X Q` do not exist; those actions use single keys.

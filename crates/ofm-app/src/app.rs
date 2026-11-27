@@ -8,11 +8,13 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use adw::prelude::*;
+use gtk::gio;
 use ofm_config::{Config, ConfigPaths, Keymap, Theme};
 use ofm_core::Location;
 
 use crate::context::{AppContext, AppInit, Services};
 use crate::dispatch::{CommandDispatcher, CommandRegistry};
+use crate::navigation::goto;
 use crate::theme::ThemeHost;
 use crate::window::MainWindow;
 
@@ -46,6 +48,27 @@ pub fn initial_locations(
         .or(home)
         .unwrap_or_else(|| root.clone());
     (Location::Local(left), Location::Local(right))
+}
+
+/// The positional arguments as `file://` URIs for GApplication, which forwards them to the
+/// instance that is already running. Relative paths are resolved here, against the caller's
+/// `cwd` (GApplication takes UTF-8 arguments only; a URI carries any file name's bytes).
+pub fn forward_args(args: &[OsString], cwd: Option<&Path>) -> Vec<String> {
+    let base = cwd.unwrap_or_else(|| Path::new("/"));
+    args.iter()
+        // `join` with an absolute path is that path. No file I/O: `GFile` only parses.
+        .map(|a| gio::File::for_path(base.join(a)).uri().into())
+        .collect()
+}
+
+/// Another `ofm DIR1 [DIR2]` was started: show the first directory in the active panel and the
+/// second in the other one. A locked tab stays; its directory opens in a new tab.
+pub fn open_directories(ctx: &Rc<AppContext>, dirs: &[PathBuf]) {
+    let other = ctx.other_side();
+    for (dir, side) in dirs.iter().zip([1 - other, other]) {
+        let panel = ctx.host(side).active();
+        goto::navigate(ctx, &panel, Location::Local(dir.clone()), None);
+    }
 }
 
 /// Load config, keymap and theme from `init.paths` (startup exception to "no I/O on the main
@@ -100,13 +123,19 @@ pub fn build_context(init: AppInit) -> Rc<AppContext> {
 pub fn run() -> anyhow::Result<ExitCode> {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     // Startup only: getcwd/env lookups, not file I/O.
+    let cwd = std::env::current_dir().ok();
     let (left, right) = initial_locations(
         &args,
-        std::env::current_dir().ok(),
+        cwd.clone(),
         std::env::var_os("HOME").map(PathBuf::from),
     );
 
-    let app = adw::Application::builder().application_id(APP_ID).build();
+    // Single instance: a second launch hands its directories to the running one (`open`), or
+    // just raises its window (`activate`).
+    let app = adw::Application::builder()
+        .application_id(APP_ID)
+        .flags(gio::ApplicationFlags::HANDLES_OPEN)
+        .build();
     // The UI closures hold only `Weak<AppContext>`, so this state is the context's owner: it must
     // live as long as the application (dropping it would kill every command and key binding).
     let state: Rc<RefCell<Option<LiveApp>>> = Rc::default();
@@ -117,27 +146,51 @@ pub fn run() -> anyhow::Result<ExitCode> {
             ctx.services.archives.cleanup_all();
         }
     });
-    app.connect_activate(move |app| {
-        if let Some((_, win)) = state.borrow().as_ref() {
+    // Create the main window from this process's own arguments.
+    let start = {
+        let state = Rc::clone(&state);
+        Rc::new(move |app: &adw::Application| {
+            let ctx = build_context(AppInit {
+                paths: ConfigPaths::from_env(),
+                left: left.clone(),
+                right: right.clone(),
+            });
+            ctx.theme.apply_css();
+            let win = MainWindow::new(app, &ctx);
+            ctx.start_loading();
             win.present();
-            return;
-        }
-        let ctx = build_context(AppInit {
-            paths: ConfigPaths::from_env(),
-            left: left.clone(),
-            right: right.clone(),
+            *state.borrow_mut() = Some((ctx, win));
+        })
+    };
+    // The running window, cloned out so that no borrow is held while commands run.
+    let live = move || {
+        state
+            .borrow()
+            .as_ref()
+            .map(|(ctx, win)| (Rc::clone(ctx), Rc::clone(win)))
+    };
+    {
+        let (start, live) = (Rc::clone(&start), live.clone());
+        app.connect_activate(move |app| match live() {
+            Some((_, win)) => win.present(),
+            None => start(app),
         });
-        ctx.theme.apply_css();
-        let win = MainWindow::new(app, &ctx);
-        ctx.start_loading();
-        win.present();
-        *state.borrow_mut() = Some((ctx, win));
+    }
+    app.connect_open(move |app, files, _| match live() {
+        Some((ctx, win)) => {
+            let dirs: Vec<PathBuf> = files.iter().filter_map(|f| f.path()).collect();
+            open_directories(&ctx, &dirs);
+            win.present();
+        }
+        // The first instance: its arguments are already in `left` / `right`.
+        None => start(app),
     });
-    // Our own positional arguments must not reach GApplication.
     let argv0 = std::env::args_os()
         .next()
         .unwrap_or_else(|| OsString::from("ofm"));
-    let code = app.run_with_args(&[argv0.to_string_lossy().into_owned()]);
+    let mut argv = vec![argv0.to_string_lossy().into_owned()];
+    argv.extend(forward_args(&args, cwd.as_deref()));
+    let code = app.run_with_args(&argv);
     Ok(code.into())
 }
 
@@ -162,5 +215,29 @@ mod tests {
         let (l, r) = initial_locations(&[], None, None);
         assert_eq!(l, Location::Local("/".into()));
         assert_eq!(r, Location::Local("/".into()));
+    }
+
+    #[test]
+    fn forwarded_arguments_keep_bytes_and_the_callers_directory() {
+        use std::os::unix::ffi::OsStringExt;
+        let odd = OsString::from_vec(b"odd-\xff name".to_vec());
+        let uris = forward_args(
+            &[odd, os("/abs"), os("../up")],
+            Some(Path::new("/work/sub")),
+        );
+        assert_eq!(
+            uris,
+            [
+                "file:///work/sub/odd-%FF%20name",
+                "file:///abs",
+                "file:///work/up"
+            ]
+        );
+        // The way back (what `open` receives) is byte-exact.
+        let back = gio::File::for_uri(&uris[0]).path().unwrap_or_default();
+        assert_eq!(
+            back.into_os_string().into_vec(),
+            b"/work/sub/odd-\xff name".to_vec()
+        );
     }
 }
