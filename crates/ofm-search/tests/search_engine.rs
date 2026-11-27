@@ -895,6 +895,148 @@ fn archive_content_search() {
     assert!(hit.content.is_some());
 }
 
+/// `docs/` (a directory), `docs/small.txt`, `docs/big.txt`, all dated 2023-01-01, written to
+/// `data.7z`; `secret.txt` is added encrypted when asked.
+fn sevenz_fixture(encrypted_entry: bool) -> tempfile::TempDir {
+    use sevenz_rust2::encoder_options::{AesEncoderOptions, EncoderOptions};
+    use sevenz_rust2::{
+        ArchiveEntry, ArchiveWriter, EncoderConfiguration, EncoderMethod, NtTime, Password,
+    };
+    let entry = |name: &str, is_directory: bool| ArchiveEntry {
+        name: name.to_owned(),
+        is_directory,
+        has_stream: !is_directory,
+        has_last_modified_date: true,
+        last_modified_date: NtTime::new(133_170_048_000_000_000),
+        ..ArchiveEntry::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut writer = ArchiveWriter::create(dir.path().join("data.7z")).unwrap();
+    writer.set_encrypt_header(false);
+    writer
+        .push_archive_entry(entry("docs", true), None::<&[u8]>)
+        .unwrap();
+    writer
+        .push_archive_entry(entry("docs/small.txt", false), Some(&b"needle"[..]))
+        .unwrap();
+    let big = b"needle ".repeat(100);
+    writer
+        .push_archive_entry(entry("docs/big.txt", false), Some(&big[..]))
+        .unwrap();
+    if encrypted_entry {
+        writer.set_content_methods(vec![
+            EncoderConfiguration::new(EncoderMethod::AES256_SHA256).with_options(
+                EncoderOptions::Aes(AesEncoderOptions::new(Password::from("secret"))),
+            ),
+            EncoderConfiguration::new(EncoderMethod::LZMA2),
+        ]);
+        writer
+            .push_archive_entry(entry("secret.txt", false), Some(&b"needle"[..]))
+            .unwrap();
+    }
+    writer.finish().unwrap();
+    dir
+}
+
+/// Inner paths of the archive hits, sorted.
+fn inner_hits(r: &Run) -> Vec<String> {
+    let mut names: Vec<String> = r
+        .hits
+        .iter()
+        .filter_map(|h| match &h.location {
+            ofm_core::Location::Archive { inner, .. } => Some(inner.display().to_string()),
+            _ => None,
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn directories_in_archives_follow_the_directory_rules() {
+    let dir = sevenz_fixture(false);
+    let mut q = query_for(dir.path());
+    q.search_archives = true;
+    let r = run(q.clone());
+    assert!(inner_hits(&r).contains(&"docs".to_owned()));
+
+    q.match_dirs = false;
+    let r = run(q.clone());
+    assert_eq!(inner_hits(&r), ["docs/big.txt", "docs/small.txt"]);
+
+    q.match_dirs = true;
+    q.content = Some(ContentQuery::text("needle"));
+    let r = run(q);
+    assert_eq!(inner_hits(&r), ["docs/big.txt", "docs/small.txt"]);
+}
+
+#[test]
+fn size_and_mtime_filters_apply_inside_archives() {
+    let dir = sevenz_fixture(false);
+    let mut q = with_name(&query_for(dir.path()), "*.txt");
+    q.search_archives = true;
+    q.size.min = Some(100);
+    assert_eq!(inner_hits(&run(q.clone())), ["docs/big.txt"]);
+
+    q.size.min = None;
+    let new_year_2023 = 1_672_531_200 * 1_000_000_000;
+    q.mtime.after_ns = Some(new_year_2023 - 1);
+    q.mtime.before_ns = Some(new_year_2023 + 1);
+    assert_eq!(
+        inner_hits(&run(q.clone())),
+        ["docs/big.txt", "docs/small.txt"]
+    );
+
+    q.mtime.after_ns = Some(new_year_2023 + 1);
+    q.mtime.before_ns = None;
+    assert!(inner_hits(&run(q)).is_empty());
+}
+
+#[test]
+fn encrypted_entries_do_not_hide_the_plain_ones_from_content_search() {
+    let dir = sevenz_fixture(true);
+    let mut q = query_for(dir.path());
+    q.search_archives = true;
+    q.content = Some(ContentQuery::text("needle"));
+    let r = run(q);
+    assert_eq!(inner_hits(&r), ["docs/big.txt", "docs/small.txt"]);
+    assert_eq!(r.warnings.len(), 1, "warnings: {:?}", r.warnings);
+    assert!(r.warnings[0].message.contains("1 encrypted entries"));
+}
+
+#[test]
+fn plain_files_outside_the_filter_are_not_content_hits_when_probing_archives() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), b"needle\n").unwrap();
+    std::fs::write(dir.path().join("b.log"), b"needle\n").unwrap();
+    let mut q = with_name(&query_for(dir.path()), "*.txt");
+    q.search_archives = true;
+    q.content = Some(ContentQuery::text("needle"));
+    assert_eq!(run(q).names(), ["a.txt"]);
+}
+
+#[test]
+fn unreadable_files_outside_the_filter_are_silent_when_probing_archives() {
+    if !locked_files_work() {
+        eprintln!("running as root: skipping");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["locked.txt", "locked.bin"] {
+        let p = dir.path().join(name);
+        std::fs::write(&p, b"needle\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    for content in [None, Some(ContentQuery::text("needle"))] {
+        let mut q = with_name(&query_for(dir.path()), "*.txt");
+        q.search_archives = true;
+        q.content = content;
+        let r = run(q);
+        let warned: Vec<&Path> = r.warnings.iter().map(|w| w.path.as_path()).collect();
+        assert_eq!(warned, [dir.path().join("locked.txt")]);
+    }
+}
+
 // ------------------------------------------------------------------- perf (opt-in)
 
 #[test]

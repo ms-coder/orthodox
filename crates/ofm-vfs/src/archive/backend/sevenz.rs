@@ -1,32 +1,36 @@
 //! 7z backend (T6.1). Crate `sevenz-rust2` (features `aes256 bzip2 ppmd zstd deflate util`; pure
 //! Rust).
 //!
-//! Encrypted headers need the password at open: the library reports a missing password as
-//! `PasswordRequired` and a wrong one as `MaybeBadPassword`; both drive the retry loop against
-//! the `PasswordProvider` (`retry = true` once the cached candidate failed, at most
-//! [`MAX_PASSWORD_ATTEMPTS`] user attempts, `accepted` on success). The library's memory-limit
-//! constructor enforces `ArchiveLimits::max_codec_memory` (`LimitExceeded(CodecMemory)`).
-//! `visit` maps onto `for_each_entries_with_decision` (one pass; unread data of unselected
-//! entries is drained and verified by the library). Entry names are UTF-16 in the 7z format, so
-//! the `String` the library returns is complete; symlink detection uses the POSIX attributes in
-//! the high 16 bits of `windows_attributes` (stored when the `0x8000` flag is set), and symlink
-//! *targets* are read in a `for_each_entries` pass *before* indexing, only when the archive
-//! actually contains symlinks (that pass decodes the archive once).
+//! Passwords come in two places. Encrypted headers need one at open: the library reports a missing
+//! password as `PasswordRequired` and a wrong one as `MaybeBadPassword`; both drive the retry loop
+//! against the `PasswordProvider` (`retry = true` once a candidate failed, at most
+//! [`MAX_PASSWORD_ATTEMPTS`] provider calls, `accepted` on success). With plain headers (the 7-Zip
+//! default) only the data is encrypted, and a wrong password is noticed only while decoding: so
+//! `visit` first checks the password against one of the blocks it needs (decode until a CRC
+//! matches), re-prompting the same bounded way, and only then hands data to the visitor.
 //!
-//! Streaming order note: the library visits the entries of each block in file order, then
-//! entries without a data stream (empty files, directories) in file order. That is the natural
-//! "archive order" for a solid format; directory entries are delivered before/without data.
+//! The library's memory limit enforces `ArchiveLimits::max_codec_memory`
+//! (`LimitExceeded(CodecMemory)`). Entry names are UTF-16 in the 7z format, so the `String` the
+//! library returns is complete; symlink detection uses the POSIX attributes in the high 16 bits of
+//! `windows_attributes` (stored when the `0x8000` flag is set). Symlink *targets* are entry data,
+//! read before indexing from just the blocks that hold them. An encrypted target is read only if
+//! the header password is known (indexing never prompts for data); otherwise the link has no
+//! target and is flagged unsafe.
+//!
+//! Streaming order note: `visit` decodes only the blocks that hold selected data, in block order,
+//! entries in file order, and stops after the last selected one; then come the selected entries
+//! without a data stream (empty files, directories). That is the natural "archive order" for a
+//! solid format.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::BTreeMap;
+use std::fs::File;
 use std::io::Read;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ofm_core::CancelToken;
-use sevenz_rust2::{
-    ArchiveEntry, ArchiveReader as SzReader, EntryDecision, Error as SzError, Password,
-};
+use sevenz_rust2::{Archive, ArchiveEntry, Error as SzError, Password};
 
 use crate::archive::EntrySafety;
 use crate::archive::error::{ArchiveError, LimitKind};
@@ -38,20 +42,27 @@ use crate::archive::reader::{ArchiveReader, VisitFn};
 
 use super::stream::{EntryStream, catch_panic, map_io};
 
+mod blocks;
+
+use blocks::{BlockSource, PasswordCheck, WalkFail, block_is_encrypted, group_by_block};
+
+/// Encrypted blocks a password is tried against before it counts as wrong.
+const MAX_CHECKED_BLOCKS: usize = 3;
 /// Symlink targets longer than this are not read at index time (the entry is flagged unsafe).
 const MAX_SYMLINK_TARGET: u64 = 64 * 1024;
 
 struct SevenzReader<'p> {
-    reader: SzReader<std::fs::File>,
+    archive: Archive,
+    file: File,
     index: Arc<ArchiveIndex>,
     passwords: &'p dyn PasswordProvider,
     mem_kb: usize,
-    password_attempt: u32,
-    /// Original 7z file position -> index id. The stored root (`./`) has no index id, so original
-    /// positions cannot be used directly as ids.
-    file_to_id: HashMap<u32, u32>,
-    /// Number of stored (pushed) entries; ids at or beyond this are synthetic directories.
-    stored: u32,
+    /// The password that opened the headers or passed the last data check.
+    password: Option<String>,
+    /// Index id -> position in `archive.files`, for the stored entries (ids `0..len`). The stored
+    /// root (`./`) has no index id, so positions cannot be used directly as ids. Ids at or beyond
+    /// the length are synthetic directories.
+    id_to_file: Vec<usize>,
 }
 
 /// Open a 7z archive and index it.
@@ -62,120 +73,129 @@ pub fn open<'p>(
     cancel: &CancelToken,
 ) -> Result<Box<dyn ArchiveReader + 'p>, ArchiveError> {
     let mem_kb = usize::try_from(limits.max_codec_memory / 1024).unwrap_or(usize::MAX);
-    let (mut reader, password_attempt) = open_with_password_loop(path, passwords, mem_kb)?;
-    let files = reader.archive().files.clone();
+    let (archive, mut file, password) = open_with_password_loop(path, passwords, mem_kb, cancel)?;
 
-    // Metadata of every file (owned; frees the reader for the target pass).
-    let mut metas = Vec::with_capacity(files.len());
-    let mut has_symlinks = false;
-    for (i, f) in files.iter().enumerate() {
+    // Metadata of every file.
+    let mut metas = Vec::with_capacity(archive.files.len());
+    for (i, f) in archive.files.iter().enumerate() {
         if cancel.is_cancelled() {
             return Err(ArchiveError::Cancelled);
         }
-        let kind = sevenz_kind(f);
-        has_symlinks |= kind == ArchiveEntryKind::Symlink;
         let mut raw = RawEntry::new(
             PathBuf::from(std::ffi::OsString::from_vec(f.name.as_bytes().to_vec())),
-            kind,
+            sevenz_kind(f),
         );
         raw.size = f.size;
         raw.mtime_ns = f
             .has_last_modified_date
             .then(|| nt_to_unix_ns(u64::from(f.last_modified_date)));
         raw.mode = sevenz_mode(f);
-        raw.encrypted = reader.archive().is_file_encrypted(i);
+        raw.encrypted = archive.is_file_encrypted(i);
         metas.push(raw);
     }
 
     // Symlink targets, before push (the safety classification needs them).
-    if has_symlinks {
-        let mut targets: Vec<Option<PathBuf>> = vec![None; metas.len()];
-        let files_base = reader.archive().files.as_ptr() as usize;
-        let entry_size = std::mem::size_of::<ArchiveEntry>();
-        catch_panic(path, || {
-            reader
-                .for_each_entries(|lib_entry, stream| {
-                    let Some(id) = entry_id(lib_entry, files_base, entry_size) else {
-                        return Ok(true);
-                    };
-                    if metas[id].kind == ArchiveEntryKind::Symlink
-                        && !metas[id].encrypted
-                        && lib_entry.size <= MAX_SYMLINK_TARGET
-                    {
-                        targets[id] = read_symlink_target(lib_entry, stream, path).ok().flatten();
-                    }
-                    Ok(true)
-                })
-                .map_err(|e| map_sevenz_err(path, e))?;
-            Ok::<_, ArchiveError>(())
-        })?;
-        for (raw, target) in metas.iter_mut().zip(targets) {
-            raw.link_target = target;
-        }
-    }
+    let mut source = BlockSource {
+        archive: &archive,
+        file: &mut file,
+        mem_kb,
+        path,
+        cancel,
+    };
+    read_symlink_targets(&mut source, &mut metas, password.as_deref())?;
 
     // Classify and build the index.
     let mut builder = IndexBuilder::new(path, ArchiveFormat::SevenZ, *limits);
-    let mut stored = 0u32;
-    let mut file_to_id = HashMap::new();
+    let mut id_to_file = Vec::new();
     for (i, raw) in metas.into_iter().enumerate() {
         if cancel.is_cancelled() {
             return Err(ArchiveError::Cancelled);
         }
-        if let Some(id) = builder.push(raw)? {
-            file_to_id.insert(i as u32, id.0);
-            stored += 1;
+        if builder.push(raw)?.is_some() {
+            id_to_file.push(i);
         }
     }
     let index = builder.finish()?;
 
     Ok(Box::new(SevenzReader {
-        reader,
+        archive,
+        file,
         index: Arc::new(index),
         passwords,
         mem_kb,
-        password_attempt,
-        file_to_id,
-        stored,
+        password,
+        id_to_file,
     }))
 }
 
-/// Map a library entry reference back to its index in `archive.files` (the library hands out
-/// references into that vector).
-fn entry_id(entry: &ArchiveEntry, files_base: usize, entry_size: usize) -> Option<usize> {
-    let offset = (entry as *const ArchiveEntry as usize).saturating_sub(files_base);
-    if offset.is_multiple_of(entry_size) {
-        Some(offset / entry_size)
-    } else {
-        None
+/// Fill in `link_target` of the symlink entries. Decodes only the blocks that hold one, and in
+/// each only up to its last symlink. Encrypted blocks are skipped without a password.
+fn read_symlink_targets(
+    source: &mut BlockSource<'_>,
+    metas: &mut [RawEntry],
+    password: Option<&str>,
+) -> Result<(), ArchiveError> {
+    let path = source.path;
+    let links = metas
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.kind == ArchiveEntryKind::Symlink && m.size <= MAX_SYMLINK_TARGET)
+        .map(|(i, _)| i);
+    for (block, positions) in group_by_block(source.archive, links) {
+        let encrypted = block_is_encrypted(source.archive, &positions);
+        let key = match (encrypted, password) {
+            (false, _) => Password::empty(),
+            (true, Some(p)) => Password::from(p),
+            (true, None) => continue,
+        };
+        let walked = source.walk(block, &key, &positions, &mut |pos, stream| {
+            metas[pos].link_target = read_symlink_target(metas[pos].size, stream, path)?;
+            Ok(())
+        });
+        match walked {
+            Ok(()) => {}
+            Err(WalkFail::Visit(ArchiveError::Cancelled)) => return Err(ArchiveError::Cancelled),
+            // The data may use another password than the headers: leave the targets unknown.
+            Err(_) if encrypted => {}
+            Err(e) => return Err(e.into_error(path)),
+        }
     }
+    Ok(())
 }
 
-/// Open the archive, asking the provider until the headers decrypt (or give up).
+/// Parse the headers, asking the provider until they decrypt (or give up). Returns the password
+/// that worked, if one was needed.
 fn open_with_password_loop(
     path: &Path,
     passwords: &dyn PasswordProvider,
     mem_kb: usize,
-) -> Result<(SzReader<std::fs::File>, u32), ArchiveError> {
+    cancel: &CancelToken,
+) -> Result<(Archive, File, Option<String>), ArchiveError> {
     let mut attempt = 0u32;
     loop {
+        if cancel.is_cancelled() {
+            return Err(ArchiveError::Cancelled);
+        }
         // Attempt 0 tries the empty password: unencrypted archives open without prompting, and a
         // provider-side cache can still be consulted on attempt 1 with retry = false.
-        let (pw, text) = if attempt == 0 {
-            (Password::empty(), None)
+        let text = if attempt == 0 {
+            None
         } else {
-            let Some(p) = passwords.password(path, attempt > 1) else {
-                return Err(ArchiveError::NeedsPassword(path.to_owned()));
-            };
-            (Password::from(p.as_str()), Some(p))
+            Some(ask(path, passwords, attempt > 1, cancel)?)
         };
-        let file = std::fs::File::open(path).map_err(|e| ArchiveError::io(path, e))?;
-        match SzReader::new_with_memory_limit(file, pw, mem_kb) {
-            Ok(r) => {
-                if let Some(t) = text {
-                    passwords.accepted(path, &t);
+        let password = text.as_deref().map_or_else(Password::empty, Password::from);
+        let mut file = File::open(path).map_err(|e| ArchiveError::io(path, e))?;
+        let parsed = catch_panic(path, || {
+            Ok(Archive::read_with_memory_limit(
+                &mut file, &password, mem_kb,
+            ))
+        })?;
+        match parsed {
+            Ok(archive) => {
+                if let Some(t) = &text {
+                    passwords.accepted(path, t);
                 }
-                return Ok((r, attempt));
+                return Ok((archive, file, text));
             }
             Err(SzError::PasswordRequired) | Err(SzError::MaybeBadPassword(_)) => {
                 attempt += 1;
@@ -188,36 +208,26 @@ fn open_with_password_loop(
     }
 }
 
-/// Reopen after a streaming password failure (encrypted data with plain headers). Unlike the
-/// header-opening loop, do not report the candidate as accepted yet: plain headers open with any
-/// password, so only a successful data pass verifies it.
-fn reopen_for_streaming(
+/// One question to the provider; no answer is `NeedsPassword` (or `Cancelled` if that is why).
+fn ask(
     path: &Path,
     passwords: &dyn PasswordProvider,
-    mem_kb: usize,
-    attempt: &mut u32,
-) -> Result<(SzReader<std::fs::File>, String), ArchiveError> {
-    loop {
-        if *attempt >= MAX_PASSWORD_ATTEMPTS {
-            return Err(ArchiveError::WrongPassword(path.to_owned()));
+    retry: bool,
+    cancel: &CancelToken,
+) -> Result<String, ArchiveError> {
+    passwords.password(path, retry).ok_or_else(|| {
+        if cancel.is_cancelled() {
+            ArchiveError::Cancelled
+        } else {
+            ArchiveError::NeedsPassword(path.to_owned())
         }
-        *attempt += 1;
-        let Some(text) = passwords.password(path, *attempt > 1) else {
-            return Err(ArchiveError::NeedsPassword(path.to_owned()));
-        };
-        let file = std::fs::File::open(path).map_err(|e| ArchiveError::io(path, e))?;
-        match SzReader::new_with_memory_limit(file, Password::from(text.as_str()), mem_kb) {
-            Ok(reader) => return Ok((reader, text)),
-            Err(SzError::PasswordRequired) | Err(SzError::MaybeBadPassword(_)) => {}
-            Err(e) => return Err(map_sevenz_err(path, e)),
-        }
-    }
+    })
 }
 
 /// Windows file time (100 ns units since 1601) to unix ns.
 fn nt_to_unix_ns(ft: u64) -> i128 {
-    const EPOCH_DIFF: u64 = 11_644_473_600_000_000; // 1601 -> 1970 in 100 ns units
-    ft.saturating_sub(EPOCH_DIFF) as i128 * 100
+    const EPOCH_DIFF: i128 = 116_444_736_000_000_000; // 1601 -> 1970 in 100 ns units
+    (i128::from(ft) - EPOCH_DIFF) * 100
 }
 
 /// Kind of a 7z entry (directories, streams, POSIX mode bits in the attributes).
@@ -250,14 +260,14 @@ fn sevenz_mode(f: &ArchiveEntry) -> Option<u32> {
 
 /// Read a symlink entry's target text (UTF-16LE with or without BOM, else raw bytes).
 fn read_symlink_target(
-    entry: &ArchiveEntry,
+    size: u64,
     stream: &mut dyn Read,
     path: &Path,
 ) -> Result<Option<PathBuf>, ArchiveError> {
-    if entry.size > MAX_SYMLINK_TARGET {
+    if size > MAX_SYMLINK_TARGET {
         return Ok(None);
     }
-    let mut buf = Vec::with_capacity(entry.size.min(MAX_SYMLINK_TARGET) as usize);
+    let mut buf = Vec::with_capacity(size.min(MAX_SYMLINK_TARGET) as usize);
     stream.read_to_end(&mut buf).map_err(|e| map_io(path, e))?;
     let text: Vec<u8> =
         if buf.starts_with(&[0xFF, 0xFE]) || (buf.len() >= 2 && buf[0] != 0 && buf[1] == 0) {
@@ -309,6 +319,61 @@ fn map_sevenz_err(path: &Path, e: SzError) -> ArchiveError {
     }
 }
 
+impl SevenzReader<'_> {
+    /// Find a password that decrypts one of `blocks` (cheapest first; more than one, so a damaged
+    /// block does not lock the rest): the known one, then up to [`MAX_PASSWORD_ATTEMPTS`] answers
+    /// of the provider.
+    fn unlock(&mut self, blocks: &[usize], cancel: &CancelToken) -> Result<Password, ArchiveError> {
+        let path = self.index.archive().to_owned();
+        let mut known = self.password.take();
+        let (mut asked, mut retry) = (0u32, false);
+        loop {
+            if cancel.is_cancelled() {
+                return Err(ArchiveError::Cancelled);
+            }
+            let text = match known.take() {
+                Some(t) => t,
+                None if asked < MAX_PASSWORD_ATTEMPTS => {
+                    asked += 1;
+                    ask(&path, self.passwords, retry, cancel)?
+                }
+                None => return Err(ArchiveError::WrongPassword(path)),
+            };
+            let password = Password::from(text.as_str());
+            let mut source = BlockSource {
+                archive: &self.archive,
+                file: &mut self.file,
+                mem_kb: self.mem_kb,
+                path: &path,
+                cancel,
+            };
+            let mut outcome = PasswordCheck::Wrong;
+            for block in blocks.iter().take(MAX_CHECKED_BLOCKS) {
+                match source.check_password(*block, &password)? {
+                    PasswordCheck::Verified => {
+                        outcome = PasswordCheck::Verified;
+                        break;
+                    }
+                    PasswordCheck::Unchecked => outcome = PasswordCheck::Unchecked,
+                    PasswordCheck::Wrong => {}
+                }
+            }
+            match outcome {
+                PasswordCheck::Verified => self.passwords.accepted(&path, &text),
+                // No checksum to compare with: use it, but do not let a cache remember it.
+                PasswordCheck::Unchecked => {}
+                PasswordCheck::Wrong => {
+                    // `retry = true` also makes a caching provider forget the stale entry.
+                    retry = true;
+                    continue;
+                }
+            }
+            self.password = Some(text);
+            return Ok(password);
+        }
+    }
+}
+
 impl ArchiveReader for SevenzReader<'_> {
     fn index(&self) -> &Arc<ArchiveIndex> {
         &self.index
@@ -320,107 +385,82 @@ impl ArchiveReader for SevenzReader<'_> {
         cancel: &CancelToken,
         f: &mut VisitFn<'_>,
     ) -> Result<(), ArchiveError> {
-        let archive = self.index.archive().to_owned();
+        let index = Arc::clone(&self.index);
+        let path = index.archive();
+        // Stored entries by file position (= archive order), and synthetic directories.
+        let mut pending: BTreeMap<usize, EntryId> = BTreeMap::new();
+        let mut synthetic: Vec<EntryId> = Vec::new();
         for id in ids {
-            let entry = self.index.get(*id).ok_or(ArchiveError::NoSuchEntry(id.0))?;
+            let entry = index.get(*id).ok_or(ArchiveError::NoSuchEntry(id.0))?;
             if let EntrySafety::Unsafe(reason) = entry.safety {
                 return Err(ArchiveError::Unsafe {
                     path: entry.path.clone(),
                     reason,
                 });
             }
+            match self.id_to_file.get(id.0 as usize) {
+                Some(pos) => {
+                    pending.insert(*pos, *id);
+                }
+                None => synthetic.push(*id),
+            }
         }
-        let wanted: HashSet<u32> = ids.iter().map(|i| i.0).collect();
-        let mut synthetic: Vec<EntryId> = ids
-            .iter()
-            .copied()
-            .filter(|id| id.0 >= self.stored)
-            .collect();
         synthetic.sort();
 
-        // Plain headers can open with an empty password even when the data is encrypted. If the
-        // decoder then asks for a password, reopen and restart before delivering any selected
-        // entry. Retrying after a callback ran could duplicate its output, so that case is fatal.
-        let mut accepted = None;
-        let mut delivered = false;
-        loop {
-            // The callback cannot return our error type, so failures are reported out-of-band and
-            // the iteration is stopped.
-            let mut aborted: Option<ArchiveError> = None;
-            let files_base = self.reader.archive().files.as_ptr() as usize;
-            let entry_size = std::mem::size_of::<ArchiveEntry>();
-            let streamed = catch_panic(&archive, || {
-                let result = self
-                    .reader
-                    .for_each_entries_with_decision(|lib_entry, stream| {
-                        if aborted.is_some() || cancel.is_cancelled() {
-                            aborted.get_or_insert(ArchiveError::Cancelled);
-                            return Ok(EntryDecision::Stop);
-                        }
-                        let Some(i) = entry_id(lib_entry, files_base, entry_size) else {
-                            aborted = Some(ArchiveError::Corrupt {
-                                archive: archive.clone(),
-                                detail: "entry identity mismatch".to_owned(),
-                            });
-                            return Ok(EntryDecision::Stop);
-                        };
-                        let Some(id) = self.file_to_id.get(&(i as u32)).copied().map(EntryId)
-                        else {
-                            // Stored root (`./`) and any other entry omitted by the index.
-                            return Ok(EntryDecision::Continue);
-                        };
-                        if !wanted.contains(&id.0) {
-                            // Unselected: leave unread; the library drains and verifies it.
-                            return Ok(EntryDecision::Continue);
-                        }
-                        let Some(ix_entry) = self.index.get(id) else {
-                            return Ok(EntryDecision::Continue);
-                        };
-                        let mut wrapped = EntryStream::new(stream, cancel, &archive, ix_entry.size);
-                        delivered = true;
-                        match f(ix_entry, &mut wrapped) {
-                            Ok(()) => Ok(EntryDecision::Continue),
-                            Err(e) => {
-                                aborted = Some(e);
-                                Ok(EntryDecision::Stop)
-                            }
-                        }
-                    });
-                match result {
-                    Ok(()) => Ok::<_, ArchiveError>(()),
-                    Err(e) => Err(map_sevenz_err(&archive, e)),
-                }
+        // Only the blocks that hold selected data are decoded.
+        let mut work = group_by_block(&self.archive, pending.keys().copied());
+        work.retain(|_, positions| positions.iter().any(|p| self.archive.files[*p].has_stream));
+
+        // Before anything is delivered: one password that is known to work, checked against the
+        // smallest encrypted blocks needed.
+        let mut locked: Vec<usize> = work
+            .iter()
+            .filter(|(_, positions)| block_is_encrypted(&self.archive, positions))
+            .map(|(block, _)| *block)
+            .collect();
+        locked.sort_by_key(|block| self.archive.blocks[*block].get_unpack_size());
+        let password = if locked.is_empty() {
+            Password::empty()
+        } else {
+            self.unlock(&locked, cancel)?
+        };
+
+        for (block, positions) in &work {
+            let key = if block_is_encrypted(&self.archive, positions) {
+                password.clone()
+            } else {
+                Password::empty()
+            };
+            let mut source = BlockSource {
+                archive: &self.archive,
+                file: &mut self.file,
+                mem_kb: self.mem_kb,
+                path,
+                cancel,
+            };
+            source
+                .walk(*block, &key, positions, &mut |pos, stream| {
+                    let Some(entry) = pending.remove(&pos).and_then(|id| index.get(id)) else {
+                        return Ok(());
+                    };
+                    let mut wrapped = EntryStream::new(stream, cancel, path, entry.size);
+                    f(entry, &mut wrapped)
+                })
+                .map_err(|e| e.into_error(path))?;
+        }
+
+        // Entries without data (empty files, directories), then synthetic directories.
+        if let Some(pos) = pending.keys().find(|p| self.archive.files[**p].has_stream) {
+            return Err(ArchiveError::Corrupt {
+                archive: path.to_owned(),
+                detail: format!("no data for entry {pos}"),
             });
-            match streamed {
-                Err(ArchiveError::NeedsPassword(_) | ArchiveError::WrongPassword(_))
-                    if !delivered =>
-                {
-                    let (reader, password) = reopen_for_streaming(
-                        &archive,
-                        self.passwords,
-                        self.mem_kb,
-                        &mut self.password_attempt,
-                    )?;
-                    self.reader = reader;
-                    accepted = Some(password);
-                    continue;
-                }
-                other => other?,
-            }
-            if let Some(e) = aborted {
-                return Err(e);
-            }
-            break;
         }
-        if let Some(password) = accepted {
-            self.passwords.accepted(&archive, &password);
-        }
-        // Synthetic directories: f with an empty stream.
-        for id in synthetic {
+        for id in pending.into_values().chain(synthetic) {
             if cancel.is_cancelled() {
                 return Err(ArchiveError::Cancelled);
             }
-            let entry = self.index.get(id).ok_or(ArchiveError::NoSuchEntry(id.0))?;
+            let entry = index.get(id).ok_or(ArchiveError::NoSuchEntry(id.0))?;
             f(entry, &mut (&[0u8; 0][..]))?;
         }
         Ok(())
@@ -484,60 +524,48 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_data_asks_the_password_provider_while_streaming() {
+    fn symlink_target_pass_honours_cancel() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("encrypted.7z");
+        let path = tmp.path().join("link.7z");
         let mut writer = sevenz_rust2::ArchiveWriter::create(&path).unwrap();
-        writer.set_encrypt_header(false);
-        writer.set_content_methods(vec![
-            sevenz_rust2::EncoderConfiguration::new(sevenz_rust2::EncoderMethod::LZMA2),
-            sevenz_rust2::EncoderConfiguration::new(sevenz_rust2::EncoderMethod::AES256_SHA256)
-                .with_options(sevenz_rust2::encoder_options::EncoderOptions::Aes(
-                    sevenz_rust2::encoder_options::AesEncoderOptions::new(Password::from("secret")),
-                )),
-        ]);
         writer
             .push_archive_entry(
                 ArchiveEntry {
-                    name: "secret.txt".to_owned(),
+                    name: "l".to_owned(),
                     has_stream: true,
                     ..ArchiveEntry::default()
                 },
-                Some(&b"classified"[..]),
+                Some(&b"target"[..]),
             )
             .unwrap();
         writer.finish().unwrap();
 
-        struct CountingPassword(std::sync::atomic::AtomicUsize);
-        impl PasswordProvider for CountingPassword {
-            fn password(&self, _archive: &Path, retry: bool) -> Option<String> {
-                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                (!retry).then(|| "secret".to_owned())
-            }
-        }
-        let password = CountingPassword(std::sync::atomic::AtomicUsize::new(0));
-        let mut reader = open(
-            &path,
-            &password,
-            &ArchiveLimits::default(),
-            &CancelToken::new(),
-        )
-        .unwrap();
+        let mut file = File::open(&path).unwrap();
+        let archive = Archive::read(&mut file, &Password::empty()).unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let mut source = BlockSource {
+            archive: &archive,
+            file: &mut file,
+            mem_kb: 1 << 20,
+            path: &path,
+            cancel: &cancel,
+        };
+        let mut metas = [RawEntry::new("l", ArchiveEntryKind::Symlink)];
+        metas[0].size = 6;
+        let result = read_symlink_targets(&mut source, &mut metas, None);
+        assert!(matches!(result, Err(ArchiveError::Cancelled)));
+        assert!(metas[0].link_target.is_none());
+    }
+
+    #[test]
+    fn nt_time_converts_to_unix_time() {
+        // 2023-01-01T00:00:00Z.
         assert_eq!(
-            password.0.load(std::sync::atomic::Ordering::Relaxed),
-            0,
-            "plain headers must open without asking"
+            nt_to_unix_ns(133_170_048_000_000_000),
+            1_672_531_200 * 1_000_000_000
         );
-        assert!(reader.index().entries()[0].encrypted);
-        let id = reader.index().lookup(Path::new("secret.txt")).unwrap().id;
-        let mut data = Vec::new();
-        let written = reader
-            .read_entry(id, &mut data, &CancelToken::new())
-            .unwrap();
-        assert_eq!(password.0.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert_eq!(written, 10);
-        assert_eq!(data, b"classified");
-        assert_eq!(password.0.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(nt_to_unix_ns(116_444_735_990_000_000), -1_000_000_000);
     }
 
     #[test]

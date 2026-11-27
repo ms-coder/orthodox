@@ -454,6 +454,7 @@ impl Engine {
                         reader.as_mut(),
                         &self.filter,
                         self.content.as_ref(),
+                        self.match_dirs,
                         &mut sink,
                     );
                     return;
@@ -468,7 +469,9 @@ impl Engine {
                     }
                     return; // it *is* an archive: never raw-search its bytes
                 }
-                ArchiveCheck::Unsearchable(reason) => {
+                // Every file is probed: only one the user asked about is worth a warning.
+                ArchiveCheck::Unreadable(_) if !task.passes_filters => return,
+                ArchiveCheck::Unsearchable(reason) | ArchiveCheck::Unreadable(reason) => {
                     self.shared
                         .warn(task.path.clone(), format!("archive skipped: {reason}"));
                     return;

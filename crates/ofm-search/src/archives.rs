@@ -26,6 +26,8 @@ pub(crate) enum ArchiveCheck {
     PlainFile,
     /// The format's backend is not implemented yet (T6.1 stubs).
     StubBackend,
+    /// The file itself could not be read, so it may not be an archive at all.
+    Unreadable(String),
     /// A supported archive we cannot search inside (encrypted, corrupt, limit); the
     /// reason is for the warning.
     Unsearchable(String),
@@ -41,6 +43,7 @@ pub(crate) fn try_open_archive(path: &Path, cancel: &CancelToken) -> ArchiveChec
         Err(ArchiveError::NotAnArchive(_)) => ArchiveCheck::PlainFile,
         Err(ArchiveError::NotImplemented(_)) => ArchiveCheck::StubBackend,
         Err(ArchiveError::Cancelled) => ArchiveCheck::Unsearchable("cancelled".to_owned()),
+        Err(e @ ArchiveError::Io { .. }) => ArchiveCheck::Unreadable(format!("{e}")),
         Err(e) => ArchiveCheck::Unsearchable(format!("{e}")),
     }
 }
@@ -58,12 +61,14 @@ pub(crate) struct ArchiveSink<'a> {
 }
 
 /// Search the entries of an opened archive with the same reporting filters as the tree
-/// walk. The caller wraps this in `catch_unwind` (invariant 7).
+/// walk; `match_dirs` as in the query (a content query never reports directories). The
+/// caller wraps this in `catch_unwind` (invariant 7).
 pub(crate) fn search_inside(
     archive: &Path,
     reader: &mut dyn ArchiveReader,
     filter: &EntryFilter,
     content: Option<&ContentSpec>,
+    match_dirs: bool,
     sink: &mut ArchiveSink<'_>,
 ) {
     let index = reader.index().clone();
@@ -72,10 +77,14 @@ pub(crate) fn search_inside(
     let mut report: Vec<(PathBuf, ofm_core::Entry)> = Vec::new();
     let mut content_paths: Vec<PathBuf> = Vec::new();
     for e in index.entries().iter().filter(|e| e.is_safe()) {
+        if sink.cancel.is_cancelled() {
+            return;
+        }
         sink.files_scanned.fetch_add(1, Ordering::Relaxed);
         let kind = match e.kind {
             ArchiveEntryKind::File | ArchiveEntryKind::Hardlink => EntryKind::File,
-            ArchiveEntryKind::Dir => EntryKind::Dir,
+            ArchiveEntryKind::Dir if match_dirs && content.is_none() => EntryKind::Dir,
+            ArchiveEntryKind::Dir => continue,
             // Symlinks and special entries: never searched, never reported.
             _ => continue,
         };
@@ -92,7 +101,19 @@ pub(crate) fn search_inside(
         (sink.out)(archive_hit(archive, inner, entry, None));
     }
     let Some(spec) = content else { return };
-    let selected = index.select(&content_paths);
+    // A search never prompts, and one encrypted entry in the selection would fail the whole
+    // visit: leave them out and say so.
+    let (locked, selected): (Vec<_>, Vec<_>) = index
+        .select(&content_paths)
+        .into_iter()
+        .partition(|id| index.get(*id).is_some_and(|e| e.encrypted));
+    if !locked.is_empty() {
+        (sink.warn)(format!(
+            "{}: {} encrypted entries not searched (password required)",
+            archive.display(),
+            locked.len()
+        ));
+    }
     let archive_path = archive.to_owned();
     // `visit` streams in archive order; the visitor checks each entry against the
     // selection (ids are unique, a small linear scan is fine for v1.0 archive sizes).
