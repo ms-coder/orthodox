@@ -1,6 +1,6 @@
 //! Live reload of theme files (F30) via `notify`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc;
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
@@ -33,17 +33,20 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// Watch `themes_dir` for changes. When the directory does not exist yet (fresh profile, or the
-/// user has not dropped any theme files), the nearest existing ancestor — normally the config
-/// directory — is watched instead so the directory's *creation* is noticed; the watch then
-/// switches to the directory itself (T8.8). Events fire only for real changes of the themes
-/// directory, never for unrelated files next to it.
+/// Watch `themes_dir` for changes. The nearest existing ancestor — normally the config
+/// directory — is watched for the directory's whole lifetime so that its creation *and*
+/// deletion are noticed, and the directory itself is watched whenever it exists; the OS watch
+/// on a directory dies with it, so a deleted and re-created themes directory is re-watched
+/// (T8.8, M9). Events fire only for paths at or below the themes directory, never for
+/// unrelated files next to it.
 pub fn watch_themes(themes_dir: &Path) -> Result<ThemeWatcher, ConfigError> {
     let (tx, events) = async_channel::unbounded();
     let (raw_tx, raw_rx) = mpsc::channel::<()>();
+    let dir_filter = themes_dir.to_path_buf();
     let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(ev) = res
             && !ev.kind.is_access()
+            && ev.paths.iter().any(|p| p.starts_with(&dir_filter))
         {
             let _ = raw_tx.send(());
         }
@@ -51,23 +54,20 @@ pub fn watch_themes(themes_dir: &Path) -> Result<ThemeWatcher, ConfigError> {
     .map_err(|e| notify_err(themes_dir, e))?;
     let watcher = std::sync::Arc::new(Mutex::new(watcher));
 
-    // Where the watch starts: the directory itself, or an ancestor while waiting for it to be
-    // created. No existing ancestor (config home missing entirely): stay unwatched but alive.
-    let initial: Option<PathBuf> = if themes_dir.is_dir() {
-        Some(themes_dir.to_path_buf())
-    } else {
-        themes_dir
-            .ancestors()
-            .skip(1)
-            .find(|a| a.is_dir())
-            .map(Path::to_path_buf)
-    };
+    // The directory itself, when it exists. Failing to watch an existing themes directory is
+    // the one hard error: live reload would silently never work.
     let mut watching_dir = false;
-    if let Some(dir) = &initial {
+    if themes_dir.is_dir() {
         lock(&watcher)
-            .watch(dir, RecursiveMode::NonRecursive)
+            .watch(themes_dir, RecursiveMode::NonRecursive)
             .map_err(|e| notify_err(themes_dir, e))?;
-        watching_dir = dir == themes_dir;
+        watching_dir = true;
+    }
+    // The nearest existing ancestor, best-effort (no existing ancestor at all: stay unwatched
+    // but alive). It is never unwatched: creations and deletions of the themes directory are
+    // reported through it.
+    if let Some(ancestor) = themes_dir.ancestors().skip(1).find(|a| a.is_dir()) {
+        let _ = lock(&watcher).watch(ancestor, RecursiveMode::NonRecursive);
     }
 
     let out = tx.clone();
@@ -85,18 +85,21 @@ pub fn watch_themes(themes_dir: &Path) -> Result<ThemeWatcher, ConfigError> {
                         Err(mpsc::RecvTimeoutError::Disconnected) => return,
                     }
                 }
-                if !watching_dir && dir_to_watch.is_dir() {
-                    // The directory appeared: switch the watch from the ancestor to it. The
-                    // ancestor unwatch is best-effort (it may already be gone).
-                    let mut w = lock(&thread_watcher);
+                // Sync the watch with reality: the watch on a directory dies with the
+                // directory, so re-add it when the themes directory (re)appears and drop the
+                // dead watch when it goes away. The ancestor watch reports both transitions.
+                let exists = dir_to_watch.is_dir();
+                let mut w = lock(&thread_watcher);
+                if exists && !watching_dir {
                     if w.watch(&dir_to_watch, RecursiveMode::NonRecursive).is_ok() {
-                        if let Some(ancestor) = initial.as_ref() {
-                            let _ = w.unwatch(ancestor);
-                        }
                         watching_dir = true;
                     }
+                } else if !exists && watching_dir {
+                    let _ = w.unwatch(&dir_to_watch);
+                    watching_dir = false;
                 }
-                if watching_dir && out.send_blocking(ThemesChanged).is_err() {
+                drop(w);
+                if out.send_blocking(ThemesChanged).is_err() {
                     return;
                 }
             }
@@ -188,6 +191,41 @@ mod tests {
             got,
             Ok(ThemesChanged),
             "theme file after switch not noticed"
+        );
+    }
+
+    #[test]
+    fn themes_dir_deleted_and_recreated_is_watched_again() {
+        let d = tempfile::tempdir().unwrap();
+        let themes = d.path().join("themes");
+        std::fs::create_dir(&themes).unwrap();
+        let w = watch_themes(&themes).unwrap();
+        // Baseline: a change inside the existing directory is noticed.
+        std::fs::write(themes.join("a.toml"), "id = \"a\"").unwrap();
+        assert_eq!(
+            recv_timeout(&w.events, Duration::from_secs(5)),
+            Ok(ThemesChanged)
+        );
+        // Deleting the directory is noticed (its own OS watch dies with it, the ancestor
+        // watch reports the removal) ...
+        std::fs::remove_dir_all(&themes).unwrap();
+        assert_eq!(
+            recv_timeout(&w.events, Duration::from_secs(5)),
+            Ok(ThemesChanged),
+            "removal not noticed"
+        );
+        // ... and a re-created directory is watched again: files dropped into it fire events.
+        std::fs::create_dir(&themes).unwrap();
+        assert_eq!(
+            recv_timeout(&w.events, Duration::from_secs(5)),
+            Ok(ThemesChanged),
+            "recreation not noticed"
+        );
+        std::fs::write(themes.join("b.toml"), "id = \"b\"").unwrap();
+        assert_eq!(
+            recv_timeout(&w.events, Duration::from_secs(5)),
+            Ok(ThemesChanged),
+            "file in re-created dir not noticed"
         );
     }
 }

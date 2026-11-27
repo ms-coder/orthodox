@@ -1,5 +1,8 @@
 # OFM keymap preset: tc. Generated from docs/COMMANDS.md by T1.0; hand-maintained afterwards (T1.3).
 # Format: ADR-0005. Section = context; `"<chord>" = "<command id>"`.
+# Total Commander notes (F29, M9): Space tags a file, Ctrl+Space shows the size of the entry
+# under the cursor, Ctrl+M is the multi-rename tool; "restore selection" has no TC equivalent
+# and lives on Ctrl+Shift+R. Alt+F5 pack does not exist in OFM (no archive-write support).
 version = 1
 preset = "tc"
 typing = "quick_search"   # command_line | quick_search
@@ -85,7 +88,7 @@ typing = "quick_search"   # command_line | quick_search
 "Ctrl+Gray+" = "select.all"
 "Ctrl+Gray-" = "select.none"
 "Ctrl+Shift+A" = "select.none"
-"Ctrl+M" = "select.restore"
+"Ctrl+Shift+R" = "select.restore"
 "F3" = "file.view"
 "F4" = "file.edit"
 "Shift+F4" = "file.new_file"
@@ -100,6 +103,8 @@ typing = "quick_search"   # command_line | quick_search
 "Alt+F6" = "file.link"
 "Alt+Enter" = "file.properties"
 "Alt+Shift+Enter" = "file.calc_size"
+"Ctrl+Space" = "file.calc_size"
+"Ctrl+M" = "file.batch_rename"
 "Ctrl+Shift+M" = "file.batch_rename"
 "Ctrl+Alt+Z" = "file.batch_rename_undo"
 "Ctrl+C" = "file.clipboard_copy"

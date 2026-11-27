@@ -67,7 +67,6 @@ const T23_BINDINGS: &[(&str, CommandId)] = &[
     ("Gray*", cmd::SELECT_INVERT),
     ("Ctrl+Gray+", cmd::SELECT_ALL),
     ("Ctrl+Gray-", cmd::SELECT_NONE),
-    ("Ctrl+M", cmd::SELECT_RESTORE),
 ];
 
 fn keymap(preset: Preset) -> Keymap {
@@ -95,11 +94,22 @@ fn t23_commands_have_handlers_and_keys_in_far_and_tc() {
     }
     // Dialog keys reach handlers (they are registered here, not left NotImplemented).
     assert!(reg.has(cmd::DIALOG_OK) && reg.has(cmd::DIALOG_CANCEL));
-    // TC: Space toggles the selection.
-    let space: KeyChord = "Space".parse().unwrap();
+    // TC: Space toggles the selection, Ctrl+M is the multi-rename tool and "restore selection"
+    // (no TC equivalent) sits on Ctrl+Shift+R (M9).
+    let tc = keymap(Preset::Tc);
+    for (chord, command) in [
+        ("Space", cmd::SELECT_TOGGLE),
+        ("Ctrl+M", cmd::FILE_BATCH_RENAME),
+        ("Ctrl+Shift+R", cmd::SELECT_RESTORE),
+    ] {
+        let chord: KeyChord = chord.parse().unwrap();
+        assert_eq!(tc.resolve_main(chord, false), Some(command), "Tc: {chord}");
+    }
+    // Far keeps Ctrl+M = restore selection.
+    let chord: KeyChord = "Ctrl+M".parse().unwrap();
     assert_eq!(
-        keymap(Preset::Tc).resolve_main(space, false),
-        Some(cmd::SELECT_TOGGLE)
+        keymap(Preset::Far).resolve_main(chord, false),
+        Some(cmd::SELECT_RESTORE)
     );
 }
 

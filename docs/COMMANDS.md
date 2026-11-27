@@ -13,6 +13,14 @@ Non-numpad laptops (T8.12): besides the Gray chords, every preset binds `Alt+M` 
 `Alt+Shift+M` = deselect by mask, `Ctrl+Shift+I` = invert selection, `Ctrl+A` = select all,
 `Ctrl+Shift+A` = deselect all; `Space` also toggles selection in the tc and mc presets.
 
+Preset notes (M9, F29): key sequences do not exist (ADR-0005), so mc's Ctrl+X chords map to the
+closest single chord (C-x q quick view → `Ctrl+Q`, C-x ! external panelize → `Ctrl+Alt+P`,
+C-x l link stays on the Far-style `Alt+F6`). TC: `Ctrl+Space` shows the size of the entry under
+the cursor and `Ctrl+M` is the multi-rename tool, so "restore selection" (no TC equivalent) sits
+on `Ctrl+Shift+R`; Alt+F5 pack does not exist (OFM archives are read-only). mc: `Ctrl+T` tags a
+file like in mc, so "new tab" (no tabs in mc) moves to `Ctrl+Shift+T`, and `Alt+.` toggles
+hidden files (mc: M-.).
+
 | ID | Context | Title | Far (default) | TC | mc |
 |---|---|---|---|---|---|
 | `app.quit` | global | Quit | `F10` | `Alt+F4` | = |
@@ -58,7 +66,7 @@ Non-numpad laptops (T8.12): besides the Gray chords, every preset binds `Alt+M` 
 | `panel.sort_mtime` | panels | Sort by modified time (again = reverse) | `Ctrl+F5` | = | = |
 | `panel.sort_size` | panels | Sort by size (again = reverse) | `Ctrl+F6` | = | = |
 | `panel.sort_reverse` | panels | Reverse sort order | `Ctrl+F12` | = | = |
-| `panel.toggle_hidden` | panels | Show/hide hidden files | `Ctrl+H` | = | = |
+| `panel.toggle_hidden` | panels | Show/hide hidden files | `Ctrl+H` | = | `Ctrl+H`, `Alt+.` |
 | `panel.toggle_quickview` | panels | Quick view in other panel | `Ctrl+Q` | = | = |
 | `panel.context_menu` | panels | Context menu | `Shift+F10`, `Menu` | = | = |
 | `panel.compare_dirs` | panels | Compare directories | `Shift+F2` | = | = |
@@ -67,12 +75,12 @@ Non-numpad laptops (T8.12): besides the Gray chords, every preset binds `Alt+M` 
 | `panel.quicksearch_prev` | panels | Quick search: previous match | `Ctrl+Up` | = | = |
 | `panel.filter` | panels | Filter as you type | `Ctrl+Shift+S` | = | = |
 | `panel.cancel` | panels | Cancel quick search / filter | `Esc` | = | = |
-| `tab.new` | panels | New tab | `Ctrl+T` | = | = |
+| `tab.new` | panels | New tab | `Ctrl+T` | = | `Ctrl+Shift+T` |
 | `tab.close` | panels | Close tab | `Ctrl+W` | = | = |
 | `tab.next` | panels | Next tab | `Ctrl+Tab` | = | = |
 | `tab.prev` | panels | Previous tab | `Ctrl+Shift+Tab` | = | = |
 | `tab.lock` | panels | Lock/unlock tab | `Ctrl+Shift+L` | = | = |
-| `select.toggle` | panels | Toggle selection and move down | `Ins` | `Ins`, `Space` | `Ins`, `Space` |
+| `select.toggle` | panels | Toggle selection and move down | `Ins` | `Ins`, `Space` | `Ins`, `Ctrl+T`, `Space` |
 | `select.extend_up` | panels | Extend selection up | `Shift+Up` | = | = |
 | `select.extend_down` | panels | Extend selection down | `Shift+Down` | = | = |
 | `select.extend_page_up` | panels | Extend selection page up | `Shift+PgUp` | = | = |
@@ -84,7 +92,7 @@ Non-numpad laptops (T8.12): besides the Gray chords, every preset binds `Alt+M` 
 | `select.invert` | panels | Invert selection | `Gray*`, `Ctrl+Shift+I` | = | = |
 | `select.all` | panels | Select all | `Ctrl+Gray+`, `Ctrl+A` | `Ctrl+A`, `Ctrl+Gray+` | = |
 | `select.none` | panels | Deselect all | `Ctrl+Gray-`, `Ctrl+Shift+A` | = | = |
-| `select.restore` | panels | Restore previous selection | `Ctrl+M` | = | = |
+| `select.restore` | panels | Restore previous selection | `Ctrl+M` | `Ctrl+Shift+R` | = |
 | `file.view` | panels | View (directory: calculate size) | `F3` | = | = |
 | `file.edit` | panels | Edit | `F4` | = | = |
 | `file.new_file` | panels | New file (edit) | `Shift+F4` | = | = |
@@ -96,8 +104,8 @@ Non-numpad laptops (T8.12): besides the Gray chords, every preset binds `Alt+M` 
 | `file.delete_permanent` | panels | Delete permanently | `Shift+Del`, `Shift+F8` | = | = |
 | `file.link` | panels | Create link | `Alt+F6` | = | = |
 | `file.properties` | panels | Properties / attributes | `Alt+Enter` | = | = |
-| `file.calc_size` | panels | Calculate directory size | `Alt+Shift+Enter` | = | = |
-| `file.batch_rename` | panels | Batch rename in editor | `Ctrl+Shift+M` | = | = |
+| `file.calc_size` | panels | Calculate directory size | `Alt+Shift+Enter` | `Alt+Shift+Enter`, `Ctrl+Space` | = |
+| `file.batch_rename` | panels | Batch rename in editor | `Ctrl+Shift+M` | `Ctrl+M`, `Ctrl+Shift+M` | = |
 | `file.batch_rename_undo` | panels | Undo last batch rename | `Ctrl+Alt+Z` | = | = |
 | `file.clipboard_copy` | panels | Copy files to clipboard | `Ctrl+C` | = | = |
 | `file.clipboard_cut` | panels | Cut files to clipboard | `Ctrl+X` | = | = |
