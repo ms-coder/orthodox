@@ -1,4 +1,4 @@
-# M6/M7 security review (Kimi k3.1-pro, read-only, 2026-11-25)
+# M6/M7 security review (an external model, read-only, 2026-11-25)
 
 Verdict BLOCK. (R)=reasoned from code, not reproduced. Lead verified #2, #4, #7 in code (confirmed).
 
