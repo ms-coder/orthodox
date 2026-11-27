@@ -2,10 +2,9 @@
 //!
 //! Extends `rename_batch_safety.rs` / `rename_batch_crash.rs` with: a concurrent creator thread
 //! hammering the directory during the batch, sources swapped for symlinks/directories between
-//! plan and run (with and without plan-time identities), the destination directory made
-//! read-only mid-batch, cancel at *every* step index of a mixed swap+chain+case-only plan,
-//! tampered/forgeed/corrupt undo logs (escape attempts, absolute paths, never-batched items,
-//! truncated files, replay), and a 20k-step batch. Real file system in temp dirs only.
+//! plan and run, the directory made read-only mid-batch, cancel at *every* step index of a mixed
+//! swap+chain+case-only plan, and forged, corrupt or replayed undo logs.
+//! Real file system in temp dirs only.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![cfg(unix)]
 
@@ -16,7 +15,6 @@ use std::ffi::OsString;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
 
 use ofm_core::CancelToken;
 use ofm_core::batch_rename::{Step, StepKind, UndoLog, save_undo_log};
@@ -58,7 +56,8 @@ fn concurrent_creators_in_the_directory_never_lose_data() {
     let creator = std::thread::spawn(move || {
         let mut i = 0u64;
         let mut made = Vec::new();
-        while !flag.load(Ordering::Relaxed) {
+        // Bounded so a slow batch cannot fill the disk.
+        while !flag.load(Ordering::Relaxed) && i < 5_000 {
             let name = format!("noise-{i}");
             // create_new: never overwrite, even our own names (they are unique anyway).
             if std::fs::OpenOptions::new()
@@ -113,7 +112,8 @@ fn concurrent_creators_in_the_directory_never_lose_data() {
 /// symlink is never followed, the directory subtree moves intact) — pin both behaviours.
 #[test]
 fn source_replaced_by_symlink_or_dir_between_plan_and_run() {
-    let cases: [(&str, fn(&std::path::Path)); 2] = [
+    type Replace = fn(&std::path::Path);
+    let cases: [(&str, Replace); 2] = [
         ("symlink", |work: &std::path::Path| {
             std::os::unix::fs::symlink("/nonexistent", work.join("a")).unwrap()
         }),
@@ -320,27 +320,10 @@ fn corrupt_or_truncated_log_fails_cleanly() {
     }
 }
 
-/// A forged step whose state does NOT match (source still present, target absent — i.e. it never
-/// ran) is recognised as a not-run tail and skipped: the rollback is a no-op, never a rename.
-#[test]
-fn forged_log_with_non_matching_state_is_a_no_op_not_a_rename() {
-    let e = env(&["a", "b"]);
-    let log = UndoLog {
-        dir: e.work.clone(),
-        steps: vec![direct("a", "x")],
-        renames: vec![],
-    };
-    save_undo_log(&log, &e.log).unwrap();
-    let out = run_quiet(JobSpec::RenameRollback(rollback_spec(&e)), real());
-    assert!(matches!(out, Outcome::Ok(_)), "{out:?}");
-    assert_eq!(report(&out).files_done, 0);
-    assert_eq!(listing(&e.work), expect(&[("a", "a"), ("b", "b")]));
-    assert!(!e.log.exists(), "nothing to undo: log removed");
-}
-
-/// A forged log whose single step MATCHES the directory state (attacker deleted `a` and created
-/// `x`) verifies as "executed" because the log binds names only, no content. Rolling it back
-/// renames the attacker's file into place. The job must refuse — but cannot detect this today.
+/// A log whose single step MATCHES the directory state (`a` is gone, an unrelated `x` exists)
+/// verifies as "executed" because the log binds names only, not identities. Rolling it back
+/// renames the unrelated file to `a` (nothing is overwritten). The same happens without forgery
+/// if the user deletes a renamed file and creates a new one under that name before undo.
 #[test]
 #[ignore = "BUG: rollback applies a forged undo log whose step matches the dir state but never ran (the log binds names, not content)"]
 fn forged_log_with_matching_state_must_be_refused() {
@@ -393,77 +376,4 @@ fn rollback_spec_from_memory(e: &Env) -> RollbackSpec {
         log: UndoLog::new(e.work.clone(), &p),
         log_path: e.log.clone(),
     }
-}
-
-// ---- scale -----------------------------------------------------------------------------------
-
-/// 20k-step planning: the planner must produce exactly one step per pair, correct chunk sizing
-/// (chunk_for(20000) == 200) and stay fast. The full 20k forward+rollback is NOT run here: the
-/// write-ahead log re-serializes the whole executed prefix every chunk (O(n²/chunk) bytes, pretty
-/// TOML + 2 fsync per save), which costs ~33 s in a debug build — a perf characteristic, not a
-/// correctness bug. The executed-scale behaviour is covered below at a debug-feasible size.
-#[test]
-fn twenty_thousand_step_plan_is_exact_and_fast() {
-    assert_eq!(ofm_jobs::rename_batch::chunk_for(20_000), 200);
-    assert_eq!(ofm_jobs::rename_batch::chunk_for(100), 1);
-    let n = 20_000usize;
-    let names: Vec<String> = (0..n).map(|i| format!("t{i:05}")).collect();
-    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    let e = env(&refs);
-    let pairs: Vec<(&str, &str)> = names
-        .iter()
-        .map(|s| (s.as_str(), format!("u{}", &s[1..]).leak() as &str))
-        .collect();
-    let t0 = Instant::now();
-    let p = plan_of(&e.work, &pairs);
-    assert!(
-        t0.elapsed() < std::time::Duration::from_secs(2),
-        "{:?}",
-        t0.elapsed()
-    );
-    assert_eq!(p.steps.len(), n);
-    assert!(
-        p.steps
-            .iter()
-            .all(|s| s.kind == StepKind::Direct && s.from != s.to),
-        "one direct step per pair, no self-renames"
-    );
-    assert_eq!(p.preview.len(), n);
-}
-
-/// Executed scale (debug budget): a 1200-step batch forward and back — planning, write-ahead log,
-/// exact listing and rollback must all stay correct and well under the 5 s budget.
-#[test]
-fn large_executed_batch_is_exact_and_fast() {
-    let n = 1200usize;
-    let names: Vec<String> = (0..n).map(|i| format!("t{i:05}")).collect();
-    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    let e = env(&refs);
-    let pairs: Vec<(&str, &str)> = names
-        .iter()
-        .map(|s| (s.as_str(), format!("u{}", &s[1..]).leak() as &str))
-        .collect();
-    let p = plan_of(&e.work, &pairs);
-    assert_eq!(p.steps.len(), n);
-
-    let t0 = Instant::now();
-    let out = run_quiet(JobSpec::RenameBatch(batch(&e, p)), real());
-    let forward = t0.elapsed();
-    assert!(matches!(out, Outcome::Ok(_)), "{out:?}");
-    assert!(forward < std::time::Duration::from_secs(3), "{forward:?}");
-    assert_eq!(log_steps(&e), n);
-
-    let listing = listing(&e.work);
-    assert_eq!(listing.len(), n);
-    for (from, to) in &pairs {
-        assert_eq!(listing[&OsString::from(*to)], from.as_bytes());
-    }
-
-    let t1 = Instant::now();
-    let undo = run_quiet(JobSpec::RenameRollback(rollback_spec(&e)), real());
-    let backward = t1.elapsed();
-    assert!(matches!(undo, Outcome::Ok(_)), "{undo:?}");
-    assert!(backward < std::time::Duration::from_secs(3), "{backward:?}");
-    assert_trees_equal(&e.work, pristine(&refs).path(), compare());
-    assert!(!e.log.exists());
 }

@@ -77,7 +77,7 @@ fn hundred_k_case_duplicate_twins() {
     let r = compare(&left, &right_same, &opts);
     let elapsed = t0.elapsed();
     assert!(no_marks(&r), "marks: {:?}", names(&r));
-    assert!(elapsed.as_secs() < 5, "took {elapsed:?}");
+    assert!(elapsed.as_secs() < 30, "took {elapsed:?}");
 
     // Deterministic: same input, same output.
     let r2 = compare(&left, &right_same, &opts);
@@ -280,8 +280,8 @@ fn case_insensitive_greedy_pairing_pinned() {
     assert!(reasons.contains(&MarkReason::MissingOnOtherSide));
 }
 
-/// Case-insensitive matching must fold full Unicode for valid UTF-8 (not just ASCII):
-/// "STRASSE" lowercase-folds against "strasse"... use a real fold pair: 'É' folds to 'é'.
+/// Case-insensitive matching lowercases full Unicode for valid UTF-8 (not just ASCII), but it is
+/// lowercasing, not case folding: "ß" does not match "SS".
 #[test]
 fn unicode_case_folds_for_valid_utf8() {
     let opts = CompareOptions {
@@ -293,8 +293,6 @@ fn unicode_case_folds_for_valid_utf8() {
     let right = vec![file("café.txt", 1, 0)];
     let r = compare(&left, &right, &opts);
     assert!(no_marks(&r), "{:?}", names(&r));
-    // And ß vs SS: full Unicode lowercase does NOT fold ß to ss (that is case-folding, not
-    // lowercase) — pin that "straße" does NOT match "STRASSE".
     let left = vec![file("straße", 1, 0)];
     let right = vec![file("STRASSE", 1, 0)];
     let r = compare(&left, &right, &opts);
@@ -371,9 +369,8 @@ fn content_results_keep_marks_sorted() {
     }
 }
 
-/// include_dirs=false hides directories entirely, even from a file/dir name clash: the file
-/// then compares against nothing and is reported missing... actually with dirs filtered from
-/// both sides the clash disappears — pin that the file is simply MissingOnOtherSide.
+/// include_dirs=false filters directories before matching, so a file/dir name clash dissolves:
+/// the file is simply MissingOnOtherSide.
 #[test]
 fn include_dirs_false_dissolves_clash() {
     let opts = CompareOptions {

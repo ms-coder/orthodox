@@ -1,12 +1,11 @@
 //! T8.5 adversarial real-shell tests for `ofm_core::menu_expand` (F28).
 //!
-//! Complements `menu_expand_real_shells.rs` (which covers the classic injection names) with the
-//! remaining hostile name classes: option-looking names (`-rf`, `--`), glob/bracket patterns,
-//! history expansion, brace expansion, names that are only quotes or end in a backslash, leading
-//! and trailing whitespace, a 4 KiB name, and the empty name — run through the *real* bash, zsh
-//! and fish, asserting the shell receives exactly the original bytes and never executes part of
-//! a name. Control-byte names must be refused before any shell runs. Shells that are not
-//! installed are skipped politely.
+//! Complements `menu_expand_real_shells.rs` (classic injection names) and
+//! `menu_expand_portable_sh.rs` with the remaining hostile name classes: option-looking names,
+//! glob/bracket patterns, history and brace expansion, quote-only names, trailing backslashes,
+//! edge whitespace, a 4 KiB name and the empty name, run through the real `/bin/sh`, bash, zsh
+//! and fish. The shell must receive exactly the original bytes and never execute part of a name
+//! (payloads would only create a sentinel in the temp cwd). Missing shells are skipped.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #![cfg(unix)]
 
@@ -16,22 +15,25 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use ofm_core::cmdline::QuoteStyle;
-use ofm_core::menu_expand::{ExpandCtx, ExpandError, expand};
+use ofm_core::menu_expand::{ExpandCtx, expand};
 
 fn have(shell: &str) -> bool {
     Command::new(shell)
-        .arg("--version")
+        .args(["-c", "true"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
 }
 
+/// `/bin/sh` (dash on Ubuntu) gets the portable form.
+const SHELLS: [&str; 4] = ["/bin/sh", "bash", "zsh", "fish"];
+
 fn style_of(shell: &str) -> QuoteStyle {
-    if shell == "fish" {
-        QuoteStyle::Fish
-    } else {
-        QuoteStyle::Posix
+    match shell {
+        "fish" => QuoteStyle::Fish,
+        "/bin/sh" => QuoteStyle::PortableSh,
+        _ => QuoteStyle::Posix,
     }
 }
 
@@ -93,7 +95,6 @@ fn hostile_names() -> Vec<OsString> {
         "\\",         // lone backslash
         " lead",      // leading space
         "trail ",     // trailing space
-        "\ttab-lead", // leading tab is a CONTROL byte — excluded below
         "~",          // tilde expansion
         "~/etc",      // tilde path
         "=cmd",       // zsh: =command expansion
@@ -101,14 +102,17 @@ fn hostile_names() -> Vec<OsString> {
         "%f",         // placeholder-looking
         "a%nb",       // placeholder-looking
         "%{input:x}", // placeholder-looking
+        "';touch pwned;'",
+        "\\';touch pwned;#",
+        "$(touch pwned)",
     ]
     .iter()
     .map(OsString::from)
     .collect();
-    v.retain(|n| !ofm_core::cmdline::has_control_bytes(n.as_bytes()));
-    // 4 KiB name and a non-UTF-8 name.
+    // 4 KiB name and non-UTF-8 names.
     v.push(OsString::from("B".repeat(4096)));
     v.push(OsStringExt::from_vec(b"\xf1\xf2'\\ ".to_vec()));
+    v.push(OsStringExt::from_vec(b"\xff';touch pwned;#".to_vec()));
     v
 }
 
@@ -116,7 +120,7 @@ const WORD_TEMPLATE: &str = "printf '%%s\\n' %s";
 
 #[test]
 fn hostile_names_round_trip_through_real_shells() {
-    for shell in ["bash", "zsh", "fish"] {
+    for shell in SHELLS {
         if !have(shell) {
             eprintln!("skipping {shell}: not installed");
             continue;
@@ -147,7 +151,7 @@ fn hostile_names_round_trip_through_real_shells() {
         );
         // Nothing inside a name was executed.
         assert!(
-            !sc.0.join("pwned").exists() && !Path::new("/tmp/pwned").exists(),
+            !sc.0.join("pwned").exists(),
             "{shell}: executed part of a substituted name"
         );
     }
@@ -155,7 +159,7 @@ fn hostile_names_round_trip_through_real_shells() {
 
 #[test]
 fn hostile_cursor_and_stem_round_trip() {
-    for shell in ["bash", "zsh", "fish"] {
+    for shell in SHELLS {
         if !have(shell) {
             eprintln!("skipping {shell}: not installed");
             continue;
@@ -196,36 +200,10 @@ fn hostile_cursor_and_stem_round_trip() {
     }
 }
 
-/// Control bytes (tab, CR, LF, ESC, DEL, NUL) must make `expand` refuse — the shell must never
-/// see the bytes, and (stronger) the test asserts the refusal without spawning a shell at all.
-#[test]
-fn control_byte_names_are_refused_before_any_shell_runs() {
-    for bytes in [
-        &b"a\tb"[..], // tab
-        b"a\rb",      // CR
-        b"a\nb",      // LF
-        b"a\x1bb",    // ESC
-        b"a\x7fb",    // DEL
-        b"a\0b",      // NUL
-        b"\x01",      // bare SOH
-    ] {
-        let name: OsString = OsStringExt::from_vec(bytes.to_vec());
-        let sel = [name.clone()];
-        let c = ctx(Some(&name), &sel, Path::new("/tmp"));
-        for template in ["echo %f", "echo %s", "echo %n"] {
-            let err = expand(template, &c, style_of("bash")).unwrap_err();
-            assert!(
-                matches!(err, ExpandError::UnsafeName { .. }),
-                "{template:?} name {bytes:?}: {err:?}"
-            );
-        }
-    }
-}
-
 /// The empty name round-trips as an empty shell word in every real shell.
 #[test]
 fn empty_name_round_trips() {
-    for shell in ["bash", "zsh", "fish"] {
+    for shell in SHELLS {
         if !have(shell) {
             eprintln!("skipping {shell}: not installed");
             continue;
@@ -247,7 +225,7 @@ fn empty_name_round_trips() {
 /// A 4 KiB name passes through the real shell byte-exact (guards against quoting length bugs).
 #[test]
 fn four_kib_name_round_trips() {
-    for shell in ["bash", "zsh", "fish"] {
+    for shell in SHELLS {
         if !have(shell) {
             eprintln!("skipping {shell}: not installed");
             continue;

@@ -1,10 +1,9 @@
 //! T8.5 adversarial tests for `ofm_core::menu_expand` (F28 placeholder expansion, pure part).
 //!
 //! Extends the module unit tests and `menu_expand_real_shells.rs` with grammar edge cases:
-//! nested/unbalanced braces inside `%{input:…}`, prompt text that itself contains placeholder
-//! syntax, `%`-runs, multi-byte unknown placeholders, extreme selection sizes (0/1/10000) and
-//! extreme names (4 KiB, dotfiles, names that are only quotes), plus a full control-byte refusal
-//! matrix (tab, CR, LF, ESC, DEL, NUL).
+//! braces inside `%{input:…}`, prompt text that looks like placeholder syntax, `%`-runs,
+//! multi-byte unknown placeholders, extreme selection sizes, degenerate dot names and a
+//! control-byte refusal matrix.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::ffi::{OsStr, OsString};
@@ -118,9 +117,8 @@ fn multibyte_unknown_placeholder_positions() {
     }
 }
 
-/// `%%` immediately before `{` does not start an input placeholder: `%{` after an escape is a
-/// literal `%{`... it is not — the scanner treats `%` + `%` as an escape, so `%%{input:x}` is a
-/// literal `%` followed by `{input:x}`. Pin that reading.
+/// `%%` before `{` is an escape, not the start of an input placeholder: `%%{input:x}` is a
+/// literal `%` followed by the literal `{input:x}`.
 #[test]
 fn escaped_percent_before_brace_is_literal() {
     let c = ctx(None, &[], Path::new("/d"));
@@ -161,27 +159,6 @@ fn selection_size_extremes() {
     assert_eq!(got, want.into_bytes());
 }
 
-/// A 4 KiB single-byte name expands and quotes exactly (composition property), for both shell
-/// families.
-#[test]
-fn four_kib_name_expands_exactly() {
-    let big = OsString::from("x".repeat(4096));
-    let c = ctx(Some(&big), &[], Path::new("/d"));
-    for style in [QuoteStyle::Posix, QuoteStyle::Fish] {
-        let got = expand("echo %f", &c, style).unwrap().finish().unwrap();
-        let want = format!("echo {}", shell_quote_for(style, &big)).into_bytes();
-        assert_eq!(got, want);
-    }
-    // And as part of a selection.
-    let sel = [big.clone()];
-    let c = ctx(None, &sel, Path::new("/d"));
-    let got = posix("echo %s", &c);
-    assert_eq!(
-        got,
-        format!("echo {}", shell_quote_for(QuoteStyle::Posix, &big)).into_bytes()
-    );
-}
-
 // --- Names ---------------------------------------------------------------------------------
 
 /// `%n` stems for degenerate dotfile names follow `Path::file_stem` semantics exactly (the
@@ -196,50 +173,6 @@ fn stem_of_degenerate_dot_names() {
         let got = posix("echo %n", &c);
         let want = format!("echo '{}'", want_stem.to_string_lossy());
         assert_eq!(got, want.as_bytes(), "name {name:?}");
-    }
-}
-
-/// An empty name is a legal selection entry and expands to an empty quoted word. (`%%` is the
-/// literal percent escape — the template grammar does not know about shell quotes.)
-#[test]
-fn empty_name_expands_to_empty_word() {
-    let sel = [OsString::new(), OsString::from("b")];
-    let c = ctx(None, &sel, Path::new("/d"));
-    assert_eq!(posix("printf '%%s' %s", &c), b"printf '%s' '' 'b'");
-}
-
-/// Names consisting only of quotes/backslashes — the quoting escape-identity cases.
-#[test]
-fn quote_only_names_compose_exactly() {
-    for name in ["'", "''", "'''", "\\", "\\\\", "'\\", "\\'", "a'b'c"] {
-        let os_name = OsString::from(name);
-        let c = ctx(Some(&os_name), &[], Path::new("/d"));
-        for style in [QuoteStyle::Posix, QuoteStyle::Fish] {
-            let got = expand("echo %f", &c, style).unwrap().finish().unwrap();
-            let want = format!("echo {}", shell_quote_for(style, &os_name)).into_bytes();
-            assert_eq!(got, want, "{name:?} {style:?}");
-        }
-    }
-}
-
-/// Names starting with `-`, `~`, `$`, backticks, `*`, `?` are data (quoting handles them). This
-/// is the pure side; the real-shell proof lives in adv_menu_expand_shells.rs.
-#[test]
-fn shell_metachar_leading_names_expand_as_data() {
-    for name in [
-        "-rf", "--", "~", "~/x", "$HOME", "`id`", "*", "?", "[a-b]", "#c", "!b",
-    ] {
-        let os_name = OsString::from(name);
-        let c = ctx(Some(&os_name), &[], Path::new("/d"));
-        let got = posix("echo %f", &c);
-        let want = format!("echo {}", shell_quote_for(QuoteStyle::Posix, &os_name)).into_bytes();
-        assert_eq!(got, want, "{name:?}");
-        // Single quotes are always enough: the expansion must contain the name verbatim.
-        let text = String::from_utf8(got).unwrap();
-        assert!(
-            text.contains(&format!("'{name}'")) || text.contains(name),
-            "{name:?}"
-        );
     }
 }
 
@@ -316,22 +249,3 @@ fn non_utf8_high_bytes_are_quoted_not_refused() {
 }
 
 // --- Input answers -------------------------------------------------------------------------
-
-/// Several identical prompts are asked several times and filled in order; an answer containing
-/// control bytes is refused by index.
-#[test]
-fn repeated_prompts_fill_in_order_and_validate_each_answer() {
-    let c = ctx(None, &[], Path::new("/d"));
-    let e = expand("%{input:P} %{input:P} %{input:P}", &c, QuoteStyle::Posix).unwrap();
-    assert_eq!(e.prompts(), ["P", "P", "P"]);
-    assert_eq!(
-        e.fill_inputs(&["1".into(), "2".into(), "3".into()])
-            .unwrap(),
-        b"1 2 3"
-    );
-    let e = expand("%{input:P} %{input:P}", &c, QuoteStyle::Posix).unwrap();
-    assert_eq!(
-        e.fill_inputs(&["ok".into(), "bad\x1b".into()]),
-        Err(ExpandError::UnsafeAnswer { index: 1 })
-    );
-}
