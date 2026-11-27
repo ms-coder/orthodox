@@ -64,3 +64,31 @@ fn n4_copy_with_a_lost_link_reply_publishes_once() {
     let t = run(false);
     assert!(t.path().join("s/f").exists());
 }
+
+/// The checked close reporting `EINTR` is a failed item: nothing is published, the temp file is
+/// gone and the source stays (the user may retry or skip).
+#[test]
+fn an_interrupted_close_publishes_nothing() {
+    const EINTR: i32 = 4;
+    let t = TempDir::new().unwrap();
+    let (s, d) = (t.path().join("s"), t.path().join("d"));
+    std::fs::create_dir(&s).unwrap();
+    std::fs::create_dir(&d).unwrap();
+    std::fs::write(s.join("f"), b"data").unwrap();
+    let fs = Arc::new(FaultyFs::over_real(FaultPlan::new().fail_nth(
+        FaultOp::FileClose,
+        1,
+        FaultErrno::Raw(EINTR),
+    )));
+    let (sink, rec) = ScriptedSink::refusing();
+    let spec = JobSpec::Copy {
+        sources: vec![Location::Local(s.join("f"))],
+        dest_dir: d.clone(),
+        opts: CopyOpts::default(),
+    };
+    let out = run_sync(&spec, fs, sink);
+    assert!(matches!(out, Outcome::Cancelled(_)), "{out:?}");
+    assert_eq!(rec.lock().unwrap().questions.len(), 1);
+    assert_eq!(std::fs::read_dir(&d).unwrap().count(), 0);
+    assert!(s.join("f").exists());
+}

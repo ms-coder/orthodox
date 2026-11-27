@@ -135,3 +135,8 @@ Remaining windows. None of them follows a symlink below the pinned root.
   (`link` + `unlink`, else checked rename) instead of failing with `EINVAL` for every item on NFS
   and FUSE. The name is already claimed by the `O_EXCL` info file, so another trash user will not
   take it; the lstat+rename race for directories is the one documented above.
+- **Interrupted close.** `EINTR` from the checked close counts as a failure (it was treated as
+  success). Linux has released the descriptor, but an interrupted flush (FUSE, CIFS, NFS) has not
+  said whether the data arrived, and a FUSE server that stores on flush makes an earlier `fsync`
+  no proof either. The temp file is removed and the source kept; the item can be retried (an
+  extraction job fails, as for any other close error). Cost: a rare spurious error.
