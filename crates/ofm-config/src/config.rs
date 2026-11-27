@@ -446,41 +446,35 @@ impl Config {
         io::atomic_write(&paths.config_file(), &text)
     }
     /// Persist the theme choice with a minimal in-place edit of `config.toml` (F29): only the
-    /// `name` line inside `[theme]` is rewritten — all comments and key order are preserved.
-    /// The key is appended to `[theme]` when absent, or the section (and file) created. A file
-    /// that does not parse is left untouched and reported as [`ConfigError::Parse`] rather than
-    /// clobbered.
+    /// `name` value of the theme setting is rewritten; comments, key order, other keys, the
+    /// BOM and the file's line-ending style are preserved. Handled shapes: a `[theme]` table
+    /// (also dotted `theme.name = ".."`), an inline `theme = { name = "..", .. }` table (edited
+    /// in place, other keys kept), and a bare `theme = "x"` string (nothing else to preserve, so
+    /// it becomes `theme = { name = "<name>" }` at the same position). The key is appended when
+    /// absent, or the section (and file) created. A file that does not parse is left untouched
+    /// and reported as [`ConfigError::Parse`] rather than clobbered.
     pub fn save_theme_choice(paths: &ConfigPaths, name: &str) -> Result<(), ConfigError> {
         let file = paths.config_file();
-        let text = io::read_optional(&file)?.unwrap_or_default();
+        let raw = io::read_optional(&file)?.unwrap_or_default();
+        let (bom, text) = match raw.strip_prefix('\u{feff}') {
+            Some(rest) => ("\u{feff}", rest),
+            None => ("", raw.as_str()),
+        };
+        let crlf = dominant_crlf(text);
+        let parse_err = |message: String| ConfigError::Parse {
+            path: file.clone(),
+            message,
+        };
         let mut doc = text
             .parse::<toml_edit::DocumentMut>()
-            .map_err(|e| ConfigError::Parse {
-                path: file.clone(),
-                message: e.to_string(),
-            })?;
-        if doc.get("theme").is_none_or(|i| !i.is_table()) {
-            doc["theme"] = toml_edit::table();
+            .map_err(|e| parse_err(e.to_string()))?;
+        set_theme_name(&mut doc, name).map_err(parse_err)?;
+        let mut out = doc.to_string();
+        if crlf {
+            // toml_edit keeps existing line endings but emits bare LF for what it adds.
+            out = out.replace("\r\n", "\n").replace('\n', "\r\n");
         }
-        let Some(theme) = doc["theme"].as_table_mut() else {
-            return Err(ConfigError::Parse {
-                path: file.clone(),
-                message: "[theme] is not a table".into(),
-            });
-        };
-        match theme.get_mut("name") {
-            Some(item) => match item.as_value_mut() {
-                // Replace just the value, keeping the item's decor (comments, alignment).
-                Some(value) => {
-                    let mut new_value = toml_edit::Value::from(name);
-                    *new_value.decor_mut() = value.decor().clone();
-                    *value = new_value;
-                }
-                None => *item = toml_edit::value(name),
-            },
-            None => theme["name"] = toml_edit::value(name),
-        }
-        io::atomic_write(&file, &doc.to_string())
+        io::atomic_write(&file, &format!("{bom}{out}"))
     }
     /// The selected keymap preset (`far` if the name is unknown).
     pub fn preset(&self) -> Preset {
@@ -489,6 +483,66 @@ impl Config {
     /// The `typing` override, `None` = preset default.
     pub fn typing(&self) -> Option<TypingMode> {
         TypingMode::from_name(&self.keymap.typing)
+    }
+}
+
+/// True when `text` uses CRLF line endings more often than bare LF.
+fn dominant_crlf(text: &str) -> bool {
+    let crlf = text.matches("\r\n").count();
+    let lf = text.matches('\n').count() - crlf;
+    crlf > lf
+}
+
+/// Set `theme.name` in `doc`, editing whichever shape the `theme` key already has.
+fn set_theme_name(doc: &mut toml_edit::DocumentMut, name: &str) -> Result<(), String> {
+    let root = doc.as_table_mut();
+    match root.get_mut("theme") {
+        None => {
+            let mut t = toml_edit::Table::new();
+            t["name"] = toml_edit::value(name);
+            root.insert("theme", toml_edit::Item::Table(t));
+        }
+        Some(item) => {
+            if let Some(t) = item.as_table_mut() {
+                match t.get_mut("name") {
+                    Some(n) => replace_keep_decor(n, name),
+                    None => t["name"] = toml_edit::value(name),
+                }
+            } else if let Some(t) = item.as_inline_table_mut() {
+                match t.get_mut("name") {
+                    Some(v) => {
+                        let mut nv = toml_edit::Value::from(name);
+                        *nv.decor_mut() = v.decor().clone();
+                        *v = nv;
+                    }
+                    None => {
+                        t.insert("name", toml_edit::Value::from(name));
+                    }
+                }
+            } else if let Some(v) = item.as_value() {
+                // `theme = "x"` (or another scalar): nothing else to keep. Same position.
+                let decor = v.decor().clone();
+                let mut t = toml_edit::InlineTable::new();
+                t.insert("name", toml_edit::Value::from(name));
+                *t.decor_mut() = decor;
+                *item = toml_edit::Item::Value(toml_edit::Value::InlineTable(t));
+            } else {
+                return Err("`theme` is an array of tables, not a table".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Replace the value of `item` with the string `name`, keeping its decor (comments, spacing).
+fn replace_keep_decor(item: &mut toml_edit::Item, name: &str) {
+    match item.as_value_mut() {
+        Some(value) => {
+            let mut new_value = toml_edit::Value::from(name);
+            *new_value.decor_mut() = value.decor().clone();
+            *value = new_value;
+        }
+        None => *item = toml_edit::value(name),
     }
 }
 
@@ -663,6 +717,108 @@ mod tests {
         let (c, w) = Config::load(&p);
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(c.theme.name, "far-blue");
+    }
+
+    fn save_theme_read(p: &ConfigPaths) -> String {
+        io::read_optional(&p.config_file()).unwrap().unwrap()
+    }
+
+    #[test]
+    fn save_theme_choice_inline_table_keeps_other_keys() {
+        let d = tempfile::tempdir().unwrap();
+        let p = paths(&d);
+        io::atomic_write(
+            &p.config_file(),
+            "# head\ntheme = { name = \"a\", live_reload = false } # tail\n[panels]\nshow_hidden = true\n",
+        )
+        .unwrap();
+        Config::save_theme_choice(&p, "b").unwrap();
+        let text = save_theme_read(&p);
+        assert!(text.contains("# head") && text.contains("# tail"), "{text}");
+        assert!(!text.contains("[theme"), "{text}");
+        let (c, w) = Config::load(&p);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.theme.name, "b");
+        assert!(!c.theme.live_reload);
+        assert!(c.panels.show_hidden);
+        // Inline table without `name`: key appended, others kept.
+        io::atomic_write(&p.config_file(), "theme = { live_reload = false }\n").unwrap();
+        Config::save_theme_choice(&p, "c").unwrap();
+        let (c, w) = Config::load(&p);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.theme.name, "c");
+        assert!(!c.theme.live_reload);
+    }
+
+    #[test]
+    fn save_theme_choice_dotted_keys_keep_siblings_and_comments() {
+        let d = tempfile::tempdir().unwrap();
+        let p = paths(&d);
+        io::atomic_write(
+            &p.config_file(),
+            "theme.name = \"a\" # which\ntheme.live_reload = false\nversion = 1\n",
+        )
+        .unwrap();
+        Config::save_theme_choice(&p, "b").unwrap();
+        let text = save_theme_read(&p);
+        assert!(text.contains("# which"), "{text}");
+        let (c, w) = Config::load(&p);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.theme.name, "b");
+        assert!(!c.theme.live_reload);
+    }
+
+    #[test]
+    fn save_theme_choice_scalar_theme_stays_in_place() {
+        let d = tempfile::tempdir().unwrap();
+        let p = paths(&d);
+        io::atomic_write(&p.config_file(), "a = 1\ntheme = \"x\" # c\nz = 2\n").unwrap();
+        Config::save_theme_choice(&p, "b").unwrap();
+        let text = save_theme_read(&p);
+        assert!(text.contains("a = 1") && text.contains("z = 2"), "{text}");
+        assert!(text.find("a = 1") < text.find("theme"), "{text}");
+        assert!(text.find("theme") < text.find("z = 2"), "{text}");
+        assert!(text.contains("# c"), "{text}");
+    }
+
+    #[test]
+    fn save_theme_choice_malformed_files_stay_untouched() {
+        let d = tempfile::tempdir().unwrap();
+        let p = paths(&d);
+        for bad in [
+            "[theme]\nname = \"a\"\nname = \"b\"\n", // duplicate key
+            "[theme]\nname = \"a\"\n[theme]\n",      // duplicate table
+            "theme = { name = \"a\"\n",              // unterminated inline table
+            "theme = [[x]]\n",
+            "[[theme]]\nname = \"a\"\n", // array of tables (parses, not a table)
+        ] {
+            io::atomic_write(&p.config_file(), bad).unwrap();
+            assert!(Config::save_theme_choice(&p, "z").is_err(), "{bad:?}");
+            assert_eq!(save_theme_read(&p), bad);
+        }
+    }
+
+    #[test]
+    fn save_theme_choice_preserves_crlf_and_bom() {
+        let d = tempfile::tempdir().unwrap();
+        let p = paths(&d);
+        let src =
+            "\u{feff}# c\r\n[theme]\r\nname = \"a\"\r\n\r\n[panels]\r\nshow_hidden = true\r\n";
+        io::atomic_write(&p.config_file(), src).unwrap();
+        Config::save_theme_choice(&p, "b").unwrap();
+        assert_eq!(save_theme_read(&p), src.replace("\"a\"", "\"b\""));
+        // Key appended to a CRLF file: the new line is CRLF too, no bare LF anywhere.
+        let src = "\u{feff}[theme]\r\nlive_reload = false\r\n";
+        io::atomic_write(&p.config_file(), src).unwrap();
+        Config::save_theme_choice(&p, "b").unwrap();
+        let text = save_theme_read(&p);
+        assert!(text.starts_with('\u{feff}'), "{text:?}");
+        assert_eq!(text.matches('\n').count(), text.matches("\r\n").count());
+        assert!(text.contains("name = \"b\""), "{text:?}");
+        // LF file with BOM stays LF.
+        io::atomic_write(&p.config_file(), "\u{feff}[theme]\nname = \"a\"\n").unwrap();
+        Config::save_theme_choice(&p, "b").unwrap();
+        assert_eq!(save_theme_read(&p), "\u{feff}[theme]\nname = \"b\"\n");
     }
 
     #[test]

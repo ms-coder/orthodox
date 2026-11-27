@@ -479,6 +479,20 @@ impl TerminalUi {
         cwd: Option<&Path>,
         on_error: Box<dyn Fn(String)>,
     ) -> Result<(), String> {
+        self.run_program_notify(argv, cwd, on_error, None)
+    }
+
+    /// [`run_program`](Self::run_program) that also calls `on_exit` with the raw wait status
+    /// once the program has exited and the panels are back (never when it could not be started:
+    /// `on_error` is the only callback then). Used by callers that continue with the program's
+    /// result (batch rename reads the edited file).
+    pub(crate) fn run_program_notify(
+        &self,
+        argv: &[OsString],
+        cwd: Option<&Path>,
+        on_error: Box<dyn Fn(String)>,
+        on_exit: Option<Box<dyn FnOnce(i32)>>,
+    ) -> Result<(), String> {
         let Some(ctx) = self.ctx.upgrade() else {
             return Err(tr("The terminal is not available.").to_owned());
         };
@@ -488,7 +502,7 @@ impl TerminalUi {
         if self.program.borrow().is_some() {
             return Err(tr("A program is already running in the terminal.").to_owned());
         }
-        let plan = program::spawn_argv(argv);
+        let plan = program::spawn_argv_in(argv, cwd);
         let plan: Vec<&str> = plan.iter().map(String::as_str).collect();
         let term = vte4::Terminal::new();
         style_terminal(&ctx, &term);
@@ -503,9 +517,15 @@ impl TerminalUi {
 
         let weak = self.weak();
         let done_term = term.clone();
-        term.connect_child_exited(move |_, _| {
+        let exit_cb = Rc::new(RefCell::new(on_exit));
+        let exit_cb_exited = Rc::clone(&exit_cb);
+        term.connect_child_exited(move |_, status| {
             if let Some(ui) = weak.upgrade() {
                 ui.program_finished(&done_term);
+            }
+            let cb = exit_cb_exited.borrow_mut().take();
+            if let Some(cb) = cb {
+                cb(status);
             }
         });
         let weak = self.weak();
@@ -513,7 +533,10 @@ impl TerminalUi {
         let envv = ["TERM=xterm-256color"];
         term.spawn_async(
             vte4::PtyFlags::DEFAULT,
-            cwd.and_then(Path::to_str), // a non-UTF-8 directory: inherit ours
+            // A non-UTF-8 directory cannot be handed to VTE (str only); spawn_argv_in has
+            // already baked a byte-exact `cd` into the wrapper script instead, so here it
+            // must be None to keep the child's start directory irrelevant.
+            cwd.and_then(Path::to_str),
             &plan,
             &envv,
             glib::SpawnFlags::SEARCH_PATH,
@@ -523,6 +546,8 @@ impl TerminalUi {
             move |res| {
                 if let Err(e) = res {
                     tracing::error!(error = %e, "terminal: could not start the program");
+                    // `on_error` reports it; `on_exit` never runs for a program that did not start.
+                    drop(exit_cb.borrow_mut().take());
                     if let Some(ui) = weak.upgrade() {
                         ui.program_finished(&fail_term);
                     }

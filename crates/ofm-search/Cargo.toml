@@ -8,10 +8,21 @@ publish = false
 [lints]
 workspace = true
 
-# T7.1 adds (ADR-0009): ofm-vfs (archives), tracing, ignore, grep-searcher, grep-regex, encoding_rs,
-# encoding_rs_io, regex; dev: tempfile.
+# T7.1 (ADR-0009): ofm-vfs (archive hook), regex (name/content patterns), memchr (line
+# scanning), tracing (diagnostics). Encodings and decoding come from ofm-viewer, so no
+# encoding_rs / chardetng here. Dev: fixtures (ofm-testkit), property tests (proptest).
 [dependencies]
 ofm-core = { path = "../ofm-core" }
 ofm-viewer = { path = "../ofm-viewer" }
+ofm-vfs = { path = "../ofm-vfs" }
 async-channel.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
+memchr = "2.8.3"
+regex = "1.13.1"
+
+[dev-dependencies]
+ofm-testkit = { path = "../ofm-testkit" }
+encoding_rs = "0.8.44"
+proptest = "1.12.0"
+tempfile = "3.27.0"

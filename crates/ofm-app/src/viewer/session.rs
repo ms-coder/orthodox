@@ -84,6 +84,9 @@ pub struct Session {
     scroll_guard: Cell<bool>,
     /// When the user last moved the scroll bar (it is left alone while being dragged).
     user_scroll: Cell<Option<std::time::Instant>>,
+    /// One-shot cleanup hook (e.g. the archive viewer's private temp dir), run when the window
+    /// closes. `destroy` cannot be used for this: GTK defers it far beyond window teardown.
+    on_close: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 /// Initial settings from `[viewer]`.
@@ -141,6 +144,7 @@ impl Session {
             }),
             scroll_guard: Cell::new(false),
             user_scroll: Cell::new(None),
+            on_close: RefCell::new(None),
         });
         let weak = Rc::downgrade(&session);
         wiring::attach(
@@ -232,6 +236,20 @@ impl Session {
         st.index_cancel.cancel();
         if let Some(c) = &st.search_cancel {
             c.cancel();
+        }
+    }
+
+    /// Register one-shot cleanup to run when the window's close request is granted (the
+    /// `close-request` handler runs it before GTK tears the window down; the `destroy`
+    /// signal is too late — GTK defers it indefinitely).
+    pub fn set_on_close(&self, f: impl Fn() + 'static) {
+        *self.on_close.borrow_mut() = Some(Rc::new(f));
+    }
+
+    /// Run and clear the [`set_on_close`](Self::set_on_close) hook (window close-request handler).
+    pub(crate) fn run_on_close(&self) {
+        if let Some(f) = self.on_close.borrow_mut().take() {
+            f();
         }
     }
 

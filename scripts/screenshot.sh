@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run OFM under Xvfb and save a screenshot, so agents can look at the UI.
-# Usage: scripts/screenshot.sh NAME [-- ofm-args...]
+# Usage: scripts/screenshot.sh NAME [--keys "Down F3"] [--delay 3] [--fixture] [--theme ID] [--view V] [-- ofm-args...]
+#        (flags override the OFM_* env vars below; handy where env prefixes are inconvenient)
 # Output: target/screenshots/NAME.png   (open it with the Read tool)
 # Env:    OFM_SCREENSHOT_DELAY  seconds to wait before capturing (default 3)
 #         OFM_SHOT_THEME        theme id written to a temp config (far-blue | commander-light | adwaita)
@@ -13,8 +14,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-name="${1:?usage: scripts/screenshot.sh NAME [-- ofm-args...]}"
+name="${1:?usage: scripts/screenshot.sh NAME [--keys K] [--delay S] [--fixture] [--theme ID] [--view V] [-- ofm-args...]}"
 shift
+
+while [[ "${1:-}" == --keys || "${1:-}" == --delay || "${1:-}" == --fixture || "${1:-}" == --theme || "${1:-}" == --view ]]; do
+  case "$1" in
+    --keys)   OFM_SHOT_KEYS="$2"; shift 2 ;;
+    --delay)  OFM_SCREENSHOT_DELAY="$2"; shift 2 ;;
+    --fixture) OFM_SHOT_FIXTURE=1; shift ;;
+    --theme)  OFM_SHOT_THEME="$2"; shift 2 ;;
+    --view)   OFM_SHOT_VIEW="$2"; shift 2 ;;
+  esac
+done
 
 if [[ "$name" == "g1" ]]; then
   for t in far:far-blue light:commander-light adwaita:adwaita; do
@@ -27,7 +38,11 @@ fi
 if [[ "${1:-}" == "--" ]]; then shift; fi
 
 mkdir -p target/screenshots
-export OFM_SHOT_OUT="$PWD/target/screenshots/$name.png"
+# .jpg name -> JPEG capture (smaller, more universally parseable than the default PNG)
+case "$name" in
+  *.jpg|*.jpeg) export OFM_SHOT_OUT="$PWD/target/screenshots/$name" ;;
+  *)             export OFM_SHOT_OUT="$PWD/target/screenshots/$name.png" ;;
+esac
 export OFM_SHOT_DELAY="${OFM_SCREENSHOT_DELAY:-3}"
 export OFM_SHOT_KEYS="${OFM_SHOT_KEYS:-}"
 # Key presses through XTest: "F3", "Down", "ctrl+t" (same helper as the real-binary tests).

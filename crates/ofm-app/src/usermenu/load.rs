@@ -12,8 +12,11 @@ use ofm_config::menu::{
 use ofm_config::{ConfigPaths, Warning};
 use ofm_core::mask::{Mask, MaskOpts};
 
-/// Largest part of a local menu file shown in the trust prompt (bytes).
-pub const PREVIEW_LIMIT: usize = 64 * 1024;
+/// Largest local menu file accepted at all (bytes). The trust prompt shows the whole file
+/// (that is what the sha256 covers), so anything larger is refused outright instead of
+/// offering trust for content the user cannot see. The read is also bounded: a huge or
+/// endless file must not wedge a pool thread.
+pub const MAX_MENU_BYTES: usize = 256 * 1024;
 
 /// Template written by "Edit local menu" (valid and empty: the example is commented out).
 pub const LOCAL_TEMPLATE: &str = "\
@@ -50,10 +53,12 @@ pub enum LocalSource {
     Untrusted {
         /// sha256 of the content the user would trust.
         hash: String,
-        /// The file text (lossy, at most [`PREVIEW_LIMIT`] bytes) for the review.
+        /// The whole file text (lossy; invisible/bidi characters escaped, see
+        /// [`escape_invisible`]).
         text: String,
-        /// Whether `text` was cut at the limit.
-        truncated: bool,
+        /// The text contained bidi or zero-width characters, shown escaped — warned about in
+        /// the trust dialog.
+        obfuscated: bool,
         /// Problems found while parsing (the menu itself is not offered).
         warnings: Vec<Warning>,
     },
@@ -98,13 +103,26 @@ pub fn load_blocking(paths: &ConfigPaths, dir: &Path) -> Loaded {
 }
 
 // Runs on the I/O pool (see `load_blocking`), never on the GTK thread.
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::disallowed_methods)] // runs on the I/O pool, never on the GTK thread
 fn load_local(store: &TrustStore, dir: &Path) -> LocalSource {
     let file = local_menu_path(dir);
     // The review text must be what the hash covers: read before and after the status check
-    // and accept it only when both reads agree.
+    // and accept it only when both reads agree. Refuse files that cannot be fully shown.
     for _ in 0..3 {
-        let before = std::fs::read(&file).ok();
+        let before = match read_menu_file(&file) {
+            Ok(b) => Some(b),
+            Err(MenuReadError::Missing) => None,
+            Err(MenuReadError::TooLarge) => {
+                return LocalSource::Error(format!(
+                    "{} is larger than {} KiB; not offering trust for a file that cannot be fully shown",
+                    file.display(),
+                    MAX_MENU_BYTES / 1024
+                ));
+            }
+            Err(MenuReadError::Io(e)) => {
+                return LocalSource::Error(format!("cannot read {}: {e}", file.display()));
+            }
+        };
         let status = match store.local_menu_status(dir) {
             Ok(s) => s,
             Err(e) => return LocalSource::Error(e.to_string()),
@@ -115,19 +133,23 @@ fn load_local(store: &TrustStore, dir: &Path) -> LocalSource {
                 return LocalSource::Trusted { menu, warnings };
             }
             LocalMenuStatus::Untrusted { hash, menu: _ } => {
-                let after = std::fs::read(&file).ok();
+                let after = match read_menu_file(&file) {
+                    Ok(b) => Some(b),
+                    Err(MenuReadError::Missing) => None,
+                    Err(_) => None, // changed under us: retry or fail below
+                };
                 let (Some(before), Some(after)) = (before, after) else {
                     continue;
                 };
                 if before != after {
                     continue;
                 }
-                let (text, truncated) = preview_text(&after);
+                let (text, obfuscated) = escape_invisible(&text_full(&after));
                 let (_, warnings) = ofm_config::menu::parse_local(&text_full(&after), &file);
                 return LocalSource::Untrusted {
                     hash,
                     text,
-                    truncated,
+                    obfuscated,
                     warnings,
                 };
             }
@@ -139,20 +161,73 @@ fn load_local(store: &TrustStore, dir: &Path) -> LocalSource {
     ))
 }
 
-fn text_full(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+/// Why a local menu file could not be read.
+enum MenuReadError {
+    /// The file does not exist.
+    Missing,
+    /// Larger than [`MAX_MENU_BYTES`].
+    TooLarge,
+    /// Any other I/O error (includes "not a regular file").
+    Io(std::io::Error),
 }
 
-/// Lossy text of the first [`PREVIEW_LIMIT`] bytes (cut at a char boundary) and whether it was
-/// cut.
-pub fn preview_text(bytes: &[u8]) -> (String, bool) {
-    if bytes.len() <= PREVIEW_LIMIT {
-        return (String::from_utf8_lossy(bytes).into_owned(), false);
+/// Read a local menu file without wedging the thread: opened `O_NONBLOCK`/`O_NOFOLLOW` and
+/// fstat'ed, so a FIFO, device or symlink swapped in after the listing fails here instead of
+/// blocking forever; at most [`MAX_MENU_BYTES`] are read and anything larger is refused.
+#[allow(clippy::disallowed_methods)] // runs on the I/O pool, never on the GTK thread
+fn read_menu_file(file: &Path) -> Result<Vec<u8>, MenuReadError> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(file)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                MenuReadError::Missing
+            } else {
+                MenuReadError::Io(e)
+            }
+        })?;
+    let md = f.metadata().map_err(MenuReadError::Io)?;
+    if !md.file_type().is_file() {
+        return Err(MenuReadError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "not a regular file",
+        )));
     }
-    (
-        String::from_utf8_lossy(&bytes[..PREVIEW_LIMIT]).into_owned(),
-        true,
-    )
+    let mut buf = Vec::new();
+    f.take(MAX_MENU_BYTES as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(MenuReadError::Io)?;
+    if buf.len() > MAX_MENU_BYTES {
+        return Err(MenuReadError::TooLarge);
+    }
+    Ok(buf)
+}
+
+/// Escape characters that render invisibly or reorder text — bidi controls (U+202A-202E,
+/// U+2066-2069), LRM/RLM, zero-width space/joiners (U+200B-200D), invisible operators
+/// (U+2060-2064) and BOM — as visible `<U+XXXX>` markers, so a menu file cannot hide
+/// commands from the trust review. Returns the escaped text and whether anything was escaped.
+pub fn escape_invisible(text: &str) -> (String, bool) {
+    let mut out = String::with_capacity(text.len());
+    let mut hit = false;
+    for c in text.chars() {
+        let code = c as u32;
+        if matches!(code, 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x2064 | 0x2066..=0x2069 | 0xFEFF)
+        {
+            hit = true;
+            out.push_str(&format!("<U+{code:04X}>"));
+        } else {
+            out.push(c);
+        }
+    }
+    (out, hit)
+}
+
+fn text_full(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 /// Create `dir/.ofm-menu.toml` from [`LOCAL_TEMPLATE`] unless it exists (`create_new`: never
@@ -331,7 +406,7 @@ mod tests {
             LocalSource::Untrusted {
                 hash: "0".repeat(64),
                 text: "x".into(),
-                truncated: false,
+                obfuscated: false,
                 warnings: Vec::new(),
             },
         );
@@ -407,6 +482,95 @@ mod tests {
         let (menu, warnings) = ofm_config::menu::parse_local(LOCAL_TEMPLATE, Path::new("t"));
         assert!(menu.item.is_empty());
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn escape_invisible_marks_bidi_and_zero_width() {
+        let (clean, hit) = escape_invisible("version = 1\ntitle = \"Build\"\n");
+        assert!(!hit);
+        assert_eq!(clean, "version = 1\ntitle = \"Build\"\n");
+        // A command hidden behind a bidi override / zero-width characters becomes visible.
+        let nasty = "title = \"x\u{202E}\"\u{200B}command = \"rm -rf ~\"\u{2066}";
+        let (shown, hit) = escape_invisible(nasty);
+        assert!(hit);
+        assert!(shown.contains("<U+202E>"));
+        assert!(shown.contains("<U+200B>"));
+        assert!(shown.contains("<U+2066>"));
+        assert!(shown.contains("command = \"rm -rf ~\""));
+        assert!(!shown.contains('\u{202E}'));
+    }
+
+    #[test]
+    fn oversized_local_menu_is_refused_not_partially_trusted() {
+        let tmp = ofm_testkit::temp::TempDir::new().unwrap();
+        let paths = ConfigPaths::with_dirs(tmp.path().join("config"), tmp.path().join("state"));
+        let dir = tmp.path().join("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Just under the limit: fully shown (the trust hash covers everything displayed).
+        let mut ok_body = String::from("version = 1\n");
+        ok_body.push_str(&"#".repeat(MAX_MENU_BYTES - ok_body.len() - 1));
+        ok_body.push('\n');
+        assert_eq!(ok_body.len(), MAX_MENU_BYTES);
+        std::fs::write(local_menu_path(&dir), &ok_body).unwrap();
+        let LocalSource::Untrusted { text, .. } = load_blocking(&paths, &dir).local else {
+            panic!("expected untrusted");
+        };
+        assert_eq!(text.len(), ok_body.len());
+
+        // Over the limit: refused outright (no trust offered for invisible content).
+        let big = std::fs::OpenOptions::new()
+            .append(true)
+            .open(local_menu_path(&dir))
+            .unwrap();
+        use std::io::Write as _;
+        let mut big = big;
+        big.write_all(&vec![b'#'; MAX_MENU_BYTES]).unwrap();
+        drop(big);
+        let LocalSource::Error(msg) = load_blocking(&paths, &dir).local else {
+            panic!("expected refusal");
+        };
+        assert!(msg.contains("KiB"), "{msg}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_local_menu_is_refused_without_blocking() {
+        let tmp = ofm_testkit::temp::TempDir::new().unwrap();
+        let paths = ConfigPaths::with_dirs(tmp.path().join("config"), tmp.path().join("state"));
+        let dir = tmp.path().join("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = local_menu_path(&dir);
+        let st = std::process::Command::new("mkfifo")
+            .arg(&file)
+            .status()
+            .unwrap();
+        assert!(st.success());
+        // Must return promptly (O_NONBLOCK open + fstat reject); a blocking read would hang.
+        assert!(matches!(
+            load_blocking(&paths, &dir).local,
+            LocalSource::Error(_)
+        ));
+    }
+
+    #[test]
+    fn untrusted_text_flags_obfuscated_characters() {
+        let tmp = ofm_testkit::temp::TempDir::new().unwrap();
+        let paths = ConfigPaths::with_dirs(tmp.path().join("config"), tmp.path().join("state"));
+        let dir = tmp.path().join("work");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            local_menu_path(&dir),
+            "version = 1\n# hidden \u{202E}stuff\n",
+        )
+        .unwrap();
+        let LocalSource::Untrusted {
+            text, obfuscated, ..
+        } = load_blocking(&paths, &dir).local
+        else {
+            panic!("expected untrusted");
+        };
+        assert!(obfuscated);
+        assert!(text.contains("<U+202E>"));
     }
 
     #[test]

@@ -58,10 +58,12 @@ FAT/NTFS-made entries before `push`). Extraction adds a second line of defence (
 
 **Password model.** `PasswordProvider::password(archive, retry) -> Option<String>` is a blocking
 callback on a worker; the app implements it with a `Responder` and polls the job's `CancelToken`.
-`None` = user cancelled = `NeedsPassword`. `PasswordSource` wraps a provider with a per-archive
-in-memory cache, filled by `accepted()` once a backend has verified a password (CRC/MAC); the panel
-and extract jobs share one source, so the user is asked once. A wrong password triggers `retry = true`
-up to `MAX_PASSWORD_ATTEMPTS` (3), then `WrongPassword`. One password per archive; never persisted.
+`None` on the initial request = user cancelled / no password = `NeedsPassword`. After a password was
+rejected, `None` means the provider has no further attempt and the result stays `WrongPassword`.
+`PasswordSource` wraps a provider with a per-archive in-memory cache, filled by `accepted()` once a
+backend has verified a password (CRC/MAC); the panel and extract jobs share one source, so the user is
+asked once. A wrong password triggers `retry = true` up to `MAX_PASSWORD_ATTEMPTS` (3), then
+`WrongPassword`. One password per archive; never persisted.
 Searches use `NoPassword` and skip encrypted archives with a warning.
 
 **Streaming and memory.** Entry data is never loaded whole: `visit` hands a `&mut dyn Read` per entry,
@@ -104,3 +106,42 @@ are not restored in v1.0.
 - Mid-archive corruption surfaces during extraction (a `Corrupt` error for that entry through the
   normal retry/skip/abort question), not at open, for formats without a central directory.
 - Archive creation, nesting and write-back are v1.1.
+
+## T6.2 implementation notes (extract job, 2026-11-22)
+
+`ofm-jobs/src/extract.rs` (+ `extract/{safe,dirs,write}.rs`) implements the protocol above. Where it
+refines or tightens the text, the code wins and is listed here (tests: `crates/ofm-jobs/tests/extract_*.rs`):
+
+- **Seam for tests.** `extract::extract_from_reader(ctx, reader, entries, dest, opts)` is `run_extract`
+  on an already opened `ArchiveReader`; the job tests drive it with an in-memory reader
+  (`tests/extract_support/`) and with real archives (`extract_real.rs`, skipped while a backend is a stub).
+- **The index flags are not trusted.** Every visited entry is re-validated from its raw bytes
+  (relative, no `..`, no `.`/empty component, no NUL, name <= NAME_MAX); an entry that is `Unsafe`, was
+  not selected, or fails the check is skipped with a warning (the warning's path is the archive, the
+  hostile name only appears in the message). Every parent directory below the destination is created by
+  the job or `lstat`ed through `copy::resolve_target`; a symlink or file in the way is a `TypeMismatch`
+  conflict (skip / rename new / rename existing, never overwrite, never followed). A skipped directory
+  is remembered, so its subtree is skipped with one question.
+- **Symlinks** are stricter than the index: the target must be relative and may use `..` only as a
+  leading run that stays inside the destination (`a/../b` is refused): without a `..` after a name no
+  later link can climb out "through" a link that points at an ancestor.
+- **Hard links** are created only to a file this job extracted (checked by `(dev, ino)` again before
+  linking), otherwise skipped with a warning (stricter than "else a copy of its data"). Only where the
+  file system has no hard links (`EPERM`/`EXDEV`/...) the link's stream (= its target's data) is written
+  as a copy.
+- **Selection.** Each selected item lands directly in the destination (`a/b/c` with selection `a/b`
+  becomes `b/c`); with nested selections the outermost wins; empty = everything.
+- **Limits are enforced on bytes actually written** (hard failure, not a warning): more than the
+  declared size of the entry, ratio > `max_ratio` per entry (zip, when `packed_size` is known) or over
+  the whole archive file (solid formats), total > `warn_total_bytes`. A declared total over
+  `warn_total_bytes` fails before anything is written; the UI lifts the limit in `opts.limits` after the
+  user confirmed. Free space is checked once (`statvfs` on the destination, warning only; `Fs` has no
+  such call).
+- **Error policy.** A corrupt/truncated entry is a warning (its temp file is removed) and the job
+  continues; NeedsPassword/WrongPassword/limits/archive I/O, a failing destination (ENOSPC, EIO, EROFS,
+  EDQUOT, EMFILE/ENFILE) and cancel stop it. The stream is read once, so a destination write error cannot
+  be retried: it fails the job instead of asking. Other non-fatal errors on one entry (EACCES, ...) are
+  a warning; 50 in a row stop the job. Directory mode/mtime are applied at the end, deepest first, also
+  after failure or cancel (not after a panic: directories then keep mode 0700).
+- **Not done in v1.0:** ACL/xattr inheritance handling (`copy/meta.rs` does it for copy), restoring
+  ownership, extracting onto a case-insensitive file system beyond what `copy::Published` covers.

@@ -13,6 +13,7 @@ use super::quicksearch;
 use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
 use crate::i18n::tr;
+use crate::jobs::ui;
 use crate::panel::{LoadOpts, PanelController, PanelHost};
 
 /// Register the commands of this module.
@@ -136,6 +137,9 @@ fn go_up(ctx: &Rc<AppContext>) {
     let ctrl = ctx.active_controller();
     if let Some((parent, from)) = parent_of(&ctrl.location()) {
         navigate(ctx, &ctrl, parent, Some(from));
+    } else if matches!(ctrl.location(), Location::List { .. }) {
+        // A panelized list has no parent: leaving it returns to where the panel came from.
+        ctx.execute(cmd::PANEL_HISTORY_BACK);
     }
 }
 
@@ -169,6 +173,33 @@ fn open_cursor(ctx: &Rc<AppContext>, run: bool) {
             _ => here.join(&entry.name),
         };
         navigate(ctx, &ctrl, target, None);
+        return;
+    }
+    // Inside an archive Enter views the entry (read-only); never runs or opens it.
+    if crate::panel::archive::is_archive(&here) {
+        if run {
+            crate::panel::archive_extract::view_cursor(ctx);
+        }
+        return;
+    }
+    // FIFOs, devices and sockets are never "opened": Enter on one would block a pool
+    // thread forever (desktop::open::probe used to open them unconditionally).
+    if entry.kind == ofm_core::EntryKind::Other {
+        ui::message(ctx, tr("Open"), tr("Special file (not a regular file)."));
+        return;
+    }
+    // Archives open as folders, decided by their magic bytes (F26); Ctrl+PgDn (`run == false`)
+    // enters archives only. Anything else falls back to the default application.
+    if let Location::Local(dir) = &here
+        && matches!(
+            entry.kind,
+            ofm_core::EntryKind::File
+                | ofm_core::EntryKind::Symlink {
+                    target: Some(ofm_core::TargetKind::File)
+                }
+        )
+    {
+        crate::panel::archive::open_file(ctx, &ctrl, dir.join(&entry.name), run);
         return;
     }
     if !run {

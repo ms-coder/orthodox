@@ -98,7 +98,8 @@ impl Xvfb {
                 "tcp",
             ])
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            // Keep Xvfb diagnostics beside the app's output when OFM_E2E_LOG is set.
+            .stderr(log_sink())
             .spawn()
             .expect("spawn Xvfb");
         let out = child.stdout.take().expect("stdout");
@@ -106,9 +107,35 @@ impl Xvfb {
         BufReader::new(out)
             .read_line(&mut line)
             .expect("display number");
-        Xvfb {
+        let x = Xvfb {
             child,
             display: format!(":{}", line.trim()),
+        };
+        x.wait_until_ready();
+        x
+    }
+
+    /// Do not let GTK race the X server: `-displayfd` provides the number, but a successful client
+    /// connection is the condition the rest of the harness actually relies on.
+    fn wait_until_ready(&self) {
+        let end = Instant::now() + Duration::from_secs(10);
+        loop {
+            let ready = Command::new("xdotool")
+                .arg("getdisplaygeometry")
+                .env("DISPLAY", &self.display)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if ready {
+                return;
+            }
+            assert!(
+                Instant::now() < end,
+                "Xvfb {} did not accept X11 connections",
+                self.display
+            );
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 }

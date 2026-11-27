@@ -23,7 +23,7 @@ pub use complete::{Completion, common_prefix, complete_in};
 pub use osc7::{osc7_encode, osc7_parse, osc7_to_path};
 pub use quote::{
     QuoteStyle, cd_command, cd_command_for, fish_quote_bytes, has_control_bytes, shell_quote,
-    shell_quote_bytes, shell_quote_for,
+    shell_quote_bytes, shell_quote_bytes_for, shell_quote_for,
 };
 
 use std::borrow::Cow;

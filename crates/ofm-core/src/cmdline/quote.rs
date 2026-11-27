@@ -23,6 +23,12 @@ pub enum QuoteStyle {
     /// fish: `'…'` with `\\` and `\'` escapes; `\xNN` outside the quotes for control and
     /// non-UTF-8 bytes.
     Fish,
+    /// Any POSIX `sh` that may be dash, busybox ash, …: only `'…'` with `'` → `'\''` and
+    /// `"$(printf '\NNN')"` octal runs, never `$'…'` (dash does not know ANSI-C quoting and
+    /// would read `$'a\'; cmd; #'` as `$'a\'` followed by live code). Use it for every
+    /// command run through `/bin/sh -c` and for terminal shells that are not bash/zsh/fish.
+    /// Prefer [`shell_quote_bytes_for`], which keeps non-UTF-8 names as raw bytes inside `'…'`.
+    PortableSh,
 }
 
 /// Whether `bytes` contain a control byte (`0x00..=0x1f` or `0x7f`). Terminal line editors
@@ -86,7 +92,70 @@ pub fn shell_quote_for(style: QuoteStyle, name: &OsStr) -> String {
     match style {
         QuoteStyle::Posix => posix_quote_string(&bytes),
         QuoteStyle::Fish => fish_quote_string(&bytes),
+        QuoteStyle::PortableSh => portable_quote_string(&bytes),
     }
+}
+
+/// Like [`shell_quote_for`] but as bytes, for text that goes to a process rather than a
+/// widget. For [`QuoteStyle::PortableSh`] this is [`shell_quote_bytes`]: byte-exact `'…'`, no
+/// escapes at all (callers must refuse control bytes first, see [`has_control_bytes`]); the
+/// other styles return the UTF-8 text of [`shell_quote_for`].
+pub fn shell_quote_bytes_for(style: QuoteStyle, name: &OsStr) -> Vec<u8> {
+    match style {
+        QuoteStyle::PortableSh => shell_quote_bytes(&bytes_of(name)),
+        _ => shell_quote_for(style, name).into_bytes(),
+    }
+}
+
+/// Portable-sh quoting as printable text: valid UTF-8 without control bytes stays in `'…'`;
+/// every other byte run becomes `"$(printf '\NNN…')"` (octal only, so nothing in it is
+/// special). `printf` is a builtin in dash and bash; command substitution only drops trailing
+/// newlines, which a name ending in a newline loses (such names are refused before they get
+/// here when they run; on the command line it is the typed text the user sees).
+fn portable_quote_string(bytes: &[u8]) -> String {
+    fn flush_run(out: &mut String, run: &mut Vec<u8>) {
+        if run.is_empty() {
+            return;
+        }
+        out.push_str("\"$(printf '");
+        for &b in run.iter() {
+            out.push_str(&format!("\\{b:03o}"));
+        }
+        out.push_str("')\"");
+        run.clear();
+    }
+    fn flush_lit(out: &mut String, lit: &mut String) {
+        if !lit.is_empty() {
+            out.push('\'');
+            out.push_str(&lit.replace('\'', "'\\''"));
+            out.push('\'');
+            lit.clear();
+        }
+    }
+    let mut out = String::with_capacity(bytes.len() + 8);
+    let mut lit = String::new();
+    let mut run: Vec<u8> = Vec::new();
+    for chunk in bytes.utf8_chunks() {
+        for c in chunk.valid().chars() {
+            if c.is_ascii_control() {
+                flush_lit(&mut out, &mut lit);
+                run.push(c as u8);
+            } else {
+                flush_run(&mut out, &mut run);
+                lit.push(c);
+            }
+        }
+        if !chunk.invalid().is_empty() {
+            flush_lit(&mut out, &mut lit);
+            run.extend_from_slice(chunk.invalid());
+        }
+    }
+    flush_lit(&mut out, &mut lit);
+    flush_run(&mut out, &mut run);
+    if out.is_empty() {
+        out.push_str("''");
+    }
+    out
 }
 
 fn posix_quote_string(bytes: &[u8]) -> String {
@@ -180,6 +249,7 @@ pub fn cd_command_for(style: QuoteStyle, path: &Path) -> Option<Vec<u8>> {
     match style {
         QuoteStyle::Posix => out.extend_from_slice(&shell_quote_bytes(&bytes)),
         QuoteStyle::Fish => out.extend_from_slice(&fish_quote_bytes(&bytes)),
+        QuoteStyle::PortableSh => out.extend_from_slice(&shell_quote_bytes(&bytes)),
     }
     out.push(b'\n');
     Some(out)

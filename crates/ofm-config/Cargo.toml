@@ -14,6 +14,9 @@ async-channel.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+# `renameat2(RENAME_NOREPLACE)` for the no-clobber publication of the default menu on
+# filesystems without hard links, and `mkfifo`/open flags in tests.
+libc = "0.2"
 # Already in the dependency tree (parser behind `toml`); used directly for
 # order-preserving keymap parsing and in-place edits that keep comments.
 toml_edit = "0.25"

@@ -105,6 +105,13 @@ pub fn run() -> anyhow::Result<ExitCode> {
     // The UI closures hold only `Weak<AppContext>`, so this state is the context's owner: it must
     // live as long as the application (dropping it would kill every command and key binding).
     let state: Rc<RefCell<Option<LiveApp>>> = Rc::default();
+    // Private temp directories of F3 on archive entries do not outlive the application.
+    let exit_state = Rc::clone(&state);
+    app.connect_shutdown(move |_| {
+        if let Some((ctx, _)) = exit_state.borrow().as_ref() {
+            ctx.services.archives.cleanup_all();
+        }
+    });
     app.connect_activate(move |app| {
         if let Some((_, win)) = state.borrow().as_ref() {
             win.present();
