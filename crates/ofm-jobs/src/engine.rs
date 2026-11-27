@@ -720,11 +720,13 @@ mod tests {
         };
         engine.pause(id);
         assert_eq!(engine.jobs()[0].state, JobState::Paused);
+        // Resume while the job still waits for the answer: once answered it may finish before a
+        // later resume, which would then be a no-op.
+        engine.resume(id);
         held.answer(Answer::Conflict {
             action: ConflictAnswer::Skip,
             apply_to_all: false,
         });
-        engine.resume(id);
         let log = drain(&rx, &[id], |_, _| None);
         let t = tags(&log, id);
         assert_eq!(t.first().unwrap(), "Paused");
