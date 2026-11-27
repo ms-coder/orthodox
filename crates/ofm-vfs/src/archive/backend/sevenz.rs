@@ -224,8 +224,8 @@ fn ask(
 
 /// Windows file time (100 ns units since 1601) to unix ns.
 fn nt_to_unix_ns(ft: u64) -> i128 {
-    const EPOCH_DIFF: u64 = 11_644_473_600_000_000; // 1601 -> 1970 in 100 ns units
-    ft.saturating_sub(EPOCH_DIFF) as i128 * 100
+    const EPOCH_DIFF: i128 = 116_444_736_000_000_000; // 1601 -> 1970 in 100 ns units
+    (i128::from(ft) - EPOCH_DIFF) * 100
 }
 
 /// Kind of a 7z entry (directories, streams, POSIX mode bits in the attributes).
@@ -540,6 +540,16 @@ mod tests {
         let result = read_symlink_targets(&mut source, &mut metas, None);
         assert!(matches!(result, Err(ArchiveError::Cancelled)));
         assert!(metas[0].link_target.is_none());
+    }
+
+    #[test]
+    fn nt_time_converts_to_unix_time() {
+        // 2023-01-01T00:00:00Z.
+        assert_eq!(
+            nt_to_unix_ns(133_170_048_000_000_000),
+            1_672_531_200 * 1_000_000_000
+        );
+        assert_eq!(nt_to_unix_ns(116_444_735_990_000_000), -1_000_000_000);
     }
 
     #[test]
