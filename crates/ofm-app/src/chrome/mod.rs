@@ -8,7 +8,7 @@
 
 pub mod contextmenu;
 pub mod fkeybar;
-mod labels;
+pub(crate) mod labels;
 pub mod menubar;
 pub mod menus;
 pub mod notice;
@@ -88,7 +88,6 @@ pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
     };
     let menubar = MenuBar::new(ctx);
     win.menubar_slot.append(&menubar.root);
-    menubar::follow_keys(&win.window, &menubar);
     let fkeys = FKeyBar::new(ctx);
     win.fkeybar_slot.append(&fkeys.root);
     fkeybar::follow_modifiers(&win.window, &fkeys);

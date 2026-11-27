@@ -14,8 +14,8 @@ use ofm_jobs::{ConflictAnswer, ExtractOpts, JobSpec, RunMode};
 use ofm_vfs::archive::{ArchiveEntryKind, ArchiveError, ArchiveLimits, PasswordSource};
 
 use super::archive::{
-    ArchiveService, busy_after, busy_done, default_extract_dir, error_text, report_error, split,
-    state,
+    ArchiveService, ViewOrigin, busy_after, busy_after_in, busy_done, default_extract_dir,
+    error_text, report_error, report_error_over, split, state,
 };
 use crate::chrome::statusline::{SizeFormat, format_size};
 use crate::compare::message;
@@ -253,6 +253,8 @@ pub enum ExtractFail {
     Cancelled,
     /// Archive problem.
     Archive(ArchiveError),
+    /// Larger than F3/F4 will write to a temp file ([`extract_for_view`]).
+    TooLarge,
     /// Anything else (temp file trouble, not a regular file).
     Other(String),
 }
@@ -263,6 +265,10 @@ impl ExtractFail {
         match self {
             ExtractFail::Cancelled => tr("Cancelled.").to_owned(),
             ExtractFail::Archive(e) => error_text(e),
+            ExtractFail::TooLarge => {
+                tr("Archive entry is too large to view (64 MiB limit). Extract it with F5 instead.")
+                    .to_owned()
+            }
             ExtractFail::Other(s) => s.clone(),
         }
     }
@@ -353,6 +359,36 @@ pub fn extract_entry(
     }
 }
 
+/// [`extract_entry`] for F3/F4: the whole entry or nothing. An entry the index already knows to
+/// be larger than `limit` is refused before anything is written; one that turns out larger while
+/// streaming is cut off at `limit` and its temp directory removed. Blocking: worker threads only.
+pub fn extract_for_view(
+    service: &ArchiveService,
+    archive: &Path,
+    inner: &Path,
+    limit: u64,
+    cancel: &CancelToken,
+) -> Result<Extracted, ExtractFail> {
+    {
+        let _scope = password::scope(cancel);
+        let index = service
+            .vfs()
+            .index(archive, cancel)
+            .map_err(ExtractFail::Archive)?;
+        if index.lookup(inner).is_some_and(|e| {
+            matches!(e.kind, ArchiveEntryKind::File | ArchiveEntryKind::Hardlink) && e.size > limit
+        }) {
+            return Err(ExtractFail::TooLarge);
+        }
+    }
+    let extracted = extract_entry(service, archive, inner, limit, false, cancel)?;
+    if extracted.truncated {
+        service.remove_temp(&extracted.dir);
+        return Err(ExtractFail::TooLarge);
+    }
+    Ok(extracted)
+}
+
 /// Copy up to `limit` bytes; at the limit set `truncated` and stop the visit with `Cancelled`.
 fn copy_bounded(
     from: &mut dyn Read,
@@ -425,24 +461,42 @@ pub fn view_cursor(ctx: &Rc<AppContext>) {
 
 /// Extract `inner` of `archive` on the pool and open the viewer on it.
 pub fn view_file(ctx: &Rc<AppContext>, archive: PathBuf, inner: PathBuf) {
-    view_file_at(ctx, archive, inner, None);
+    view_file_at(ctx, archive, inner, None, None);
 }
 
-/// View an archive entry and scroll to `offset` after its document opens.
-pub fn view_file_at(ctx: &Rc<AppContext>, archive: PathBuf, inner: PathBuf, offset: Option<u64>) {
+/// View an archive entry and scroll to `offset` after its document opens. `from`: the window the
+/// view was asked for in, when it is not the main window.
+pub fn view_file_at(
+    ctx: &Rc<AppContext>,
+    archive: PathBuf,
+    inner: PathBuf,
+    offset: Option<u64>,
+    from: Option<ViewOrigin>,
+) {
     let Some(st) = state(ctx) else { return };
     let cancel = CancelToken::new();
     let serial = st.begin(&cancel);
-    busy_after(ctx, serial, tr("Extracting... (Esc cancels)"));
+    let busy = tr("Extracting... (Esc cancels)");
+    let restore_status: Option<Box<dyn Fn()>> = match &from {
+        Some(origin) => {
+            st.set_origin(serial, origin.clone());
+            let status = origin.status.clone();
+            Some(Box::new(busy_after_in(ctx, serial, status, busy)))
+        }
+        None => {
+            busy_after(ctx, serial, busy);
+            None
+        }
+    };
     let service = ctx.services.archives.clone();
     let worker_cancel = cancel.clone();
     let rx = wiring::run_on_pool(&ctx.services.pool, move |tx| {
-        let _ = tx.send_blocking(extract_entry(
+        let _view = password::for_view(serial);
+        let _ = tx.send_blocking(extract_for_view(
             &service,
             &archive,
             &inner,
             ARCHIVE_VIEW_LIMIT,
-            false,
             &worker_cancel,
         ));
     });
@@ -459,22 +513,20 @@ pub fn view_file_at(ctx: &Rc<AppContext>, archive: PathBuf, inner: PathBuf, offs
             let current = st.is_current(serial);
             if current {
                 st.end(serial);
-                busy_done(&ctx);
+            }
+            match &restore_status {
+                Some(restore) => restore(),
+                None if current => busy_done(&ctx),
+                None => {}
             }
             match result {
-                Ok(x) if current && x.truncated => {
-                    remove_temp_later(&ctx, x.dir);
-                    report_error(
-                        &ctx,
-                        tr(
-                            "Archive entry is too large to view (64 MiB limit). Extract it with F5 instead.",
-                        ),
-                    );
-                }
                 Ok(x) if current => open_in_viewer(&ctx, x, offset),
                 Ok(x) => remove_temp_later(&ctx, x.dir), // cancelled meanwhile
                 Err(ExtractFail::Cancelled) => {}
-                Err(e) if current => report_error(&ctx, &e.text()),
+                Err(e) if current => {
+                    let over = from.as_ref().and_then(|o| o.window.upgrade());
+                    report_error_over(&ctx, over.as_ref(), &e.text());
+                }
                 Err(_) => {}
             }
             std::ops::ControlFlow::Break(())
@@ -698,6 +750,69 @@ mod tests {
             build_extract(&silent).unwrap(),
             JobSpec::Extract { opts, .. } if opts.sync
         ));
+    }
+
+    /// A tar with one regular file `name` of `data` (ustar header by hand).
+    fn tar_with(name: &str, data: &[u8]) -> Vec<u8> {
+        let mut head = [0u8; 512];
+        head[..name.len()].copy_from_slice(name.as_bytes());
+        head[100..108].copy_from_slice(b"0000644\0");
+        head[108..116].copy_from_slice(b"0000000\0");
+        head[116..124].copy_from_slice(b"0000000\0");
+        head[124..136].copy_from_slice(format!("{:011o}\0", data.len()).as_bytes());
+        head[136..148].copy_from_slice(b"00000000000\0");
+        head[148..156].copy_from_slice(b"        ");
+        head[156] = b'0';
+        head[257..265].copy_from_slice(b"ustar\x0000");
+        let sum: u32 = head.iter().map(|b| u32::from(*b)).sum();
+        head[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        let mut out = head.to_vec();
+        out.extend_from_slice(data);
+        out.resize(512 + data.len().div_ceil(512) * 512 + 1024, 0);
+        out
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)] // fixture files
+    fn an_oversized_entry_is_refused_before_anything_is_written() {
+        let dir = ofm_testkit::temp::TempDir::new().unwrap();
+        let tar = dir.path().join("x.tar");
+        std::fs::write(&tar, tar_with("big.txt", &[b'x'; 100])).unwrap();
+        let service = ArchiveService::new();
+        let view = |limit| {
+            extract_for_view(
+                &service,
+                &tar,
+                Path::new("big.txt"),
+                limit,
+                &CancelToken::new(),
+            )
+        };
+        // One byte over: refused from the index, no temp directory was ever made.
+        assert!(matches!(view(99), Err(ExtractFail::TooLarge)));
+        assert_eq!((service.temps_created(), service.temp_count()), (0, 0));
+        assert!(ExtractFail::TooLarge.text().contains("64 MiB"));
+        // Exactly the limit: extracted, and cleaned up by the caller.
+        let x = view(100).unwrap();
+        assert!(!x.truncated);
+        assert_eq!(std::fs::read(&x.file).unwrap(), [b'x'; 100]);
+        assert_eq!((service.temps_created(), service.temp_count()), (1, 1));
+        service.remove_temp(&x.dir);
+        assert!(!x.dir.exists());
+        // The streaming cap stays: quick view still gets the first part.
+        let x = extract_entry(
+            &service,
+            &tar,
+            Path::new("big.txt"),
+            10,
+            true,
+            &CancelToken::new(),
+        )
+        .unwrap();
+        assert!(x.truncated);
+        assert_eq!(std::fs::read(&x.file).unwrap().len(), 10);
+        service.remove_temp(&x.dir);
+        assert_eq!(service.temp_count(), 0);
     }
 
     #[test]

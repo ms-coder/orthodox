@@ -194,7 +194,8 @@ pub fn route_dialog_key(ctx: &Rc<AppContext>, key: DialogKey) -> bool {
     let Some(w) = state(ctx).and_then(|s| s.window()) else {
         return false;
     };
-    if !w.window.is_active() {
+    // A dialog over the Find window takes the keys itself (through the modal stack).
+    if !w.window.is_active() || crate::dialogs::find::has_dialog(ctx, &w) {
         return false;
     }
     match key {

@@ -57,6 +57,7 @@ pub struct ArchiveService {
     passwords: PasswordSource,
     prompts: Arc<AppPasswords>,
     temps: Arc<Mutex<Vec<PathBuf>>>,
+    created: Arc<AtomicU64>,
 }
 
 impl ArchiveService {
@@ -70,6 +71,7 @@ impl ArchiveService {
             passwords,
             prompts,
             temps: Arc::default(),
+            created: Arc::default(),
         }
     }
 
@@ -121,6 +123,7 @@ impl ArchiveService {
             ));
             match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
                 Ok(()) => {
+                    self.created.fetch_add(1, Ordering::Relaxed);
                     self.temps().push(dir.clone());
                     return Ok(dir);
                 }
@@ -147,6 +150,11 @@ impl ArchiveService {
         for d in dirs {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    /// Number of temp directories ever created (tests).
+    pub fn temps_created(&self) -> u64 {
+        self.created.load(Ordering::Relaxed)
     }
 
     /// Number of temp directories still alive (tests).
@@ -362,6 +370,16 @@ fn name_of(p: &Path) -> String {
 
 // ---- running operations ----------------------------------------------------------------------
 
+/// A view started from another window than the main one (the Find window, which stays on top of
+/// it): its dialogs go over that window and its progress into that window's status line.
+#[derive(Clone)]
+pub struct ViewOrigin {
+    /// The window the user is looking at.
+    pub window: gtk::glib::WeakRef<gtk::Window>,
+    /// Its status line.
+    pub status: gtk::glib::WeakRef<gtk::Label>,
+}
+
 /// Bookkeeping of the archive operations that can be cancelled with Esc (state in `ctx.ext`).
 #[derive(Default)]
 pub struct ArchiveState {
@@ -369,6 +387,7 @@ pub struct ArchiveState {
     serial: Cell<u64>,
     last_error: RefCell<Option<String>>,
     last_note: RefCell<Option<String>>,
+    origin: RefCell<Option<(u64, ViewOrigin)>>,
 }
 
 impl ArchiveState {
@@ -403,6 +422,25 @@ impl ArchiveState {
             }
             None => false,
         }
+    }
+
+    /// Remember where the operation `serial` was started from.
+    pub(crate) fn set_origin(&self, serial: u64, origin: ViewOrigin) {
+        *self.origin.borrow_mut() = Some((serial, origin));
+    }
+
+    /// The window the operation `serial` was started from, when not the main one.
+    pub fn window_of(&self, serial: u64) -> Option<gtk::Window> {
+        self.origin
+            .borrow()
+            .as_ref()
+            .filter(|(s, _)| *s == serial)
+            .and_then(|(_, o)| o.window.upgrade())
+    }
+
+    /// Cancel the running operation if it was started from `window`. Returns whether it was.
+    pub fn cancel_view_from(&self, window: &gtk::Window) -> bool {
+        self.window_of(self.serial.get()).as_ref() == Some(window) && self.cancel_current()
     }
 
     /// Whether an open/extract-for-view is running.
@@ -450,6 +488,37 @@ pub(crate) fn busy_after(ctx: &Rc<AppContext>, serial: u64, text: &'static str) 
     });
 }
 
+/// [`busy_after`] for a view with its own status line. The returned closure puts the previous
+/// text back once the operation ended.
+pub(crate) fn busy_after_in(
+    ctx: &Rc<AppContext>,
+    serial: u64,
+    status: gtk::glib::WeakRef<gtk::Label>,
+    text: &'static str,
+) -> impl Fn() + 'static {
+    let replaced: Rc<RefCell<Option<gtk::glib::GString>>> = Rc::default();
+    let weak = Rc::downgrade(ctx);
+    let (label, previous) = (status.clone(), Rc::clone(&replaced));
+    gtk::glib::timeout_add_local_once(SHOW_BUSY_AFTER, move || {
+        let current = weak
+            .upgrade()
+            .and_then(|ctx| state(&ctx))
+            .is_some_and(|st| st.is_current(serial));
+        if current && let Some(label) = label.upgrade() {
+            *previous.borrow_mut() = Some(label.text());
+            label.set_text(text);
+        }
+    });
+    move || {
+        let previous = replaced.borrow_mut().take();
+        if let (Some(previous), Some(label)) = (previous, status.upgrade())
+            && label.text() == text
+        {
+            label.set_text(&previous);
+        }
+    }
+}
+
 /// Hide the busy message of an operation that ended.
 pub(crate) fn busy_done(ctx: &Rc<AppContext>) {
     message::hide(ctx);
@@ -457,10 +526,15 @@ pub(crate) fn busy_done(ctx: &Rc<AppContext>) {
 
 /// Show an error text in a message dialog and remember it.
 pub(crate) fn report_error(ctx: &Rc<AppContext>, text: &str) {
+    report_error_over(ctx, None, text);
+}
+
+/// [`report_error`] over `window` (`None`: the main window).
+pub(crate) fn report_error_over(ctx: &Rc<AppContext>, window: Option<&gtk::Window>, text: &str) {
     if let Some(st) = state(ctx) {
         st.set_error(text);
     }
-    ui::message(ctx, tr("Archive"), text);
+    ui::message_over(ctx, window, tr("Archive"), text);
 }
 
 // ---- opening ----------------------------------------------------------------------------------
@@ -482,6 +556,9 @@ enum Probe {
 fn probe_archive(service: &ArchiveService, path: &Path, cancel: &CancelToken) -> Probe {
     match detect_format(path) {
         Ok(Some(_)) => {}
+        // A compressed tar whose probe hits a resource limit: say so, do not hand the file to
+        // another application as if it were no archive.
+        Err(e @ ArchiveError::LimitExceeded { .. }) => return Probe::Failed(e),
         Ok(None) | Err(_) => return Probe::NotArchive,
     }
     let _scope = password::scope(cancel);
@@ -689,6 +766,35 @@ mod tests {
             })
             .contains("decompression bomb")
         );
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)] // fixture file
+    fn probe_reports_a_codec_limit_instead_of_not_an_archive() {
+        // A zstd frame that asks for a 2 GiB window (magic, descriptor, window byte), then one
+        // empty last block.
+        let dir = ofm_testkit::temp::TempDir::new().unwrap();
+        let path = dir.path().join("big-window.tar.zst");
+        std::fs::write(
+            &path,
+            [0x28, 0xB5, 0x2F, 0xFD, 0x00, 0xA8, 0x01, 0x00, 0x00],
+        )
+        .unwrap();
+        let probe = probe_archive(&ArchiveService::new(), &path, &CancelToken::new());
+        assert!(
+            matches!(
+                probe,
+                Probe::Failed(ArchiveError::LimitExceeded {
+                    kind: LimitKind::CodecMemory,
+                    ..
+                })
+            ),
+            "{probe:?}"
+        );
+        // A file that merely cannot be read is still treated as an ordinary file.
+        let missing = dir.path().join("missing");
+        let probe = probe_archive(&ArchiveService::new(), &missing, &CancelToken::new());
+        assert!(matches!(probe, Probe::NotArchive), "{probe:?}");
     }
 
     #[test]

@@ -14,6 +14,7 @@ use ofm_config::Keymap;
 use ofm_core::KeyContext;
 use ofm_core::commands::ALL;
 
+use crate::chrome::labels::command_title;
 use crate::context::AppContext;
 use crate::i18n::tr;
 use crate::jobs::ui;
@@ -129,7 +130,10 @@ pub fn present(ctx: &Rc<AppContext>) {
     column.append(&search);
 
     // The scrollable list of groups.
-    let all_rows = rows(&ctx.keymap.borrow());
+    let mut all_rows = rows(&ctx.keymap.borrow());
+    for row in &mut all_rows {
+        row.title = command_title(ctx, row.cmd);
+    }
     let scrolled = gtk::ScrolledWindow::new();
     scrolled.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     scrolled.set_vexpand(true);

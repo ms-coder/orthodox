@@ -149,12 +149,16 @@ fn viewer_temp_dir_is_removed_when_the_viewer_closes() {
         entry: Entry::new("hello.txt", EntryKind::File),
         content: None,
     };
+    type Action = fn(
+        &Rc<AppContext>,
+        &ofm_search::Hit,
+        Option<ofm_app::panel::archive::ViewOrigin>,
+    ) -> Result<(), String>;
     for action in [
-        ofm_app::search::actions::view
-            as fn(&Rc<AppContext>, &ofm_search::Hit) -> Result<(), String>,
+        ofm_app::search::actions::view as Action,
         ofm_app::search::actions::edit,
     ] {
-        action(&ctx, &hit).unwrap();
+        action(&ctx, &hit, None).unwrap();
         pump_until("viewer open for archive search hit", || {
             ofm_app::viewer::current(&ctx).is_some()
         });

@@ -17,6 +17,7 @@ use gtk::glib;
 use gtk::prelude::*;
 use ofm_core::{CommandId, cmd};
 
+use super::labels::command_title;
 use super::menubar::accel_text;
 use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
@@ -56,6 +57,7 @@ const ENTRIES: &[Entry] = &[
 struct Row {
     cmd: CommandId,
     button: gtk::Button,
+    label: gtk::Label,
     accel: gtk::Label,
 }
 
@@ -281,7 +283,7 @@ pub fn close(ctx: &AppContext) {
 }
 
 fn build_row(ctx: &Rc<AppContext>, popover: &gtk::Popover, cmd: CommandId) -> Row {
-    let title = cmd.info().map_or(cmd.as_str(), |i| tr(i.title));
+    let title = tr(command_title(ctx, cmd));
     let label = gtk::Label::new(Some(title));
     label.set_xalign(0.0);
     label.set_hexpand(true);
@@ -310,7 +312,12 @@ fn build_row(ctx: &Rc<AppContext>, popover: &gtk::Popover, cmd: CommandId) -> Ro
             });
         });
     }
-    Row { cmd, button, accel }
+    Row {
+        cmd,
+        button,
+        label,
+        accel,
+    }
 }
 
 impl ContextMenu {
@@ -391,6 +398,14 @@ impl ContextMenu {
             .iter()
             .find(|r| r.cmd == cmd)
             .map(|r| r.accel.text().to_string())
+    }
+
+    /// Title shown for `cmd` (tests).
+    pub fn title_of(&self, cmd: CommandId) -> Option<String> {
+        self.rows
+            .iter()
+            .find(|r| r.cmd == cmd)
+            .map(|r| r.label.text().to_string())
     }
 
     /// Whether the menu popover is visible (tests).

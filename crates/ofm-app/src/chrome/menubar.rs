@@ -1,12 +1,16 @@
 //! The F9 menu bar (F32): drop-downs built from the command registry and the active keymap, so
 //! every item is a `CommandId` run through `AppContext::execute` and shows its current binding.
 //!
-//! Keys while a drop-down is open: a window-level capture controller ([`follow_keys`]), added
-//! after the dispatcher's so it runs first, handles Up/Down/Home/End (focus), Left/Right (switch
-//! menu), Enter (run the focused item), Esc and F9 (close) and swallows everything else, so no
-//! panel command fires behind the menu. Without it the dispatcher would resolve those keys in the
-//! `panels` section. (Mouse use needs none of this.)
+//! Keys while a drop-down is open: a capture controller on each drop-down handles Up/Down/Home/
+//! End (focus), Left/Right (switch menu), Enter (run the focused item), Esc and F9 (close) and
+//! swallows everything else. It has to sit on the popover: GTK starts the propagation of its key
+//! events there, so neither a window-level controller nor the dispatcher sees them. (Mouse use
+//! needs none of this.)
+//!
+//! When the last drop-down closes, the focus goes back to where it was before the menu opened
+//! (usually nowhere: panel keys go through the window's dispatcher).
 
+use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use gtk::gdk;
@@ -14,6 +18,7 @@ use gtk::glib;
 use gtk::prelude::*;
 use ofm_core::{CommandId, KeyContext};
 
+use super::labels::command_title;
 use super::menus::{Item, MENUS, MenuDef};
 use crate::context::AppContext;
 use crate::i18n::tr;
@@ -21,6 +26,7 @@ use crate::i18n::tr;
 struct Row {
     cmd: CommandId,
     button: gtk::Button,
+    label: gtk::Label,
     accel: gtk::Label,
 }
 
@@ -36,6 +42,9 @@ pub struct MenuBar {
     pub root: gtk::Box,
     menus: Vec<Menu>,
     ctx: Weak<AppContext>,
+    /// The focus widget from before the menu opened (`Some(None)`: there was none), while a
+    /// drop-down is open.
+    prior_focus: RefCell<Option<Option<gtk::Widget>>>,
 }
 
 /// Key hint of `cmd` in the current keymap (empty when unbound): the first chord bound in the
@@ -68,6 +77,7 @@ impl MenuBar {
                 root,
                 menus,
                 ctx: Rc::downgrade(ctx),
+                prior_focus: RefCell::new(None),
             }
         })
     }
@@ -84,9 +94,10 @@ impl MenuBar {
 
     /// Open drop-down `i` (closing the others).
     pub fn open(&self, i: usize) {
+        self.remember_focus();
         self.close();
         if let Some(m) = self.menus.get(i) {
-            self.refresh_accels(i);
+            self.refresh_rows(i);
             m.button.popup();
         }
     }
@@ -137,20 +148,56 @@ impl MenuBar {
             .map(|r| r.button.is_sensitive())
     }
 
-    /// Re-read the key hints of menu `i` from the current keymap.
-    fn refresh_accels(&self, i: usize) {
+    /// Title shown in the row of `cmd` in menu `i` (tests).
+    pub fn row_title(&self, i: usize, cmd: CommandId) -> Option<String> {
+        self.menus
+            .get(i)?
+            .rows
+            .iter()
+            .find(|r| r.cmd == cmd)
+            .map(|r| r.label.text().to_string())
+    }
+
+    /// Re-read the titles and key hints of menu `i` from the current config and keymap.
+    fn refresh_rows(&self, i: usize) {
         let (Some(menu), Some(ctx)) = (self.menus.get(i), self.ctx.upgrade()) else {
             return;
         };
         for r in &menu.rows {
+            let title = tr(command_title(&ctx, r.cmd));
+            r.label.set_text(title);
+            r.button
+                .update_property(&[gtk::accessible::Property::Label(title)]);
             r.accel.set_text(&accel_text(&ctx, r.cmd));
+        }
+    }
+
+    /// Keep the current focus widget for [`Self::restore_focus`], unless a menu already did.
+    fn remember_focus(&self) {
+        let mut prior = self.prior_focus.borrow_mut();
+        if prior.is_none() {
+            let focus = self.root.root().and_then(|r| r.focus());
+            // A focus inside the bar itself is the menu's own, not something to go back to.
+            *prior = Some(focus.filter(|f| !f.is_ancestor(&self.root)));
+        }
+    }
+
+    /// Once no drop-down is open any more, put the focus back.
+    fn restore_focus(&self) {
+        if self.is_open() {
+            return; // switched to a neighbouring menu
+        }
+        let prior = self.prior_focus.borrow_mut().take();
+        if let (Some(focus), Some(root)) = (prior, self.root.root()) {
+            root.set_focus(focus.as_ref());
         }
     }
 
     /// A drop-down became visible (also when opened by a mouse click): fresh hints, focus on the
     /// first row.
     fn on_shown(&self, i: usize) {
-        self.refresh_accels(i);
+        self.remember_focus(); // opened by a mouse click: `open` did not run
+        self.refresh_rows(i);
         let first = self
             .menus
             .get(i)
@@ -279,6 +326,30 @@ fn build_menu(ctx: &Rc<AppContext>, bar: &Weak<MenuBar>, index: usize, def: &Men
             }
         });
     }
+    {
+        let bar = bar.clone();
+        popover.connect_closed(move |_| {
+            // Deferred: switching menus closes one before it opens the next, and GTK moves
+            // the focus itself while closing. Queued before the idle that runs an activated
+            // command, so a dialog it opens keeps the focus.
+            let bar = bar.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(bar) = bar.upgrade() {
+                    bar.restore_focus();
+                }
+            });
+        });
+    }
+    {
+        let bar = bar.clone();
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        keys.connect_key_pressed(move |_, key, _, _| match bar.upgrade() {
+            Some(bar) if bar.handle_key(key) => glib::Propagation::Stop,
+            _ => glib::Propagation::Proceed,
+        });
+        popover.add_controller(keys);
+    }
 
     Menu {
         button,
@@ -288,7 +359,7 @@ fn build_menu(ctx: &Rc<AppContext>, bar: &Weak<MenuBar>, index: usize, def: &Men
 }
 
 fn build_row(ctx: &Rc<AppContext>, popover: &gtk::Popover, cmd: CommandId) -> Row {
-    let title = cmd.info().map_or(cmd.as_str(), |i| tr(i.title));
+    let title = tr(command_title(ctx, cmd));
     let label = gtk::Label::new(Some(title));
     label.set_xalign(0.0);
     label.set_hexpand(true);
@@ -320,18 +391,10 @@ fn build_row(ctx: &Rc<AppContext>, popover: &gtk::Popover, cmd: CommandId) -> Ro
             });
         });
     }
-    Row { cmd, button, accel }
-}
-
-/// Install the window-level key handler described in the module docs. Call it after the
-/// dispatcher's controller exists (i.e. from `install_ui`).
-pub fn follow_keys(window: &impl IsA<gtk::Window>, bar: &Rc<MenuBar>) {
-    let keys = gtk::EventControllerKey::new();
-    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-    let weak = Rc::downgrade(bar);
-    keys.connect_key_pressed(move |_, key, _, _| match weak.upgrade() {
-        Some(bar) if bar.handle_key(key) => glib::Propagation::Stop,
-        _ => glib::Propagation::Proceed,
-    });
-    window.as_ref().add_controller(keys);
+    Row {
+        cmd,
+        button,
+        label,
+        accel,
+    }
 }

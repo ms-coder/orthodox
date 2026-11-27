@@ -90,6 +90,9 @@ fi
 cargo build -p ofm-app --quiet
 export OFM_SHOT_BIN="${CARGO_TARGET_DIR:-$PWD/target}/debug/ofm"
 
+# Never the real desktop session: no Wayland, no session bus.
+unset WAYLAND_DISPLAY
+export DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent
 export GDK_BACKEND=x11 GSK_RENDERER=cairo NO_AT_BRIDGE=1
 xvfb-run -a -s "-screen 0 1600x1000x24" bash -c '
   "$OFM_SHOT_BIN" "$@" &
