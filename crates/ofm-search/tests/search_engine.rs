@@ -835,6 +835,35 @@ fn corrupt_archives_warn_for_each_archive() {
 }
 
 #[test]
+fn archive_entries_are_filtered_not_the_outer_archive_name() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("inside.txt"), b"inside\n").unwrap();
+    let archive = dir.path().join("data.tar");
+    let ok = std::process::Command::new("tar")
+        .arg("-cf")
+        .arg(&archive)
+        .arg("-C")
+        .arg(dir.path())
+        .arg("inside.txt")
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        eprintln!("system tar unavailable; skipping");
+        return;
+    }
+    let mut q = with_name(&query_for(dir.path()), "*.txt");
+    q.search_archives = true;
+    let r = run(q);
+    assert!(r.hits.iter().any(|h| matches!(
+        &h.location,
+        ofm_core::Location::Archive { archive: a, inner }
+            if a == &archive && inner == Path::new("inside.txt")
+    )));
+    assert!(!r.names().contains(&"data.tar".to_owned()));
+}
+
+#[test]
 fn archive_content_search() {
     // Build a real tar with the system tool; requires the T6.1 backends.
     let dir = tempfile::tempdir().unwrap();
