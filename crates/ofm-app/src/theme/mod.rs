@@ -10,6 +10,7 @@
 
 pub mod css;
 mod host;
+pub mod icons;
 mod palette;
 pub mod registry;
 

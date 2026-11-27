@@ -22,6 +22,8 @@ pub struct Metrics {
     pub char_w: f32,
     /// Height of the text itself.
     pub text_h: f32,
+    /// Width of the icon column inside a name cell (0 when the theme draws no icons).
+    pub icon_w: f32,
 }
 
 impl Default for Metrics {
@@ -30,6 +32,7 @@ impl Default for Metrics {
             row_h: 18.0,
             char_w: 8.0,
             text_h: 16.0,
+            icon_w: 0.0,
         }
     }
 }
@@ -131,12 +134,18 @@ impl Geo {
         };
         let (cols, slots) = match mode {
             ViewMode::Brief => (
-                Grid::brief_columns(content.w, BRIEF_MIN_CHARS * m.char_w),
+                Grid::brief_columns(content.w, BRIEF_MIN_CHARS * m.char_w + m.icon_w),
                 Vec::new(),
             ),
             ViewMode::Full | ViewMode::Custom => (
                 1,
-                column_slots(content.w, m.char_w, PAD, columns, MIN_NAME_CHARS * m.char_w),
+                column_slots(
+                    content.w,
+                    m.char_w,
+                    PAD,
+                    columns,
+                    MIN_NAME_CHARS * m.char_w + m.icon_w,
+                ),
             ),
         };
         let grid = Grid::new(body.h, m.row_h, cols);
@@ -196,6 +205,7 @@ mod tests {
         row_h: 20.0,
         char_w: 10.0,
         text_h: 16.0,
+        icon_w: 0.0,
     };
 
     #[test]
@@ -214,6 +224,15 @@ mod tests {
         // Below the grid.
         assert_eq!(g.hit(10.0, 219.0, 0, 100), Hit::Row(9));
         assert_eq!(g.hit(10.0, 400.0, 0, 100), Hit::Blank);
+    }
+
+    #[test]
+    fn the_icon_column_counts_towards_the_minimum_widths() {
+        let icons = Metrics { icon_w: 20.0, ..M };
+        // 730 px: three columns of 240 px fit without icons, only two of 260 px with them.
+        let plain = Geo::compute(730.0, 220.0, &M, ViewMode::Brief, &[], Frames::None);
+        let with = Geo::compute(730.0, 220.0, &icons, ViewMode::Brief, &[], Frames::None);
+        assert_eq!((plain.grid.cols, with.grid.cols), (3, 2));
     }
 
     #[test]

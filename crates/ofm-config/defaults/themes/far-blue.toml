@@ -78,8 +78,10 @@ fg = "#FF5555"
 bg = "#800000"
 
 # Highlight rules: evaluated in order, first match wins. A rule has either `attr` or `mask`
-# (glob list separated by ';'). Unset colours keep the panel defaults. `icon` is an icon name
-# (used by themes that draw icons, e.g. Commander Light).
+# (glob list separated by ';'). Unset colours keep the panel defaults. `icon` is an icon-theme name
+# (e.g. "folder", "image-x-generic", "...-symbolic"; not a path). As soon as one rule of a theme
+# names an icon, every row gets an icon column: rows whose rule names none (or an unknown name) get
+# "folder" / "text-x-generic". Far Blue is text-only, so it names none.
 [[highlight]]
 attr = "broken_symlink"
 fg = "#FF5555"

@@ -33,7 +33,21 @@ fg = "@dim"                     # "@dim" / "@accent" / "@error" / "@success" / "
 [[highlight]]
 attr = "executable"
 fg = "@success"
+icon = "application-x-executable"
 
 [[highlight]]
 attr = "symlink"
 icon = "emblem-symbolic-link"
+
+[[highlight]]
+attr = "archive"
+mask = "*.zip;*.7z;*.tar;*.tar.*;*.tgz;*.gz;*.bz2;*.xz;*.zst"
+icon = "package-x-generic"
+
+[[highlight]]
+attr = "image"
+icon = "image-x-generic"
+
+[[highlight]]
+attr = "source"
+icon = "text-x-script"

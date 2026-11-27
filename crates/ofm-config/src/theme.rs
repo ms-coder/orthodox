@@ -278,7 +278,8 @@ pub struct HighlightRule {
     pub bg: Option<Color>,
     /// Bold.
     pub bold: Option<bool>,
-    /// Icon name.
+    /// Icon-theme name drawn before the file name (never a path). A theme in which any rule names
+    /// one draws an icon column; rows whose rule names none get a generic icon.
     pub icon: Option<String>,
 }
 
@@ -341,6 +342,34 @@ impl Theme {
             }
         }
         bad
+    }
+    /// Highlight `icon` values that are set but are not icon names (see
+    /// [`crate::highlight::is_icon_name`]), as `path = value` strings. They behave as unset.
+    /// Whether a well-formed name exists in the icon theme can only be checked by the app.
+    pub fn invalid_icons(&self) -> Vec<String> {
+        self.highlight
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                let icon = r.icon.as_deref().filter(|n| !n.is_empty())?;
+                (!crate::highlight::is_icon_name(icon))
+                    .then(|| format!("highlight[{i}].icon = {icon:?}"))
+            })
+            .collect()
+    }
+    /// The distinct valid icon names of the highlight rules, in rule order.
+    pub fn icon_names(&self) -> Vec<&str> {
+        let mut names = Vec::new();
+        for name in self
+            .highlight
+            .iter()
+            .filter_map(crate::highlight::rule_icon)
+        {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
     }
     /// Built-in + user themes found in `paths.themes_dir()`; broken files become warnings.
     ///
@@ -410,6 +439,12 @@ impl Theme {
                     message: format!("invalid colour {bad}"),
                 });
             }
+            for bad in theme.invalid_icons() {
+                warnings.push(Warning {
+                    file: Some(file.clone()),
+                    message: format!("invalid icon name {bad}"),
+                });
+            }
             match themes.iter_mut().find(|t| t.id == theme.id) {
                 Some(slot) => *slot = theme,
                 None => themes.push(theme),
@@ -455,6 +490,11 @@ mod tests {
                 "{id}: {:?}",
                 t.invalid_colors()
             );
+            assert!(
+                t.invalid_icons().is_empty(),
+                "{id}: {:?}",
+                t.invalid_icons()
+            );
         }
         assert!(Theme::builtin("nope").is_none());
         let far = Theme::builtin("far-blue").unwrap();
@@ -470,6 +510,27 @@ mod tests {
             let text = toml::to_string_pretty(&t).unwrap();
             assert_eq!(Theme::from_toml(&text, "rt").unwrap(), t, "{id}");
         }
+    }
+
+    #[test]
+    fn user_theme_icons_load_and_bad_names_warn() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = ConfigPaths::with_dirs(d.path().join("c"), d.path().join("s"));
+        let dir = paths.themes_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("mine.toml"),
+            "[[highlight]]\nattr = \"dir\"\nicon = \"folder-open\"\n\
+             [[highlight]]\nattr = \"image\"\nicon = \"/tmp/x.png\"\n\
+             [[highlight]]\nattr = \"source\"\nicon = \"folder-open\"\n\
+             [[highlight]]\nattr = \"hidden\"\nicon = \"\"\n",
+        )
+        .unwrap();
+        let (themes, w) = Theme::discover(&paths);
+        let mine = themes.iter().find(|t| t.id == "mine").unwrap();
+        assert_eq!(mine.icon_names(), ["folder-open"]);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].message.contains("highlight[1].icon"), "{w:?}");
     }
 
     #[test]

@@ -4,12 +4,14 @@
 use gtk::gdk::RGBA;
 use gtk::graphene;
 use gtk::prelude::*;
-use ofm_config::theme::{Color, Frames};
+use ofm_config::highlight::matching_rule;
+use ofm_config::theme::{Frames, HighlightRule};
 use ofm_core::Entry;
 use ofm_core::panel::{PanelModel, SortKey, SortSpec};
 
 use super::format::{self, is_parent};
 use super::geo::{Geo, Metrics, PAD, Rect};
+use super::icons::IconCache;
 use super::settings::{Column, Settings, ViewMode};
 use super::text::{TextCache, TextStyle};
 use crate::i18n::tr;
@@ -59,6 +61,8 @@ pub struct Painter<'a> {
     pub palette: &'a Palette,
     /// Layout cache.
     pub cache: &'a mut TextCache,
+    /// Icons of the theme's highlight rules.
+    pub icons: &'a IconCache,
     /// Geometry of this frame.
     pub geo: &'a Geo,
     /// Font metrics.
@@ -119,6 +123,41 @@ impl Painter<'_> {
         self.snapshot.translate(&graphene::Point::new(x, y + dy));
         self.snapshot.append_layout(&layout, c);
         self.snapshot.restore();
+    }
+
+    /// Draw the icon of a row whose name cell starts at `x`; returns the width it took (also
+    /// when no icon could be found, so that names stay aligned). Cells too narrow get none.
+    fn icon(
+        &self,
+        e: &Entry,
+        rule: Option<&HighlightRule>,
+        x: f32,
+        y: f32,
+        w: f32,
+        fg: &RGBA,
+    ) -> f32 {
+        let advance = self.icons.advance();
+        if advance <= 0.0 || w < advance {
+            return 0.0;
+        }
+        if let Some((_, paintable)) = self.icons.get(rule, e) {
+            let size = self.icons.size() as f32;
+            let dy = ((self.metrics.row_h - size) / 2.0).floor().max(0.0);
+            let size = f64::from(size);
+            self.snapshot.save();
+            self.snapshot
+                .translate(&graphene::Point::new(x.round(), y + dy));
+            if paintable.is_symbolic() {
+                // Monochrome icons follow the row's text colour (cursor, marks, theme).
+                let sys = &self.palette.system;
+                let colors = [*fg, sys.error, sys.warning, sys.success];
+                paintable.snapshot_symbolic(self.snapshot, size, size, &colors);
+            } else {
+                paintable.snapshot(self.snapshot, size, size);
+            }
+            self.snapshot.restore();
+        }
+        advance
     }
 
     /// Paint everything. Returns the number of rows drawn.
@@ -230,7 +269,13 @@ impl Painter<'_> {
         drawn
     }
 
-    fn row_style(&self, e: &Entry, selected: bool, cs: CursorState) -> RowStyle {
+    fn row_style(
+        &self,
+        e: &Entry,
+        rule: Option<&HighlightRule>,
+        selected: bool,
+        cs: CursorState,
+    ) -> RowStyle {
         let p = self.palette;
         let mut st = RowStyle {
             fg: if e.kind.is_dir_like() {
@@ -241,13 +286,14 @@ impl Painter<'_> {
             bg: None,
             bold: e.kind.is_dir_like() && p.panel.dir_bold,
         };
+        // The ".." row keeps the plain directory colours (it only takes the rule's icon).
         if !is_parent(e)
-            && let Some(h) = ofm_config::highlight::style_for(&p.theme.highlight, e)
+            && let Some(h) = rule
         {
-            if let Some(c) = h.fg.and_then(|s| p.resolve(&Color(s))) {
+            if let Some(c) = h.fg.as_ref().and_then(|c| p.resolve(c)) {
                 st.fg = c;
             }
-            if let Some(c) = h.bg.and_then(|s| p.resolve(&Color(s))) {
+            if let Some(c) = h.bg.as_ref().and_then(|c| p.resolve(c)) {
                 st.bg = Some(c);
             }
             if let Some(b) = h.bold {
@@ -301,7 +347,8 @@ impl Painter<'_> {
             w: geo.cell_w,
             h: geo.row_h,
         };
-        let mut st = self.row_style(e, selected, cs);
+        let rule = matching_rule(&p.theme.highlight, e);
+        let mut st = self.row_style(e, rule, selected, cs);
         // Alternate-row stripes (Full/Custom only; Brief rows of different columns would zigzag).
         if st.bg.is_none()
             && geo.mode != ViewMode::Brief
@@ -321,15 +368,9 @@ impl Painter<'_> {
         match geo.mode {
             ViewMode::Brief => {
                 let text = format::name_cell(e);
-                self.text(
-                    &text,
-                    st.bold,
-                    false,
-                    x + PAD,
-                    y,
-                    cell.w - 2.0 * PAD,
-                    &st.fg,
-                );
+                let w = cell.w - 2.0 * PAD;
+                let used = self.icon(e, rule, x + PAD, y, w, &st.fg);
+                self.text(&text, st.bold, false, x + PAD + used, y, w - used, &st.fg);
             }
             ViewMode::Full | ViewMode::Custom => {
                 for slot in &geo.slots {
@@ -339,13 +380,19 @@ impl Painter<'_> {
                         self.settings.size_format,
                         &self.settings.time_format,
                     );
+                    let (cx, w) = (x + slot.x + PAD, slot.w - 2.0 * PAD);
+                    let used = if slot.column == Column::Name {
+                        self.icon(e, rule, cx, y, w, &st.fg)
+                    } else {
+                        0.0
+                    };
                     self.text(
                         &text,
                         st.bold,
                         slot.column.right_aligned(),
-                        x + slot.x + PAD,
+                        cx + used,
                         y,
-                        slot.w - 2.0 * PAD,
+                        w - used,
                         &st.fg,
                     );
                 }

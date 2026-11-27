@@ -10,7 +10,8 @@
 //! this module (cursor, view mode, sort, hidden files) are registered in [`install_commands`].
 //!
 //! Modules: `layout` (grid/scroll math), `geo` (frame geometry, hit testing), `format` (cell text),
-//! `settings` (view modes, `[panels]` settings), `text` (layout cache), `paint` (drawing),
+//! `settings` (view modes, `[panels]` settings), `text` (layout cache), `icons` (paintable cache
+//! of the highlight rules' icons), `paint` (drawing),
 //! `imp` (the widget).
 //!
 //! # Wiring points for other modules
@@ -25,6 +26,7 @@
 mod commands;
 mod format;
 mod geo;
+mod icons;
 mod imp;
 mod layout;
 mod paint;
@@ -122,6 +124,12 @@ impl FileList {
     /// Frame timing of this list.
     pub fn frame_stats(&self) -> FrameStats {
         self.imp().stats()
+    }
+
+    /// Icon-theme name drawn before visible entry `index` and its edge length in logical px;
+    /// `None` when the theme draws no icons, there is no such entry or no icon theme has it.
+    pub fn icon_at(&self, index: u32) -> Option<(String, i32)> {
+        self.imp().icon_at(index)
     }
 
     /// `(first visible entry, rows per column, columns)` of the current layout.
