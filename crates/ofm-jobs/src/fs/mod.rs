@@ -4,7 +4,8 @@
 //! Paths are `&Path` (bytes); never convert to `String`.
 //!
 //! Files: `mod.rs` (this trait, frozen) · `real.rs` ([`RealFs`], rustix-based) · `faulty.rs`
-//! (`FaultyFs`, feature `testing`).
+//! (`FaultyFs`, feature `testing`) · `anchored.rs` ([`FsPin`] and the handle-anchored view used by
+//! extraction).
 //!
 //! The wrapper-friendly part of the design: [`FsFile::as_fd`] exposes the descriptor, so the
 //! kernel-assisted copies ([`FsFile::try_clone_from`], [`FsFile::copy_range_from`]) can take
@@ -16,10 +17,13 @@ use std::io;
 use std::os::fd::BorrowedFd;
 use std::path::{Path, PathBuf};
 
+mod anchored;
 #[cfg(any(test, feature = "testing"))]
 pub mod faulty;
 mod real;
 
+pub(crate) use anchored::AnchoredFs;
+pub use anchored::FsPin;
 pub use real::RealFs;
 
 /// Kind of a file system object, from `st_mode`.
@@ -219,6 +223,18 @@ pub trait Fs: Send + Sync {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "remove_xattr: not implemented",
+        ))
+    }
+    /// Pin the object at `path` with an `O_PATH` handle (FIX-M6M7, additive): the handle keeps
+    /// naming that object when `path` is renamed or replaced. `follow = false` pins a symlink
+    /// itself instead of its target (check [`FsPin::stat`]); only the last component is covered,
+    /// so a caller that must not follow any symlink pins one component at a time through
+    /// [`FsPin::path`]. The default reports `Unsupported`, which makes extraction fail closed.
+    fn pin(&self, path: &Path, follow: bool) -> io::Result<FsPin> {
+        let _ = (path, follow);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "pin: not implemented",
         ))
     }
     /// Move to the freedesktop trash (`ops::trash`, T3.2). `Unavailable` makes the engine ask.

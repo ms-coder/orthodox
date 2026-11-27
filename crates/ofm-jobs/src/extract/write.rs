@@ -16,7 +16,7 @@ use crate::copy::{CHUNK, Target, resolve_target};
 use crate::ctx::JobCtx;
 use crate::error::JobError;
 use crate::event::Operation;
-use crate::fs::{FileType, Fs, FsFile, FsStat};
+use crate::fs::{FileType, Fs, FsFile, FsPin, FsStat};
 use crate::plan::NAME_MAX;
 
 use super::safe;
@@ -152,6 +152,9 @@ struct Prepared {
     path: PathBuf,
     /// The user chose overwrite: publish with `rename_replace`.
     replace: bool,
+    /// Pins `parent` until the item is done: temp file, publish and cleanup all go to the
+    /// directory that was checked.
+    _hold: Arc<FsPin>,
 }
 
 impl Extractor {
@@ -197,6 +200,10 @@ impl Extractor {
         };
         let dest = parent.join(name);
         ctx.set_current(&dest);
+        let hold = self
+            .anchor
+            .hold(&parent)
+            .map_err(|err| dest_fail(&dest, err))?;
         let st = self.fake_stat(ft, e.mode, size, e.mtime_ns);
         let src = self.archive.join(&e.path);
         let target = resolve_target(
@@ -218,6 +225,7 @@ impl Extractor {
             name: name.to_os_string(),
             path,
             replace,
+            _hold: hold,
         }))
     }
 
@@ -525,14 +533,17 @@ impl Extractor {
             return Err(Fail::entry(&p.path, "no free temporary name"));
         };
         let mut guard = TempGuard::new(Arc::clone(&self.fs), tmp.clone());
-        let result = self.finish_link(ctx, &mut guard, &tmp, &p, e, rel, true);
+        let result = self.finish_link(ctx, &mut guard, &tmp, &p, e, rel, None);
         if result.is_err() {
             guard.cleanup(ctx);
         }
         result
     }
 
-    /// Times, identity, publish and bookkeeping of a temp link (symlink or hard link).
+    /// Times, identity, publish and bookkeeping of a temp link: a symlink (`source` = `None`) or a
+    /// hard link, which must be the file `source` identifies. That is checked on the link itself:
+    /// the name linked from may have been replaced since its last check (e.g. while the user was
+    /// asked about the destination), and then nothing is published.
     #[allow(clippy::too_many_arguments, reason = "one linear step")]
     fn finish_link(
         &mut self,
@@ -542,8 +553,9 @@ impl Extractor {
         p: &Prepared,
         e: &ArchiveEntry,
         rel: &Path,
-        symlink: bool,
+        source: Option<(u64, u64)>,
     ) -> Result<(), Fail> {
+        let symlink = source.is_none();
         if symlink && e.mtime_ns != 0 {
             // Link times are cosmetic and not supported everywhere: log only.
             if let Err(err) = self.fs.set_times(tmp, e.mtime_ns, e.mtime_ns, false) {
@@ -551,6 +563,15 @@ impl Extractor {
             }
         }
         let made = self.fs.lstat(tmp).map_err(|err| dest_fail(&p.path, err))?;
+        if source.is_some_and(|id| id != (made.dev, made.ino)) {
+            return Err(Fail::entry(
+                &p.path,
+                format!(
+                    "hard link '{}' skipped: its target changed during extraction",
+                    e.path.display()
+                ),
+            ));
+        }
         // A hard link must not be "disarmed": renaming onto another name of the same inode is a
         // silent no-op that would leave the temp name behind.
         self.publish(ctx, guard, &p.path, p.replace, symlink)?;
@@ -625,7 +646,7 @@ impl Extractor {
             return Err(Fail::entry(&p.path, "no free temporary name"));
         };
         let mut guard = TempGuard::new(Arc::clone(&self.fs), tmp.clone());
-        let result = self.finish_link(ctx, &mut guard, &tmp, &p, e, rel, false);
+        let result = self.finish_link(ctx, &mut guard, &tmp, &p, e, rel, Some(target_id));
         if result.is_err() {
             guard.cleanup(ctx);
         }

@@ -165,6 +165,12 @@ impl JobCtx {
         Arc::clone(&self.fs)
     }
 
+    /// Route this job's file system calls through `fs` from now on and return the previous one
+    /// (extraction anchors everything below its destination this way).
+    pub(crate) fn swap_fs(&mut self, fs: Arc<dyn Fs>) -> Arc<dyn Fs> {
+        std::mem::replace(&mut self.fs, fs)
+    }
+
     /// A clone of the job's cancel token (hand to helpers that loop without the ctx).
     pub fn cancel_token(&self) -> CancelToken {
         self.cancel.clone()

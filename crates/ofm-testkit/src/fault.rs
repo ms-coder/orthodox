@@ -85,6 +85,8 @@ pub enum FaultOp {
     RemoveXattr,
     /// `Fs::trash`.
     Trash,
+    /// `Fs::pin` (directory handles of anchored access).
+    Pin,
     /// `FsFile::stat`.
     FileStat,
     /// `FsFile::read`.

@@ -19,6 +19,11 @@
 //!    [`safe::link_target_ok`]); hard links only to a file this job extracted; devices, FIFOs and
 //!    sockets are never created.
 //!
+//! Anchoring (FIX-M6M7): once the destination directory exists, every call below it goes through
+//! `fs::anchored::AnchoredFs`: parent directories are pinned handles opened component by component
+//! without following symlinks, so replacing a checked parent with a symlink during the job cannot
+//! redirect anything. Symlinks in the destination path chosen by the user are followed once.
+//!
 //! Defence in depth (archives are hostile input): the index flags are not trusted. Every output
 //! path is re-validated from its bytes ([`safe::validate_entry_path`]), every parent directory
 //! below the destination is checked with `lstat` and created by the job itself (a symlink or file
@@ -53,7 +58,7 @@ use ofm_vfs::archive::{
 use crate::copy::{Copier, Mode};
 use crate::ctx::JobCtx;
 use crate::error::JobError;
-use crate::fs::Fs;
+use crate::fs::{AnchoredFs, Fs};
 use crate::plan;
 use crate::spec::ExtractOpts;
 
@@ -135,7 +140,19 @@ pub fn extract_from_reader(
     plan::ensure_dir(ctx, dest_dir)?;
     warn_if_low_on_space(ctx, dest_dir, bytes);
 
-    let mut ex = Extractor::new(ctx, &archive, dest_dir, selection, &ids, opts);
+    let anchor = AnchoredFs::new(ctx.fs(), dest_dir).map_err(|e| JobError::io(dest_dir, e))?;
+    let anchor = Arc::new(anchor);
+    let mut ex = Extractor::new(
+        ctx,
+        Arc::clone(&anchor),
+        &archive,
+        dest_dir,
+        selection,
+        &ids,
+        opts,
+    );
+    // The conflict protocol uses the context's file system: anchor it too.
+    let unanchored = ctx.swap_fs(anchor);
     let cancel = ctx.cancel_token();
     let mut failure: Option<JobError> = None;
     let visited = reader.visit(&ids, &cancel, &mut |entry, data| {
@@ -147,6 +164,7 @@ pub fn extract_from_reader(
     });
     // Directory metadata after the content, also on failure/cancel (best effort).
     ex.finish_dirs(ctx);
+    ctx.swap_fs(unanchored);
     match (failure, visited) {
         (Some(e), _) => Err(e),
         (None, Err(e)) => Err(e.into()),
@@ -253,7 +271,10 @@ pub(crate) struct Extracted {
 
 /// State of one extraction job.
 pub(crate) struct Extractor {
+    /// The anchored file system (the same object as `anchor`).
     pub(crate) fs: Arc<dyn Fs>,
+    /// Holds parent directory handles for the duration of an item.
+    pub(crate) anchor: Arc<AnchoredFs>,
     pub(crate) dest_dir: PathBuf,
     pub(crate) archive: PathBuf,
     /// `(dev, ino)` of the archive file: makes extracting an entry onto the archive itself a
@@ -282,21 +303,24 @@ pub(crate) struct Extractor {
 impl Extractor {
     fn new(
         ctx: &JobCtx,
+        anchor: Arc<AnchoredFs>,
         archive: &Path,
         dest_dir: &Path,
         selection: Vec<PathBuf>,
         ids: &[EntryId],
         opts: &ExtractOpts,
     ) -> Self {
-        let fs = ctx.fs();
+        // The archive is looked up as the user named it, not through the anchor.
         // Unknown identity (cannot stat) = one that matches nothing.
-        let (archive_id, archive_size) = match fs.stat(archive) {
+        let (archive_id, archive_size) = match ctx.fs().stat(archive) {
             Ok(st) => ((st.dev, st.ino), st.size),
             Err(_) => ((u64::MAX, u64::MAX), 0),
         };
-        let copier = Copier::new(&*fs, Mode::Copy, false, opts.sync);
+        let copier = Copier::new(&*anchor, Mode::Copy, false, opts.sync);
+        let fs: Arc<dyn Fs> = anchor.clone();
         Extractor {
             fs,
+            anchor,
             dest_dir: dest_dir.to_path_buf(),
             archive: archive.to_path_buf(),
             archive_id,

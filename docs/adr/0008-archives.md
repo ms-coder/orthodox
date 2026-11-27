@@ -145,3 +145,7 @@ refines or tightens the text, the code wins and is listed here (tests: `crates/o
   after failure or cancel (not after a panic: directories then keep mode 0700).
 - **Not done in v1.0:** ACL/xattr inheritance handling (`copy/meta.rs` does it for copy), restoring
   ownership, extracting onto a case-insensitive file system beyond what `copy::Published` covers.
+- **Anchored writes (FIX-M6M7 #5).** After the destination exists, every call below it goes through
+  `fs::anchored::AnchoredFs` (ADR-0004 "Anchored access"): replacing a checked parent with a symlink
+  during the job cannot redirect anything. Directory metadata is applied only to the directory with
+  the `(dev, ino)` the job created, otherwise it is skipped with a warning.

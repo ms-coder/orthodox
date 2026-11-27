@@ -88,3 +88,37 @@ Findings of the T3.5 review, fixed in T3.6a (regression tests: `crates/ofm-jobs/
   `copy_file_range` fall back to the next tier also on `EPERM`, `ETXTBSY` and on `EIO` before the
   tier copied a byte, like coreutils (m6).
 - Still open (M9): openat/unlinkat-based delete/chmod (m1), cleanup of stale `.ofm-part-*` (m7).
+
+## Anchored access (FIX-M6M7 #5, 2026-11-27)
+
+A checked parent directory could be replaced with a symlink before the next path-based call, which
+then wrote outside the destination. Additive change to the seam: `Fs::pin(path, follow) -> FsPin`
+(an `O_PATH` handle, `O_NOFOLLOW` unless `follow`; default `Unsupported`; faultable as
+`FaultOp::Pin`). `fs/anchored.rs` builds `AnchoredFs` on it: an `Fs` that opens every directory below
+one root component by component without following symlinks and performs each call on
+`/proc/self/fd/<handle>/<name>`. The root itself is opened once, following symlinks. Handles are an
+LRU of 32; the parent of the item in progress is held. Only extraction uses it (ADR-0008); copy and
+move are unchanged. Delete/chmod (m1) can reuse it. Needs `/proc` (checked: the job fails otherwise).
+
+Checks that go with it: final directory mode/mtime are applied only if the directory still has the
+`(dev, ino)` recorded when the job created it (else a warning; on vfat, whose inode numbers are not
+stable, a false mismatch skips metadata and nothing else). A hard link is published only if the new
+link has the identity of the file the job extracted. Stale handles are dropped ignoring case (vfat).
+
+Remaining windows. None of them follows a symlink below the pinned root.
+
+- **Destination path** (needs write access in an ANCESTOR of the destination): the path is resolved
+  by name, following symlinks, until it is pinned. That includes a final component that
+  `ensure_dir` has just created: replaced by a symlink before the pin, it is followed.
+- **Needs write access inside the destination:**
+  - a directory swapped between its `mkdir` or merge probe and its first pin is adopted (a real
+    directory only; a symlink is refused). Swapped before the identity is recorded after `mkdir`,
+    it also receives the final mode/mtime;
+  - a pinned directory that is moved elsewhere still receives the output and its metadata;
+  - a handle dropped from the cache is reopened by name, so another real directory put there
+    meanwhile receives later files. This covers the final chmod/mtime too, which the identity check
+    skips unless the substitute reuses the old inode number;
+  - a name inside a pinned directory can be replaced between a check and the call relying on it:
+    between the conflict probe and publish (still no-replace unless the user chose overwrite), and
+    the temp name between its check and the rename. The hard link source may be replaced at any
+    time, also while a question is open; that is detected on the link itself before publishing.
