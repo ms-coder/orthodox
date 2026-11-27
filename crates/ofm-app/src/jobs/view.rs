@@ -102,7 +102,7 @@ impl Row {
                 job.title
             ))]);
         let mode = match (job.mode, job.state) {
-            (ofm_jobs::RunMode::Parallel, s) if s != JobState::Finished => " \u{b7} parallel",
+            (ofm_jobs::RunMode::Parallel, s) if s != JobState::Finished => tr(" \u{b7} parallel"),
             _ => "",
         };
         self.state.set_text(&format!(

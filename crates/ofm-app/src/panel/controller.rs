@@ -15,6 +15,7 @@
 //! `DirGone` navigates to the nearest existing ancestor. Use [`PanelController::focus_name`] /
 //! [`PanelController::reload_and_focus`] after an operation to put the cursor on a new item.
 
+use crate::i18n::tr;
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
@@ -357,7 +358,7 @@ impl PanelController {
                     && this.generation.get() == generation
                     && this.state() == LoadState::Loading
                 {
-                    this.set_state(LoadState::Failed("listing aborted".to_owned()));
+                    this.set_state(LoadState::Failed(tr("listing aborted").to_owned()));
                 }
             },
         );

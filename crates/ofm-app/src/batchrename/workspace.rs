@@ -6,6 +6,7 @@
 //! pre-create, read or redirect it. It lives in `$XDG_RUNTIME_DIR` (a private tmpfs) when that is
 //! set, else in the system temp directory.
 
+use crate::i18n::tr;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -75,13 +76,13 @@ pub fn read_edited(file: &Path) -> io::Result<String> {
     if bytes.len() as u64 > MAX_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "the edited file is too large",
+            tr("the edited file is too large"),
         ));
     }
     String::from_utf8(bytes).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            "the edited file is not valid UTF-8",
+            tr("the edited file is not valid UTF-8"),
         )
     })
 }

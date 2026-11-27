@@ -2,6 +2,7 @@
 //! the I/O pool (`mod.rs` calls [`load_blocking`] through `wiring::run_on_pool`), never on the
 //! GTK thread. The pure part ([`build_view`]) turns the loaded data into what the dialog shows.
 
+use crate::i18n::tr;
 use std::ffi::OsStr;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -86,7 +87,7 @@ pub fn load_blocking(paths: &ConfigPaths, dir: &Path) -> Loaded {
     if let Err(e) = install_default_global(paths) {
         warnings.push(Warning {
             file: Some(paths.menu_file()),
-            message: format!("cannot create the default menu: {e}"),
+            message: format!("{}: {e}", tr("cannot create the default menu")),
         });
     }
     let (global, mut w) = UserMenu::load_global(paths);
@@ -114,13 +115,18 @@ fn load_local(store: &TrustStore, dir: &Path) -> LocalSource {
             Err(MenuReadError::Missing) => None,
             Err(MenuReadError::TooLarge) => {
                 return LocalSource::Error(format!(
-                    "{} is larger than {} KiB; not offering trust for a file that cannot be fully shown",
+                    "{}: {} ({} KiB)",
                     file.display(),
+                    tr("too large to show in full, so it cannot be trusted"),
                     MAX_MENU_BYTES / 1024
                 ));
             }
             Err(MenuReadError::Io(e)) => {
-                return LocalSource::Error(format!("cannot read {}: {e}", file.display()));
+                return LocalSource::Error(format!(
+                    "{} {}: {e}",
+                    tr("cannot read"),
+                    file.display()
+                ));
             }
         };
         let status = match store.local_menu_status(dir) {
@@ -156,8 +162,9 @@ fn load_local(store: &TrustStore, dir: &Path) -> LocalSource {
         }
     }
     LocalSource::Error(format!(
-        "{} changed while it was being read",
-        file.display()
+        "{}: {}",
+        file.display(),
+        tr("changed while it was being read")
     ))
 }
 
@@ -193,7 +200,7 @@ fn read_menu_file(file: &Path) -> Result<Vec<u8>, MenuReadError> {
     if !md.file_type().is_file() {
         return Err(MenuReadError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "not a regular file",
+            tr("not a regular file"),
         )));
     }
     let mut buf = Vec::new();
@@ -304,7 +311,7 @@ pub fn build_view(loaded: &Loaded, cursor: Option<&OsStr>, ignored: bool) -> Men
             problems.extend(warnings.iter().map(describe_warning));
         }
         LocalSource::Untrusted { .. } => local_ignored = ignored,
-        LocalSource::Error(e) => problems.push(format!("local menu: {e}")),
+        LocalSource::Error(e) => problems.push(format!("{}: {e}", tr("local menu"))),
     }
     let local_count = local_items.len();
     let merged = UserMenu::merged(

@@ -9,6 +9,7 @@ use std::rc::Rc;
 use ofm_core::{Entry, EntryKind, Location};
 
 use crate::context::AppContext;
+use crate::i18n::tr;
 use crate::panel::PanelController;
 
 /// The items an operation applies to, plus the directory they live in.
@@ -126,7 +127,7 @@ pub fn describe_names<'a>(names: impl ExactSizeIterator<Item = &'a OsStr>) -> St
         let one = names.next().map(|n| n.to_string_lossy().into_owned());
         return format!("'{}'", one.unwrap_or_default());
     }
-    format!("{} items", names.len())
+    format!("{} {}", names.len(), tr("items"))
 }
 
 /// Resolve user text typed into a path field: `~` and `~/x` expand to the home directory,
