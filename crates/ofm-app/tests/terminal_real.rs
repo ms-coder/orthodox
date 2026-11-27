@@ -13,6 +13,8 @@
 
 mod real_support;
 
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::time::{Duration, Instant};
 
 use real_support::{Running, Shot, tools_available};
@@ -147,6 +149,29 @@ fn panel_navigation_syncs_shell_cwd() {
     assert!(
         !s.left.join("marker.txt").exists(),
         "marker landed in the old directory: the shell was not synced"
+    );
+}
+
+/// The synced `cd` carries the directory's raw bytes; VTE reports them back as committed text.
+/// A name that is not UTF-8 must neither abort the app nor miss the shell.
+#[test]
+fn panel_navigation_into_a_non_utf8_directory_syncs_the_shell() {
+    if !tools_available() || !bash_available() {
+        return;
+    }
+    let s = Running::launch(CONFIG);
+    let odd = s.left.join(OsStr::from_bytes(b"a-\xff"));
+    std::fs::create_dir(&odd).unwrap();
+    std::thread::sleep(Duration::from_secs(1)); // the watcher adds it before `sub`
+    s.keys(&["Down", "ctrl+Next"]);
+
+    s.keys(&["ctrl+o"]);
+    let ready = wait_until(Duration::from_secs(20), || center(&s.shot()) >= 3);
+    assert!(ready, "shell prompt never appeared in the terminal");
+    type_line(&s, "touch marker.txt");
+    assert!(
+        wait_until(Duration::from_secs(15), || odd.join("marker.txt").exists()),
+        "marker did not appear in {odd:?}"
     );
 }
 
