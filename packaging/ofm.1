@@ -1,0 +1,112 @@
+.TH OFM 1 "2026-11-27" "ofm 0.1.0" "User Commands"
+.SH NAME
+ofm \- keyboard-first two-panel file manager
+.SH SYNOPSIS
+.B ofm
+.RI [ LEFT_DIR " [" RIGHT_DIR ]]
+.br
+.B ofm
+.BR \-h | \-\-help
+.br
+.B ofm
+.BR \-V | \-\-version
+.br
+.B ofm \-\-dump\-keys
+.I PRESET
+.SH DESCRIPTION
+OFM (Orthodox File Manager) is a two\-panel GTK 4 file manager with a command line,
+an embedded terminal, background file operations, a viewer, file search and
+read\-only archive browsing.
+.PP
+Without arguments the panels of the previous session are restored.
+When a directory is given, the stored panel paths are not restored:
+.I LEFT_DIR
+is shown on the left and
+.I RIGHT_DIR
+(default: the home directory) on the right.
+.PP
+Only one instance runs per login session.
+Starting
+.B ofm
+again presents the existing window and ignores the arguments.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Print usage and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.TP
+.BI \-\-dump\-keys " PRESET"
+Print the key reference of a built\-in keymap preset
+.RB ( far ", " tc " or " mc )
+as Markdown and exit.
+Your own
+.I keymap.toml
+is not applied.
+.PP
+These three options need no display.
+.SH KEYS
+The default preset follows Far Manager.
+Press
+.B F1
+in the program for all keys.
+.TP
+.B Tab
+Switch the active panel.
+.TP
+.BR F3 ", " F4
+View, edit.
+.TP
+.BR F5 ", " F6 ", " F7 ", " F8
+Copy, move, make directory, delete (to Trash).
+.TP
+.BR F9 ", " F10
+Menu bar, quit.
+.TP
+.B Ctrl+O
+Show or hide the panels (full terminal).
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/ofm/config.toml
+Settings.
+.TP
+.I $XDG_CONFIG_HOME/ofm/keymap.toml
+Key bindings on top of the preset.
+.TP
+.I $XDG_CONFIG_HOME/ofm/menu.toml
+User menu.
+.TP
+.I $XDG_CONFIG_HOME/ofm/themes/
+User themes.
+.TP
+.I .ofm\-menu.toml
+Per\-directory user menu, used only after you trust it.
+.TP
+.I $XDG_STATE_HOME/ofm/
+Session and history.
+.PP
+.I $XDG_CONFIG_HOME
+defaults to
+.IR ~/.config ,
+.I $XDG_STATE_HOME
+to
+.IR ~/.local/state .
+.SH ENVIRONMENT
+.TP
+.BR VISUAL ", " EDITOR
+Editor for F4 when none is configured.
+.TP
+.B SHELL
+Shell of the command line and terminal when none is configured.
+.TP
+.B RUST_LOG
+Log filter, for example
+.IR ofm=debug .
+.SH EXIT STATUS
+0 on success, 2 on a wrong command line.
+.SH SEE ALSO
+The user guide in
+.IR /usr/share/doc/ofm/USER\-GUIDE.md .
+.SH BUGS
+https://github.com/ms\-coder/orthodox/issues
