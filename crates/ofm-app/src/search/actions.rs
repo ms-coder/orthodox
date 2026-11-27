@@ -12,7 +12,7 @@ use crate::context::AppContext;
 use crate::i18n::tr;
 use crate::navigation::goto::navigate;
 use crate::panel::archive::ViewOrigin;
-use crate::panel::archive_extract::view_file_at;
+use crate::panel::archive_extract::{edit_file_at, view_file_at};
 
 /// Open the directory containing `hit` in the active panel with the cursor on it. Returns false
 /// for hits that have no location a panel can show.
@@ -69,7 +69,7 @@ pub fn edit(ctx: &Rc<AppContext>, hit: &Hit, from: Option<ViewOrigin>) -> Result
     match target {
         FileTarget::Local(path, _) => crate::desktop::editor::open_in_editor(ctx, &path),
         FileTarget::Archive(archive, inner, offset) => {
-            view_file_at(ctx, archive, inner, offset, from);
+            edit_file_at(ctx, archive, inner, offset, from);
         }
     }
     Ok(())

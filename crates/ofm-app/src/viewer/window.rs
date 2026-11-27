@@ -96,6 +96,8 @@ pub fn open(ctx: &Rc<AppContext>, siblings: Vec<PathBuf>, idx: usize) -> Option<
     right.set_xalign(1.0);
     right.set_hexpand(true);
     right.update_property(&[gtk::accessible::Property::Label(tr("Position"))]);
+    let notice = status_label("ofm-status");
+    notice.set_visible(false);
     let hint = status_label("ofm-status-dim");
     hint.set_text(&hints(ctx));
     hint.set_hexpand(true);
@@ -113,6 +115,7 @@ pub fn open(ctx: &Rc<AppContext>, siblings: Vec<PathBuf>, idx: usize) -> Option<
     let status = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     status.add_css_class("ofm-statusbox");
     status.append(&left);
+    status.append(&notice);
     status.append(&hint);
     status.append(&right);
     let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -149,6 +152,7 @@ pub fn open(ctx: &Rc<AppContext>, siblings: Vec<PathBuf>, idx: usize) -> Option<
             title,
             left,
             right,
+            notice,
             scroll,
         },
         &initial,

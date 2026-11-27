@@ -35,6 +35,8 @@ pub struct Ui {
     pub left: gtk::Label,
     /// Position summary (status line, right).
     pub right: gtk::Label,
+    /// A standing remark about this document (hidden while empty).
+    pub notice: gtk::Label,
     /// Vertical scroll bar.
     pub scroll: gtk::Scrollbar,
 }
@@ -237,6 +239,20 @@ impl Session {
         if let Some(c) = &st.search_cancel {
             c.cancel();
         }
+    }
+
+    /// Show `text` in the status line for as long as the window is open.
+    pub fn set_notice(&self, text: &str) {
+        self.ui.notice.set_text(text);
+        self.ui.notice.set_visible(true);
+    }
+
+    /// The standing remark, if there is one (tests).
+    pub fn notice_text(&self) -> Option<String> {
+        self.ui
+            .notice
+            .property::<bool>("visible")
+            .then(|| self.ui.notice.text().to_string())
     }
 
     /// Register one-shot cleanup to run when the window's close request is granted (the

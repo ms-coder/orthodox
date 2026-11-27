@@ -209,6 +209,26 @@ fn zip_navigate_extract_refuse_and_view() {
         ofm_windows(&s).len() == before.len()
     });
     wait_until("temp dir removed", || ofm_temp_dirs(tmp.path()).is_empty());
+
+    // F4 on the same entry: no editor, the viewer opens with a read-only notice (screenshot).
+    s.keys(&["F4"]);
+    wait_until("the F4 viewer window", || {
+        ofm_windows(&s).len() > before.len()
+    });
+    let viewer = ofm_windows(&s)
+        .into_iter()
+        .find(|w| !before.contains(w))
+        .unwrap();
+    s.x("xdotool", &["windowfocus", &viewer]);
+    std::thread::sleep(Duration::from_millis(900));
+    save(&s, "archive-viewer-f4-readonly");
+    s.keys(&["Escape"]);
+    wait_until("the F4 viewer closed", || {
+        ofm_windows(&s).len() == before.len()
+    });
+    wait_until("temp dir removed again", || {
+        ofm_temp_dirs(tmp.path()).is_empty()
+    });
 }
 
 /// Encrypted zip: the password dialog takes real keys (type, Enter), a wrong password asks again
