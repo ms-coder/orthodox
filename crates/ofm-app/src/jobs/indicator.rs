@@ -103,6 +103,7 @@ pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
     bar.add_css_class("ofm-progress");
     bar.set_valign(gtk::Align::Center);
     bar.set_size_request(200, -1);
+    bar.update_property(&[gtk::accessible::Property::Label(tr("Total progress"))]);
     let text = gtk::Label::builder()
         .css_classes(["ofm-status-dim"])
         .width_chars(26)

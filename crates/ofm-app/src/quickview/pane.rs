@@ -154,7 +154,9 @@ mod imp {
             obj.set_hexpand(true);
             obj.set_vexpand(true);
             obj.set_overflow(gtk::Overflow::Hidden);
-            obj.update_property(&[gtk::accessible::Property::Label("Quick view")]);
+            obj.update_property(&[gtk::accessible::Property::Label(crate::i18n::tr(
+                "Quick view",
+            ))]);
         }
     }
 

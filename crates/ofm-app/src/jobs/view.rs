@@ -95,6 +95,12 @@ impl Row {
 
     fn refresh(&self, job: &JobEntry) {
         self.title.set_text(&job.title);
+        self.bar
+            .update_property(&[gtk::accessible::Property::Label(&format!(
+                "{} {}",
+                tr("Progress of"),
+                job.title
+            ))]);
         let mode = match (job.mode, job.state) {
             (ofm_jobs::RunMode::Parallel, s) if s != JobState::Finished => " \u{b7} parallel",
             _ => "",

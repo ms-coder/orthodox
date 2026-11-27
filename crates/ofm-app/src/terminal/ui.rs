@@ -79,6 +79,7 @@ impl TerminalUi {
     ) -> Rc<Self> {
         let term = vte4::Terminal::new();
         style_terminal(ctx, &term);
+        term.update_property(&[gtk::accessible::Property::Label(tr("Terminal"))]);
         win.terminal_slot.append(&term);
         // Collapsed while the panels are up (Ctrl+O / `show()` reveals it); the widget and
         // the shell keep running hidden — showing is not re-spawning (ADR-0003).
@@ -506,6 +507,7 @@ impl TerminalUi {
         let plan: Vec<&str> = plan.iter().map(String::as_str).collect();
         let term = vte4::Terminal::new();
         style_terminal(&ctx, &term);
+        term.update_property(&[gtk::accessible::Property::Label(tr("Program terminal"))]);
         track_focus(&ctx, &term);
         add_clipboard_keys(&term);
         *self.program.borrow_mut() = Some(term.clone());
