@@ -64,7 +64,7 @@ pub fn create(fs: &dyn Fs, path: &Path) -> io::Result<Created> {
             if fs.stat(path)?.is_dir() {
                 Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
-                    "a folder with this name exists",
+                    tr("a folder with this name exists"),
                 ))
             } else {
                 Ok(Created::Existing)

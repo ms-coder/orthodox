@@ -28,7 +28,13 @@ is shown on the left and
 Only one instance runs per login session.
 Starting
 .B ofm
-again presents the existing window and ignores the arguments.
+again presents the existing window.
+Given directories open there:
+.I LEFT_DIR
+in the active panel and
+.I RIGHT_DIR
+in the other one, relative to the directory of the new command.
+A locked tab is left as it is; the directory opens in a new tab.
 .SH OPTIONS
 .TP
 .BR \-h ", " \-\-help

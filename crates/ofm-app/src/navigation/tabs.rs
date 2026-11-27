@@ -179,7 +179,11 @@ impl TabBar {
                 item.add_css_class("active");
             }
             if tab.locked() {
-                item.append(&gtk::Image::from_icon_name("changes-prevent-symbolic"));
+                let lock = gtk::Image::from_icon_name("changes-prevent-symbolic");
+                lock.update_property(&[gtk::accessible::Property::Label(crate::i18n::tr(
+                    "Locked tab",
+                ))]);
+                item.append(&lock);
             }
             let title = tab_title(&tab.location());
             let label = gtk::Label::new(Some(&title));

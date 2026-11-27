@@ -109,6 +109,9 @@ pub fn outcome_text(o: &Outcome) -> String {
             r.files_done,
             tr("files done")
         ),
+        Outcome::Failed { error, .. } if password_not_entered(error) => {
+            tr("Cancelled: no password was entered").to_owned()
+        }
         Outcome::Failed { error, .. } => format!("{}: {error}", tr("Failed")),
         Outcome::Size(t) => format!(
             "{} \u{b7} {} {} \u{b7} {} {}",
@@ -119,6 +122,12 @@ pub fn outcome_text(o: &Outcome) -> String {
             tr("folders")
         ),
     }
+}
+
+/// An extract job that stopped because the password prompt was dismissed. The engine only passes
+/// the error's text on; the unit test below pins the wording this relies on.
+pub fn password_not_entered(error: &str) -> bool {
+    error.starts_with("archive: password required for ")
 }
 
 #[cfg(test)]
@@ -148,6 +157,16 @@ mod tests {
             state_text(JobState::Finished, false, Some(Cancelling)),
             "Finished"
         );
+    }
+
+    #[test]
+    fn a_dismissed_password_prompt_is_not_a_failure() {
+        use ofm_jobs::JobError;
+        use ofm_vfs::archive::ArchiveError;
+        let none = JobError::from(ArchiveError::NeedsPassword("/a.zip".into()));
+        assert!(password_not_entered(&none.to_string()));
+        let wrong = JobError::from(ArchiveError::WrongPassword("/a.zip".into()));
+        assert!(!password_not_entered(&wrong.to_string()));
     }
 
     #[test]

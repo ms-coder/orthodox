@@ -436,6 +436,20 @@ fn password_prompt(fx: &Fixture) {
     assert_eq!(worker.join().unwrap(), None);
     assert_eq!(modals(ctx), 0);
 
+    // Dismissing a browse prompt cancels the operation, so the backend reports `Cancelled`
+    // and not "a password is required".
+    let token = ofm_core::CancelToken::new();
+    let (a, s, t) = (archive.clone(), source.clone(), token.clone());
+    let worker = std::thread::spawn(move || {
+        let _scope = ofm_app::dialogs::password::scope(&t);
+        s.password(&a, false)
+    });
+    pump_until("browse dialog", || ui.open_count() == 1);
+    ctx.execute(cmd::DIALOG_CANCEL);
+    pump_until("browse worker cancelled", || worker.is_finished());
+    assert_eq!(worker.join().unwrap(), None);
+    assert!(token.is_cancelled());
+
     // A cancelled extract job (no scope: Origin::Job) closes the dialog and frees the worker.
     let (a, s) = (archive.clone(), source.clone());
     let worker = std::thread::spawn(move || s.password(&a, false));

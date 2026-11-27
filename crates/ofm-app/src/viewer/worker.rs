@@ -6,6 +6,7 @@
 //! "one page up") or an absolute `set_top`, the worker merges requests queued behind a slow one
 //! and answers only the last, so holding a key never builds a backlog.
 
+use crate::i18n::tr;
 use std::ops::Range;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
@@ -216,7 +217,7 @@ fn page_loop(rx: &Receiver<PageReq>, out: &async_channel::Sender<Msg>) {
             cur_top = 0;
         }
         let page = catch_unwind(AssertUnwindSafe(|| compute(&req, &mut cur_top)))
-            .unwrap_or_else(|_| Err("the viewer worker panicked".to_owned()));
+            .unwrap_or_else(|_| Err(tr("the viewer worker panicked").to_owned()));
         if out
             .send_blocking(Msg::Page {
                 doc_id: req.doc_id,
@@ -375,13 +376,13 @@ pub fn parse_hex(text: &str) -> Result<Vec<u8>, String> {
         digits.push_str(tok);
     }
     if digits.is_empty() {
-        return Err("Enter hexadecimal bytes, e.g. 48 65 6C 6C 6F.".to_owned());
+        return Err(tr("Enter hexadecimal bytes, e.g. 48 65 6C 6C 6F.").to_owned());
     }
     if !digits.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err("Only the digits 0-9 and A-F are allowed.".to_owned());
+        return Err(tr("Only the digits 0-9 and A-F are allowed.").to_owned());
     }
     if !digits.len().is_multiple_of(2) {
-        return Err("The number of hexadecimal digits must be even.".to_owned());
+        return Err(tr("The number of hexadecimal digits must be even.").to_owned());
     }
     let mut out = Vec::with_capacity(digits.len() / 2);
     for pair in digits.as_bytes().chunks(2) {
@@ -407,31 +408,33 @@ pub enum GotoTarget {
 pub fn parse_goto(text: &str, offset_mode: bool) -> Result<GotoTarget, String> {
     let t = text.trim();
     if t.is_empty() {
-        return Err("Enter a line number, an offset (0x... for hex) or a percentage.".to_owned());
+        return Err(
+            tr("Enter a line number, an offset (0x... for hex) or a percentage.").to_owned(),
+        );
     }
     if let Some(p) = t.strip_suffix('%') {
         let v: f64 = p
             .trim()
             .parse()
-            .map_err(|_| "Not a valid percentage.".to_owned())?;
+            .map_err(|_| tr("Not a valid percentage.").to_owned())?;
         if !(0.0..=100.0).contains(&v) {
-            return Err("The percentage must be between 0 and 100.".to_owned());
+            return Err(tr("The percentage must be between 0 and 100.").to_owned());
         }
         return Ok(GotoTarget::Percent(v));
     }
     if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
         return u64::from_str_radix(h, 16)
             .map(GotoTarget::Offset)
-            .map_err(|_| "Not a valid hexadecimal offset.".to_owned());
+            .map_err(|_| tr("Not a valid hexadecimal offset.").to_owned());
     }
     let n: u64 = t
         .replace([' ', '_'], "")
         .parse()
-        .map_err(|_| "Not a valid number.".to_owned())?;
+        .map_err(|_| tr("Not a valid number.").to_owned())?;
     if offset_mode {
         Ok(GotoTarget::Offset(n))
     } else if n == 0 {
-        Err("Line numbers start at 1.".to_owned())
+        Err(tr("Line numbers start at 1.").to_owned())
     } else {
         Ok(GotoTarget::Line(n))
     }

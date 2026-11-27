@@ -9,6 +9,7 @@ use adw::prelude::*;
 use super::modal;
 use crate::context::AppContext;
 use crate::i18n::tr;
+use crate::jobs::ui;
 
 /// One row of the list.
 #[derive(Debug, Clone)]
@@ -81,14 +82,18 @@ pub fn open(ctx: &Rc<AppContext>, spec: ChooserSpec) -> Option<adw::Dialog> {
     } else {
         column.append(&scroller);
     }
+    let mut extra_buttons = Vec::new();
     if !spec.buttons.is_empty() {
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         row.set_halign(gtk::Align::End);
         for b in &spec.buttons {
-            let btn = gtk::Button::with_mnemonic(tr(b.label));
+            let text = tr(b.label);
+            let btn = gtk::Button::with_mnemonic(text);
+            btn.update_property(&[gtk::accessible::Property::Label(&text.replace('_', ""))]);
             let (ctx, dlg, f) = (Rc::clone(ctx), dialog.clone(), Rc::clone(&b.on_click));
             btn.connect_clicked(move |_| f(&ctx, &dlg));
             row.append(&btn);
+            extra_buttons.push(btn);
         }
         column.append(&row);
     }
@@ -97,6 +102,9 @@ pub fn open(ctx: &Rc<AppContext>, spec: ChooserSpec) -> Option<adw::Dialog> {
     if let Some(row) = list.row_at_index(spec.selected.try_into().unwrap_or(0)) {
         list.select_row(Some(&row));
         dialog.set_focus(Some(&row));
+    } else if let Some(button) = extra_buttons.first() {
+        // An empty chooser still has a useful, safe keyboard starting point (e.g. Hotlist > Add).
+        dialog.set_focus(Some(button));
     }
 
     // Mouse / row activation picks too.
@@ -109,8 +117,16 @@ pub fn open(ctx: &Rc<AppContext>, spec: ChooserSpec) -> Option<adw::Dialog> {
         });
     }
     let shown = {
-        let (ctx2, pick, list) = (Rc::clone(ctx), Rc::clone(&spec.on_pick), list.clone());
+        let (ctx2, ctx_ok, pick, list) = (
+            Rc::clone(ctx),
+            Rc::clone(ctx),
+            Rc::clone(&spec.on_pick),
+            list.clone(),
+        );
         modal::present(ctx, &dialog, move || {
+            if ui::activate_focused_button(&ctx_ok) {
+                return false; // Add / Edit (or another extra action) closes if appropriate.
+            }
             match list
                 .selected_row()
                 .and_then(|r| usize::try_from(r.index()).ok())

@@ -436,7 +436,7 @@ fn copy_bounded(
 
 /// F3/F4/Enter on the entry under the cursor of an archive panel: files open read-only in the
 /// viewer (extracted to a private temp file first), folders show their size.
-pub fn view_cursor(ctx: &Rc<AppContext>) {
+pub fn view_cursor(ctx: &Rc<AppContext>, editing: bool) {
     let ctrl = ctx.active_controller();
     let (entry, loc) = {
         let model = ctrl.model();
@@ -453,7 +453,11 @@ pub fn view_cursor(ctx: &Rc<AppContext>) {
         k if k.is_dir_like() => calc_dirs(ctx, &ctrl, vec![entry.name]),
         EntryKind::File => {
             let (archive, path) = (archive.to_owned(), inner.join(&entry.name));
-            view_file(ctx, archive, path);
+            if editing {
+                edit_file_at(ctx, archive, path, None, None);
+            } else {
+                view_file(ctx, archive, path);
+            }
         }
         _ => message::show(ctx, tr("Only regular files can be viewed.")),
     }
@@ -464,6 +468,11 @@ pub fn view_file(ctx: &Rc<AppContext>, archive: PathBuf, inner: PathBuf) {
     view_file_at(ctx, archive, inner, None, None);
 }
 
+/// The notice shown when F4 on an archive entry opens the viewer instead of the editor.
+pub fn read_only_notice() -> &'static str {
+    tr("Read-only (in archive)")
+}
+
 /// View an archive entry and scroll to `offset` after its document opens. `from`: the window the
 /// view was asked for in, when it is not the main window.
 pub fn view_file_at(
@@ -472,6 +481,28 @@ pub fn view_file_at(
     inner: PathBuf,
     offset: Option<u64>,
     from: Option<ViewOrigin>,
+) {
+    open_entry(ctx, archive, inner, offset, from, None);
+}
+
+/// F4 on an archive entry: like [`view_file_at`], and the viewer says why it is not an editor.
+pub fn edit_file_at(
+    ctx: &Rc<AppContext>,
+    archive: PathBuf,
+    inner: PathBuf,
+    offset: Option<u64>,
+    from: Option<ViewOrigin>,
+) {
+    open_entry(ctx, archive, inner, offset, from, Some(read_only_notice()));
+}
+
+fn open_entry(
+    ctx: &Rc<AppContext>,
+    archive: PathBuf,
+    inner: PathBuf,
+    offset: Option<u64>,
+    from: Option<ViewOrigin>,
+    notice: Option<&'static str>,
 ) {
     let Some(st) = state(ctx) else { return };
     let cancel = CancelToken::new();
@@ -520,7 +551,7 @@ pub fn view_file_at(
                 None => {}
             }
             match result {
-                Ok(x) if current => open_in_viewer(&ctx, x, offset),
+                Ok(x) if current => open_in_viewer(&ctx, x, offset, notice),
                 Ok(x) => remove_temp_later(&ctx, x.dir), // cancelled meanwhile
                 Err(ExtractFail::Cancelled) => {}
                 Err(e) if current => {
@@ -541,9 +572,17 @@ fn remove_temp_later(ctx: &Rc<AppContext>, dir: PathBuf) {
 }
 
 /// Open the extracted file; its directory is deleted when the viewer window closes.
-fn open_in_viewer(ctx: &Rc<AppContext>, x: Extracted, offset: Option<u64>) {
+fn open_in_viewer(
+    ctx: &Rc<AppContext>,
+    x: Extracted,
+    offset: Option<u64>,
+    notice: Option<&'static str>,
+) {
     match crate::viewer::window::open(ctx, vec![x.file.clone()], 0) {
         Some(session) => {
+            if let Some(notice) = notice {
+                session.set_notice(notice);
+            }
             let (service, pool, dir) = (
                 ctx.services.archives.clone(),
                 ctx.services.pool.clone(),
@@ -639,6 +678,7 @@ pub fn calc_dirs(ctx: &Rc<AppContext>, ctrl: &Rc<super::PanelController>, names:
             };
             match result {
                 Ok(sizes) => show_sizes(&ctx, &ctrl, &location, sizes),
+                Err(ArchiveError::Cancelled) => {} // e.g. the password prompt was dismissed
                 Err(e) => report_error(&ctx, &error_text(&e)),
             }
             std::ops::ControlFlow::Break(())

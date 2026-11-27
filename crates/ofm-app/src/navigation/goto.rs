@@ -178,7 +178,7 @@ fn open_cursor(ctx: &Rc<AppContext>, run: bool) {
     // Inside an archive Enter views the entry (read-only); never runs or opens it.
     if crate::panel::archive::is_archive(&here) {
         if run {
-            crate::panel::archive_extract::view_cursor(ctx);
+            crate::panel::archive_extract::view_cursor(ctx, false);
         }
         return;
     }

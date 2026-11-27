@@ -264,6 +264,20 @@ fn dialogs_scenario() {
     fx.run(cmd::DIALOG_OK);
     assert_eq!(fx.modal_depth(), 0, "Enter hit the focused Cancel button");
     assert_eq!(cap.submitted.borrow().len(), 6, "nothing was submitted");
+    // Ticking the box inside the Trash dialog of a folder must not leave Enter deleting.
+    fx.run(cmd::FILE_DELETE);
+    pump_for(400);
+    fx.check("ofm-delete-permanent").set_active(true);
+    fx.run(cmd::DIALOG_OK);
+    assert_eq!(fx.modal_depth(), 0);
+    assert_eq!(cap.submitted.borrow().len(), 6, "nothing was submitted");
+    // The same with the focus on the check box itself.
+    fx.run(cmd::FILE_DELETE_PERMANENT);
+    pump_for(400);
+    fx.check("ofm-delete-permanent").grab_focus();
+    fx.run(cmd::DIALOG_OK);
+    assert_eq!(fx.modal_depth(), 0);
+    assert_eq!(cap.submitted.borrow().len(), 6, "nothing was submitted");
     // Confirming goes through the Delete button.
     fx.run(cmd::FILE_DELETE_PERMANENT);
     fx.button("ofm-delete-run").emit_clicked();

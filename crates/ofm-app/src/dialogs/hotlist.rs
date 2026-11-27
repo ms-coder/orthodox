@@ -12,6 +12,7 @@ use ofm_core::{Location, cmd};
 use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
 use crate::i18n::tr;
+use crate::jobs::ui;
 use crate::navigation::chooser::{self, ChoiceRow, ChooserButton, ChooserSpec};
 use crate::navigation::goto::navigate;
 use crate::navigation::modal;
@@ -300,9 +301,11 @@ pub fn edit(ctx: &Rc<AppContext>) {
     editor.rebuild(Some(0));
     dialog.set_focus(Some(&list));
 
-    let editor2 = Rc::clone(&editor);
-    let store2 = Rc::clone(&store);
+    let (editor2, store2, ctx_ok) = (Rc::clone(&editor), Rc::clone(&store), Rc::clone(ctx));
     modal::present(ctx, &dialog, move || {
+        if ui::activate_focused_button(&ctx_ok) {
+            return false; // Add / Remove / Move: editing is not finished yet.
+        }
         let kept: Vec<Bookmark> = editor2
             .items
             .borrow()

@@ -5,6 +5,7 @@
 //! progress row uses) that hides itself after a few seconds. Colours come from the theme through
 //! the `ofm-statusbox` / `ofm-status` classes.
 
+use crate::i18n::tr;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
@@ -41,7 +42,7 @@ pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .css_classes(["ofm-status"])
         .build();
-    label.update_property(&[gtk::accessible::Property::Label("Compare result")]);
+    label.update_property(&[gtk::accessible::Property::Label(tr("Compare result"))]);
     label.set_accessible_role(gtk::AccessibleRole::Status);
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     row.add_css_class("ofm-statusbox");

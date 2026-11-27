@@ -188,6 +188,7 @@ fn progress_dialog(
     let column = modal::padded_column(8);
     let spinner = gtk::Spinner::new();
     spinner.set_spinning(true);
+    spinner.update_property(&[gtk::accessible::Property::Label(tr("Command is running"))]);
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     top.append(&spinner);
     let what = ui::label(command);

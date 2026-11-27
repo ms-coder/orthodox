@@ -11,6 +11,7 @@ use std::rc::{Rc, Weak};
 
 use gtk::gio;
 use gtk::glib;
+use gtk::glib::translate::ToGlibPtr;
 use gtk::prelude::*;
 use ofm_core::Location;
 use ofm_core::cmdline::{QuoteStyle, cd_command_for, osc7_parse};
@@ -79,6 +80,7 @@ impl TerminalUi {
     ) -> Rc<Self> {
         let term = vte4::Terminal::new();
         style_terminal(ctx, &term);
+        term.update_property(&[gtk::accessible::Property::Label(tr("Terminal"))]);
         win.terminal_slot.append(&term);
         // Collapsed while the panels are up (Ctrl+O / `show()` reveals it); the widget and
         // the shell keep running hidden — showing is not re-spawning (ADR-0003).
@@ -138,13 +140,24 @@ impl TerminalUi {
         // that a fed `cd` would be appended to, until Enter / Ctrl-C / the next prompt.
         {
             let weak = self.weak();
-            self.term.connect_commit(move |_, text, _| {
-                let Some(ui) = weak.upgrade() else { return };
+            // Not `connect_commit`: it asserts that the text is UTF-8 and aborts the process
+            // otherwise, and our own `cd` line carries a directory name's raw bytes.
+            self.term.connect_local("commit", false, move |args| {
+                let ui = weak.upgrade()?;
+                let value = args.get(1)?;
+                // SAFETY: the first parameter of `commit` is a `gchararray`; the string is
+                // NUL-terminated and owned by `value`, which outlives this closure call.
+                let bytes = unsafe {
+                    let p = glib::gobject_ffi::g_value_get_string(value.to_glib_none().0);
+                    (!p.is_null()).then(|| std::ffi::CStr::from_ptr(p).to_bytes())
+                }?;
+                let text = String::from_utf8_lossy(bytes);
                 ui.line_dirty
-                    .set(shell::line_dirty_after(ui.line_dirty.get(), text));
+                    .set(shell::line_dirty_after(ui.line_dirty.get(), &text));
                 if text.contains('\r') && ui.host.get() != ShellState::Exited {
                     ui.host.set(ShellState::Busy);
                 }
+                None
             });
         }
 
@@ -506,6 +519,7 @@ impl TerminalUi {
         let plan: Vec<&str> = plan.iter().map(String::as_str).collect();
         let term = vte4::Terminal::new();
         style_terminal(&ctx, &term);
+        term.update_property(&[gtk::accessible::Property::Label(tr("Program terminal"))]);
         track_focus(&ctx, &term);
         add_clipboard_keys(&term);
         *self.program.borrow_mut() = Some(term.clone());

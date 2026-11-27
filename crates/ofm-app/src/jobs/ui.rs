@@ -72,14 +72,18 @@ pub fn button_row(buttons: &[&gtk::Button]) -> gtk::Box {
 /// Enter pressed (`dialog.ok`) while a push button has the focus: press that button instead of
 /// the dialog's default action. Returns true if a button was pressed.
 pub fn activate_focused_button(ctx: &AppContext) -> bool {
-    let Some(win) = ctx.window() else {
-        return false;
-    };
-    let Some(focus) = gtk::prelude::RootExt::focus(&win.window) else {
-        return false;
-    };
+    // Ask the dialog itself, not just the main window: a password or viewer dialog can be
+    // presented over another toplevel, whose focused button the main window does not know.
+    let focus = ctx
+        .ext
+        .get::<modal::ModalStack>()
+        .and_then(|stack| stack.focus_widget())
+        .or_else(|| {
+            ctx.window()
+                .and_then(|win| gtk::prelude::RootExt::focus(&win.window))
+        });
     // `emit_clicked` (not `activate`): a mapped button delays `activate` by a visual 250 ms.
-    if let Some(button) = focus.downcast_ref::<gtk::Button>() {
+    if let Some(button) = focus.as_ref().and_then(|f| f.downcast_ref::<gtk::Button>()) {
         button.emit_clicked();
         return true;
     }

@@ -1,6 +1,7 @@
 //! User/group name tables for the properties dialog. Reading `/etc/passwd` and `/etc/group`
 //! happens on a worker (through the `Fs` seam of `ofm-jobs`), the dialog only sees the result.
 
+use crate::i18n::tr;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::path::Path;
@@ -89,12 +90,12 @@ impl IdNames {
 
     /// Resolve user text: a number, or a known name.
     pub fn user_id(&self, text: &str) -> Result<u32, String> {
-        resolve(text, &self.users).ok_or_else(|| format!("unknown user '{text}'"))
+        resolve(text, &self.users).ok_or_else(|| format!("{} '{text}'", tr("unknown user")))
     }
 
     /// Resolve group text: a number, or a known name.
     pub fn group_id(&self, text: &str) -> Result<u32, String> {
-        resolve(text, &self.groups).ok_or_else(|| format!("unknown group '{text}'"))
+        resolve(text, &self.groups).ok_or_else(|| format!("{} '{text}'", tr("unknown group")))
     }
 }
 

@@ -8,6 +8,7 @@
 //!   I/O pool thread: a long command must not starve directory listings). stdout and stderr go
 //!   into bounded buffers; the outcome comes back over a channel.
 
+use crate::i18n::tr;
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::Read;
@@ -162,7 +163,7 @@ pub fn run_blocking(command: &[u8], cwd: &Path) -> Outcome {
             signal: s.signal(),
             stderr: stderr.last_lines(SHOWN_LINES),
         },
-        Err(e) => Outcome::SpawnFailed(format!("waiting for the command: {e}")),
+        Err(e) => Outcome::SpawnFailed(format!("{}: {e}", tr("waiting for the command"))),
     }
 }
 

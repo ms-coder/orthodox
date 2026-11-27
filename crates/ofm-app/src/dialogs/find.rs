@@ -214,7 +214,7 @@ impl FindWindow {
         let text_regex = check(tr("_Regular expression"), "ofm-find-regex", false);
         let text_case = check(tr("Ca_se sensitive"), "ofm-find-text-case", false);
         let whole_words = check(tr("_Whole words"), "ofm-find-whole", false);
-        let names: Vec<&str> = ENCODING_CHOICES.iter().map(|(_, n)| *n).collect();
+        let names: Vec<&str> = ENCODING_CHOICES.iter().map(|(_, n)| tr(n)).collect();
         let encoding = gtk::DropDown::from_strings(&names);
         encoding.set_widget_name("ofm-find-encoding");
         encoding.update_property(&[gtk::accessible::Property::Label(tr("Text encoding"))]);

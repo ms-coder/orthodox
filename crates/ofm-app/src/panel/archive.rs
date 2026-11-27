@@ -412,6 +412,11 @@ impl ArchiveState {
         self.serial.get() == serial
     }
 
+    /// The operation `serial` is current and has not ended yet.
+    pub fn is_running(&self, serial: u64) -> bool {
+        self.is_current(serial) && self.busy()
+    }
+
     /// Esc: cancel the running operation. Returns whether there was one.
     pub fn cancel_current(&self) -> bool {
         match self.current.borrow_mut().take() {
@@ -480,8 +485,9 @@ pub(crate) fn busy_after(ctx: &Rc<AppContext>, serial: u64, text: &'static str) 
     let weak = Rc::downgrade(ctx);
     gtk::glib::timeout_add_local_once(SHOW_BUSY_AFTER, move || {
         let Some(ctx) = weak.upgrade() else { return };
+        // A fast operation may be over already: the message would then never go away.
         if let Some(st) = state(&ctx)
-            && st.is_current(serial)
+            && st.is_running(serial)
         {
             message::show_sticky(&ctx, text);
         }
@@ -503,7 +509,7 @@ pub(crate) fn busy_after_in(
         let current = weak
             .upgrade()
             .and_then(|ctx| state(&ctx))
-            .is_some_and(|st| st.is_current(serial));
+            .is_some_and(|st| st.is_running(serial));
         if current && let Some(label) = label.upgrade() {
             *previous.borrow_mut() = Some(label.text());
             label.set_text(text);
@@ -672,7 +678,9 @@ pub fn intercept(ctx: &Rc<AppContext>, command: CommandId) -> bool {
     match command {
         c if c == cmd::FILE_COPY => super::archive_extract::present(ctx, false),
         c if c == cmd::FILE_MOVE => super::archive_extract::present(ctx, true),
-        c if c == cmd::FILE_VIEW || c == cmd::FILE_EDIT => super::archive_extract::view_cursor(ctx),
+        c if c == cmd::FILE_VIEW || c == cmd::FILE_EDIT => {
+            super::archive_extract::view_cursor(ctx, c == cmd::FILE_EDIT);
+        }
         c if c == cmd::FILE_CALC_SIZE => super::archive_extract::calc_sizes(ctx),
         _ => return false,
     }
@@ -683,6 +691,15 @@ pub fn intercept(ctx: &Rc<AppContext>, command: CommandId) -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_finished_operation_is_current_but_not_running() {
+        let st = ArchiveState::default();
+        let serial = st.begin(&CancelToken::new());
+        assert!(st.is_running(serial));
+        st.end(serial);
+        assert!(st.is_current(serial) && !st.is_running(serial));
+    }
 
     #[test]
     fn disabled_operation_table() {

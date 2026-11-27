@@ -131,7 +131,8 @@ fn dialog_rules(p: &Palette, font: &str, radius: &str) -> String {
     let mut s = String::new();
     let _ = writeln!(
         s,
-        "dialog.ofm-dialog, dialog.ofm-dialog sheet, dialog.ofm-dialog .background, \
+        "dialog.ofm-dialog {{ {font}color: {fg}; }}\n\
+         dialog.ofm-dialog sheet, dialog.ofm-dialog .background, \
          dialog.ofm-dialog toolbarview, dialog.ofm-dialog headerbar {{ {font}background: {bg}; \
             background-color: {bg}; color: {fg}; }}\n\
          dialog.ofm-dialog headerbar {{ box-shadow: none; border-bottom: 1px solid {border}; }}\n\
@@ -144,6 +145,7 @@ fn dialog_rules(p: &Palette, font: &str, radius: &str) -> String {
          dialog.ofm-dialog button {{ {radius}background: {btn_bg}; color: {btn_fg}; \
             border: 1px solid {border}; box-shadow: none; background-image: none; }}\n\
          dialog.ofm-dialog button label {{ color: {btn_fg}; }}\n\
+         dialog.ofm-dialog windowcontrols button {{ background: transparent; color: {fg}; border: none; }}\n\
          dialog.ofm-dialog button:hover, dialog.ofm-dialog button:focus, \
          dialog.ofm-dialog button:checked {{ background: {focus_bg}; color: {focus_fg}; }}\n\
          dialog.ofm-dialog button:hover label, dialog.ofm-dialog button:focus label, \
@@ -218,14 +220,17 @@ pub fn generate(palette: &Palette) -> String {
         bg = css(&p.bg),
         active = css(&palette.cursor.active_bg),
     );
+    // The active header uses the cursor colours, made readable (Commander Light's white on
+    // orange is below WCAG AA for text this size).
+    let (path_bg, path_fg) = readable(palette.cursor.active_bg, palette.cursor.active_fg);
     let _ = writeln!(
         s,
         ".ofm-path {{ {font}background-color: {}; color: {}; padding: 2px 8px; }}\n\
          .ofm-panel.active .ofm-path {{ background-color: {}; color: {}; }}",
         css(&p.header_bg),
         css(&p.header_fg),
-        css(&palette.cursor.active_bg),
-        css(&palette.cursor.active_fg),
+        css(&path_bg),
+        css(&path_fg),
     );
     let _ = writeln!(
         s,
@@ -329,6 +334,29 @@ mod tests {
     fn palette(id: &str) -> Palette {
         let theme = Theme::builtin(id).expect("builtin");
         Palette::from_theme(Rc::new(theme), SystemColors::fallback())
+    }
+
+    #[test]
+    fn active_path_header_is_readable_in_the_light_theme() {
+        let p = palette("commander-light");
+        let (bg, fg) = readable(p.cursor.active_bg, p.cursor.active_fg);
+        assert!(
+            crate::theme::palette::contrast_ratio(bg, fg) >= crate::theme::palette::MIN_CONTRAST
+        );
+        let rule = format!(
+            ".ofm-panel.active .ofm-path {{ background-color: {}; color: {}; }}",
+            css(&bg),
+            css(&fg)
+        );
+        assert!(generate(&p).contains(&rule));
+    }
+
+    #[test]
+    fn dialog_background_leaves_the_dimmed_window_visible() {
+        // The `dialog` node covers the whole parent window: only the sheet may be opaque.
+        let text = generate(&palette("far-blue"));
+        assert!(text.contains("dialog.ofm-dialog sheet"));
+        assert!(!text.contains("dialog.ofm-dialog, "));
     }
 
     #[test]
