@@ -9,14 +9,14 @@
 mod t32_support;
 
 use std::fs;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ofm_core::Location;
 use ofm_jobs::fs::faulty::FaultyFs;
-use ofm_jobs::{CopyOpts, ErrorAction, Fs, JobSpec, ModeChange, Outcome, run_sync};
+use ofm_jobs::{CopyOpts, ErrorAction, Fs, JobSpec, ModeChange, Outcome, OwnerChange, run_sync};
 use ofm_testkit::fault::{FaultErrno, FaultOp, FaultPlan};
 use ofm_testkit::temp::TempDir;
 use t32_support::{TestFs, error_policy, no_questions, questions, report};
@@ -310,4 +310,36 @@ fn merging_move_does_not_move_out_of_a_swapped_directory() {
     assert!(asked > 0);
     w.assert_outside_untouched();
     assert_eq!(fs::read_dir(w.p("dest/d")).unwrap().count(), 0);
+}
+
+/// A real `chown` through the handles (only groups can be changed without privilege): files,
+/// folders and links get the group, a link's target outside does not.
+#[test]
+fn recursive_chown_changes_the_tree_and_no_link_target() {
+    let w = World::new();
+    symlink(w.p("outside/a"), w.p("tree/link")).unwrap();
+    let gid_of = |rel: &str| fs::symlink_metadata(w.p(rel)).unwrap().gid();
+    let before = gid_of("tree");
+    let groups = rustix::process::getgroups().unwrap();
+    let Some(group) = groups.iter().map(|g| g.as_raw()).find(|&g| g != before) else {
+        eprintln!("SKIP: no supplementary group");
+        return;
+    };
+    let spec = JobSpec::SetAttrs {
+        paths: vec![w.p("tree")],
+        mode: None,
+        owner: Some(OwnerChange {
+            uid: None,
+            gid: Some(group),
+        }),
+        recursive: true,
+    };
+    let (sink, rec) = no_questions();
+    let out = run_sync(&spec, Arc::new(TestFs::real()), sink);
+    assert!(matches!(out, Outcome::Ok(_)), "{out:?}");
+    assert!(questions(&rec).is_empty());
+    for rel in ["tree", "tree/d", "tree/d/a", "tree/d/b", "tree/link"] {
+        assert_eq!(gid_of(rel), group, "{rel}");
+    }
+    assert_eq!(gid_of("outside/a"), before);
 }
