@@ -177,10 +177,10 @@ impl Mover {
     ) -> Result<(), JobError> {
         let fs = ctx.fs();
         let entered = ctx.attempt(src, Operation::Move, |_| enter(&fs, parent, src, st))?;
-        let Some(dir) = entered else {
+        let Some(entered) = entered else {
             return Ok(());
         };
-        let Some(mut names) = ctx.attempt(src, Operation::Move, |_| dir.list())? else {
+        let Some(mut names) = ctx.attempt(src, Operation::Move, |_| entered.dir.list())? else {
             return Ok(());
         };
         names.sort_by(|a, b| {
@@ -192,12 +192,12 @@ impl Mover {
         }
         ctx.add_total(names.len() as u64, 0);
         for name in &names {
-            self.item(ctx, &src.join(name), &dest.join(name), Some(&dir), false)?;
+            let (from, to) = (src.join(name), dest.join(name));
+            self.item(ctx, &from, &to, Some(&entered.dir), false)?;
         }
-        drop(dir);
         loop {
             ctx.checkpoint()?;
-            match within(&*fs, parent, src, |fs, p| fs.rmdir(p)) {
+            match entered.remove_dir(src) {
                 Ok(()) => break,
                 Err(e)
                     if e.raw_os_error() == Some(ENOTEMPTY)
