@@ -424,10 +424,11 @@ impl ArchiveIndex {
     /// below it. Safe winners only, ascending id = archive order, no duplicates. Unknown paths are
     /// ignored (the caller compares counts if it cares).
     pub fn select(&self, paths: &[PathBuf]) -> Vec<EntryId> {
+        let selected: HashSet<PathBuf> = paths.iter().cloned().collect();
         let mut out: Vec<EntryId> = self
             .by_path
             .iter()
-            .filter(|(p, _)| paths.iter().any(|sel| p.starts_with(sel)))
+            .filter(|(path, _)| path.ancestors().any(|a| selected.contains(a)))
             .map(|(_, id)| *id)
             .collect();
         out.sort();
@@ -594,6 +595,28 @@ mod tests {
         assert_eq!(names(ix.list_dir(Path::new("alias"))), ["real/f"]);
         let row = ix.to_entry(ix.lookup(Path::new("alias")).unwrap());
         assert!(row.kind.is_dir_like());
+    }
+
+    #[test]
+    fn selects_one_hundred_thousand_names_without_quadratic_scanning() {
+        use std::time::{Duration, Instant};
+
+        const COUNT: usize = 100_000;
+        let paths: Vec<PathBuf> = (0..COUNT).map(|i| PathBuf::from(format!("f{i}"))).collect();
+        let mut b = builder();
+        for path in &paths {
+            b.push(file(path.to_str().unwrap(), 1)).unwrap();
+        }
+        let ix = b.finish().unwrap();
+
+        let started = Instant::now();
+        let selected = ix.select(&paths);
+        let elapsed = started.elapsed();
+        assert_eq!(selected.len(), COUNT);
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "selecting {COUNT} flat names took {elapsed:?}"
+        );
     }
 
     #[test]
