@@ -122,3 +122,12 @@ Remaining windows. None of them follows a symlink below the pinned root.
     between the conflict probe and publish (still no-replace unless the user chose overwrite), and
     the temp name between its check and the rename. The hard link source may be replaced at any
     time, also while a question is open; that is detected on the link itself before publishing.
+
+## M9 data-safety fixes (2026-11-27)
+
+- **Retransmitted `link` (N4).** In the `link` + `unlink` fallback, `EEXIST` counts as success only
+  if `from` and `to` are the object `from` was before the call AND its link count grew by exactly
+  one (NFSv3 retransmission of a `link` whose reply was lost). Identity alone is not enough: on a
+  case-insensitive file system two spellings are one entry, and unlinking `from` would delete the
+  only copy. A file system or attribute cache that does not show the new count keeps the old
+  behaviour (a conflict is asked, nothing is removed).

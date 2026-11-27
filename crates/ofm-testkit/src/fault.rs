@@ -174,6 +174,10 @@ pub enum FaultEffect {
         /// Number of bytes to report as written.
         bytes: usize,
     },
+    /// The call is performed, but reports this error afterwards: the server did the work and the
+    /// reply was lost (an NFS client retransmitting `link` then sees `EEXIST`). Applies to
+    /// `FaultOp::HardLink`.
+    LostReply(FaultErrno),
 }
 
 /// One injected fault.
@@ -239,6 +243,17 @@ impl FaultPlan {
             op: FaultOp::FileWrite,
             at: Occurrence::Nth(nth),
             effect: FaultEffect::ShortWrite { bytes },
+        });
+        self
+    }
+
+    /// Perform the n-th call of `op` and then report `errno` all the same (1-based, see
+    /// [`FaultEffect::LostReply`]).
+    pub fn lose_reply_nth(mut self, op: FaultOp, nth: u64, errno: FaultErrno) -> Self {
+        self.faults.push(Fault {
+            op,
+            at: Occurrence::Nth(nth),
+            effect: FaultEffect::LostReply(errno),
         });
         self
     }
@@ -329,6 +344,16 @@ mod tests {
         assert_eq!(
             plan.effect_for(FaultOp::OpenRead, 3),
             Some(FaultEffect::Error(FaultErrno::NoSpace))
+        );
+    }
+
+    #[test]
+    fn lost_reply_fires_at_the_nth_call() {
+        let plan = FaultPlan::new().lose_reply_nth(FaultOp::HardLink, 2, FaultErrno::Raw(17));
+        assert_eq!(plan.effect_for(FaultOp::HardLink, 1), None);
+        assert_eq!(
+            plan.effect_for(FaultOp::HardLink, 2),
+            Some(FaultEffect::LostReply(FaultErrno::Raw(17)))
         );
     }
 
