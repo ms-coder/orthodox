@@ -4,9 +4,8 @@ The lead keeps this file current after every task. A fresh session must be able 
 
 ## Current state
 
-- **Waiting for Igor at gate G3** (2026-11-27). M6 and M7 done (tags m6-done, m7-done); M8 merged, `m8-done` not tagged until G3 feedback is handled. Full `./scripts/locked-check.sh` green on main: 1507 passed, 0 failed, 12 ignored.
-- Next step: read Igor's G3 feedback into the "Gate feedback log", fix what they find, tag m8-done, then M9. Do not start M9 before they answer.
-- G2 is still partly unanswered (see "Still open from earlier gates" in docs/G3-CHECKLIST.md).
+- **Autonomous run to a release candidate** (Igor, 2026-11-27): no stopping at G3/G4; the lead decides open questions; Igor tests the finished result. Order: M8 leftovers -> M9 hardening -> M10 packaging -> `1.0.0-rc.1` (tag v1.0.0-rc.1). Final `v1.0.0` only after Igor has tried it.
+- Full check was green at the G3 hand-over (1507 passed). M6, M7 tagged done.
 
 ## G3: please try this
 
@@ -103,6 +102,7 @@ Status values: `not started` · `in progress` · `review` · `waiting for Igor` 
 
 | Gate | Date | Igor's feedback | Resulting tasks |
 |---|---|---|---|
+| G3 | 2026-11-27 | "you please decide for all questions, i will test already finished result, just continue autonomously" | decisions below; M9, M10 |
 | G1 | 2026-11-15 | "file manager looks great, really cool, continue with other milestones". Earlier report: small stray dots left of the list in empty area (Wayland session). | Dots not reproducible on Xvfb (cairo+ngl, scale 1/2, text scale 1.25; 24 captures clean); code review found no draw path. Asked Igor to try GSK_RENDERER=cairo / GDK_BACKEND=x11 — no answer yet. Deferred to M9 hardening unless it reappears. |
 
 ## Decisions and deviations
@@ -283,3 +283,12 @@ Open: #8/#9 half-written in WIP commit on m8/fix-m6m7-review (ofm-jobs tests ext
 ## 2026-11-27 — G3 reached
 - Merged after the last note: extraction selection fix (b25e13f), interface follow-up (677451f: F9 Left/Right, no-op F6 boxes hidden, "permanently" texts with trash=false, test scripts cut off from the real D-Bus/Wayland session, codec-limit message, 64 MiB refusal up front, Find-window prompts). The last small merge (677451f) was verified by its tests and the full check, not by a separate review.
 - M9 backlog additions: F30 highlight icons; tc/mc preset depth; themes dir created later not watched; cancelling a password prompt reports "A password is required"; F4 editor-launch errors from Find go to the main window.
+
+## 2026-11-27 — lead decisions (delegated by Igor)
+1. Batch-rename undo stays name-based for 1.0 (nothing is ever overwritten); document it in the user guide.
+2. F3/F4 on archive entries keeps the 64 MiB limit.
+3. tc and mc keymap presets get made reasonably faithful (F29 names them as presets).
+4. F30 icons are implemented before tagging m8-done.
+5. Deferred data-safety items (M3 m1, m7, N4, N5) are fixed in M9.
+6. Release stops at tag v1.0.0-rc.1; nothing is pushed by Claude (denied by settings).
+- Wave 1: icons (Sonnet ui), data-safety backlog (Sonnet fileops), fuzz T9.3 (Sonnet test), presets + themes watch (Kimi, ../orthodox-wt-presets).
