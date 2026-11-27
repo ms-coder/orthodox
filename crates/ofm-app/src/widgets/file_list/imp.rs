@@ -416,18 +416,15 @@ impl FileList {
             return;
         };
         let model = ctrl.model();
-        let desc = match (model.cursor(), model.cursor_entry()) {
-            (Some(i), Some(e)) => format!(
-                "{}, {} / {}",
-                String::from_utf8_lossy(e.name.as_bytes()),
-                i + 1,
-                model.visible_len()
-            ),
-            _ => String::new(),
-        };
+        let desc = cursor_announcement(model.cursor(), model.cursor_entry(), model.visible_len());
         drop(model);
-        self.obj()
-            .update_property(&[gtk::accessible::Property::Description(&desc)]);
+        let obj = self.obj();
+        obj.update_property(&[gtk::accessible::Property::Description(&desc)]);
+        // A custom-drawn list has no accessible row objects whose selection could be announced.
+        // GTK 4.14's announcement API is the supported way to report cursor movement instead.
+        if !desc.is_empty() && obj.is_mapped() {
+            obj.announce(&desc, gtk::AccessibleAnnouncementPriority::Medium);
+        }
     }
 
     // ---- scrolling ----------------------------------------------------------------------------
@@ -600,6 +597,28 @@ impl FileList {
     }
 }
 
+/// Screen-reader text for the cursor row. Non-UTF-8 names use the same lossy display as the list.
+fn cursor_announcement(
+    cursor: Option<u32>,
+    entry: Option<&ofm_core::Entry>,
+    visible_len: u32,
+) -> String {
+    let (Some(index), Some(entry)) = (cursor, entry) else {
+        return String::new();
+    };
+    let name = if is_parent(entry) {
+        tr("Up one level").to_owned()
+    } else {
+        String::from_utf8_lossy(entry.name.as_bytes()).into_owned()
+    };
+    format!(
+        "{name}, {} {} {} {visible_len}",
+        tr("row"),
+        index + 1,
+        tr("of")
+    )
+}
+
 /// Move the model cursor to `idx` through `cursor_move` (which also cancels a pending
 /// "cursor on name" request of the controller).
 fn move_cursor_to(ctrl: &PanelController, idx: u32) {
@@ -611,5 +630,38 @@ fn move_cursor_to(ctrl: &PanelController, idx: u32) {
         && delta != 0
     {
         ctrl.cursor_move(CursorMove::By(delta));
+    }
+}
+
+#[cfg(test)]
+mod a11y_tests {
+    use std::os::unix::ffi::OsStringExt;
+
+    use ofm_core::{Entry, EntryKind};
+
+    use super::*;
+
+    #[test]
+    fn cursor_text_names_the_row_and_translates_parent() {
+        let file = Entry::new("a.txt", EntryKind::File);
+        assert_eq!(
+            cursor_announcement(Some(1), Some(&file), 7),
+            "a.txt, row 2 of 7"
+        );
+        let parent = Entry::new("..", EntryKind::Dir);
+        assert_eq!(
+            cursor_announcement(Some(0), Some(&parent), 7),
+            "Up one level, row 1 of 7"
+        );
+        assert_eq!(cursor_announcement(None, None, 0), "");
+    }
+
+    #[test]
+    fn cursor_text_handles_non_utf8_names() {
+        let file = Entry::new(OsString::from_vec(vec![b'x', 0xff]), EntryKind::File);
+        assert_eq!(
+            cursor_announcement(Some(0), Some(&file), 1),
+            "x\u{fffd}, row 1 of 1"
+        );
     }
 }
