@@ -482,6 +482,9 @@ enum Probe {
 fn probe_archive(service: &ArchiveService, path: &Path, cancel: &CancelToken) -> Probe {
     match detect_format(path) {
         Ok(Some(_)) => {}
+        // A compressed tar whose probe hits a resource limit: say so, do not hand the file to
+        // another application as if it were no archive.
+        Err(e @ ArchiveError::LimitExceeded { .. }) => return Probe::Failed(e),
         Ok(None) | Err(_) => return Probe::NotArchive,
     }
     let _scope = password::scope(cancel);
@@ -689,6 +692,35 @@ mod tests {
             })
             .contains("decompression bomb")
         );
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)] // fixture file
+    fn probe_reports_a_codec_limit_instead_of_not_an_archive() {
+        // A zstd frame that asks for a 2 GiB window (magic, descriptor, window byte), then one
+        // empty last block.
+        let dir = ofm_testkit::temp::TempDir::new().unwrap();
+        let path = dir.path().join("big-window.tar.zst");
+        std::fs::write(
+            &path,
+            [0x28, 0xB5, 0x2F, 0xFD, 0x00, 0xA8, 0x01, 0x00, 0x00],
+        )
+        .unwrap();
+        let probe = probe_archive(&ArchiveService::new(), &path, &CancelToken::new());
+        assert!(
+            matches!(
+                probe,
+                Probe::Failed(ArchiveError::LimitExceeded {
+                    kind: LimitKind::CodecMemory,
+                    ..
+                })
+            ),
+            "{probe:?}"
+        );
+        // A file that merely cannot be read is still treated as an ordinary file.
+        let missing = dir.path().join("missing");
+        let probe = probe_archive(&ArchiveService::new(), &missing, &CancelToken::new());
+        assert!(matches!(probe, Probe::NotArchive), "{probe:?}");
     }
 
     #[test]
