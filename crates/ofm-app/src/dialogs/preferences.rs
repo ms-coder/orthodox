@@ -7,6 +7,7 @@
 //! every live reload (`chrome::apply_reloaded`).
 
 use std::cell::RefCell;
+use std::ops::ControlFlow;
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -17,6 +18,7 @@ use crate::context::AppContext;
 use crate::i18n::tr;
 use crate::jobs::ui;
 use crate::navigation::modal;
+use crate::wiring;
 
 /// Warnings of the last config/keymap/theme load (state in `ctx.ext`).
 #[derive(Default)]
@@ -34,27 +36,19 @@ pub fn record(ctx: &AppContext, warnings: Vec<Warning>) {
     }
 }
 
-/// The stored warnings as display lines "file: message" (Help shows the same list).
+/// One warning as "file: message" (just the message when it names no file).
+fn warning_line(w: &Warning) -> String {
+    match &w.file {
+        Some(file) => format!("{}: {}", file.display(), w.message),
+        None => w.message.clone(),
+    }
+}
+
+/// The stored warnings as display lines (Help shows the same list).
 pub fn warning_lines(ctx: &AppContext) -> Vec<String> {
     ctx.ext
         .get::<ConfigWarnings>()
-        .map(|state| {
-            state
-                .0
-                .borrow()
-                .iter()
-                .map(|w| {
-                    format!(
-                        "{}: {}",
-                        w.file
-                            .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_default(),
-                        w.message
-                    )
-                })
-                .collect()
-        })
+        .map(|state| state.0.borrow().iter().map(warning_line).collect())
         .unwrap_or_default()
 }
 
@@ -135,16 +129,17 @@ pub fn present(ctx: &Rc<AppContext>) {
     dialog.set_child(Some(&modal::with_header(&column)));
 
     {
-        let (ctx_edit, path) = (Rc::clone(ctx), paths.config_file());
+        let ctx_edit = Rc::clone(ctx);
         edit.connect_clicked(move |_| {
-            crate::desktop::editor::open_in_editor(&ctx_edit, &path);
+            with_config_dir(&ctx_edit, |ctx| {
+                crate::desktop::editor::open_in_editor(ctx, &ctx.paths.config_file());
+            });
         });
     }
     {
         let ctx_folder = Rc::clone(ctx);
-        let config_dir = paths.config_dir.clone();
         folder.connect_clicked(move |_| {
-            open_folder(&ctx_folder, &config_dir);
+            with_config_dir(&ctx_folder, |ctx| open_folder(ctx, &ctx.paths.config_dir));
         });
     }
     {
@@ -165,18 +160,51 @@ pub fn present(ctx: &Rc<AppContext>) {
             }
         });
     }
+    dialog.set_focus(Some(&edit));
     modal::present(ctx, &dialog, || true);
 }
 
+/// Run `then` once the config directory exists: on a first run there is none, so the editor
+/// could not save `config.toml` and the file manager would have nothing to open. The directory
+/// is created on a worker.
+fn with_config_dir(ctx: &Rc<AppContext>, then: impl Fn(&Rc<AppContext>) + 'static) {
+    let paths = ctx.paths.clone();
+    let rx = wiring::run_on_pool(&ctx.services.pool, move |tx| {
+        let _ = tx.send_blocking(paths.ensure_config_dir().map_err(|e| e.to_string()));
+    });
+    let weak = Rc::downgrade(ctx);
+    wiring::attach(
+        rx,
+        move |result| {
+            if let Some(ctx) = weak.upgrade() {
+                match result {
+                    Ok(()) => then(&ctx),
+                    Err(e) => ui::message(
+                        &ctx,
+                        tr("Preferences"),
+                        &format!("{}: {e}", tr("Cannot create the config folder")),
+                    ),
+                }
+            }
+            ControlFlow::Break(())
+        },
+        || {},
+    );
+}
+
 /// Open `dir` in the desktop file manager (`gtk::FileLauncher`, like `desktop::open`); a failure
-/// is only logged (there may simply be no file manager installed).
+/// is shown in the status line (there may simply be no file manager installed).
 fn open_folder(ctx: &Rc<AppContext>, dir: &std::path::Path) {
     let launcher = gtk::FileLauncher::new(Some(&gtk::gio::File::for_path(dir)));
     let parent = ctx.window().map(|w| w.window.clone());
     let dir = dir.to_path_buf();
+    let ctx = Rc::downgrade(ctx);
     gtk::glib::spawn_future_local(async move {
         if let Err(e) = launcher.launch_future(parent.as_ref()).await {
             tracing::warn!(dir = %dir.display(), error = %e, "could not open the config folder");
+            if let Some(ctx) = ctx.upgrade() {
+                crate::chrome::notice::show(&ctx, tr("Could not open the config folder"));
+            }
         }
     });
 }
@@ -204,23 +232,11 @@ mod tests {
             file: Some(std::path::PathBuf::from("/x/config.toml")),
             message: "unknown key".into(),
         };
-        // (pure formatting check through a one-element list)
-        let state = ConfigWarnings(RefCell::new(vec![w]));
-        let lines: Vec<String> = state
-            .0
-            .borrow()
-            .iter()
-            .map(|w| {
-                format!(
-                    "{}: {}",
-                    w.file
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default(),
-                    w.message
-                )
-            })
-            .collect();
-        assert_eq!(lines, vec!["/x/config.toml: unknown key".to_owned()]);
+        assert_eq!(warning_line(&w), "/x/config.toml: unknown key");
+        let anonymous = Warning {
+            file: None,
+            message: "bad".into(),
+        };
+        assert_eq!(warning_line(&anonymous), "bad");
     }
 }

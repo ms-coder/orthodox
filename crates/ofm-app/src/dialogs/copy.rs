@@ -273,7 +273,7 @@ pub fn present(ctx: &Rc<AppContext>, kind: TransferKind) {
         let cfg = ctx.config.borrow();
         follow.set_active(cfg.jobs.follow_symlinks);
         sync.set_active(cfg.jobs.fsync_after_copy);
-        parallel.set_active(cfg.jobs.default_run_mode == "parallel");
+        parallel.set_active(jobs::default_run_mode(&cfg) == RunMode::Parallel);
     }
     if kind != TransferKind::Rename {
         column.append(&follow);

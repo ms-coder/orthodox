@@ -433,6 +433,13 @@ impl Config {
             });
             cfg.keymap.typing.clear();
         }
+        if !matches!(cfg.jobs.default_run_mode.as_str(), "queued" | "parallel") {
+            warnings.push(ConfigWarning::UnknownRunMode {
+                file: file.clone(),
+                value: cfg.jobs.default_run_mode.clone(),
+            });
+            cfg.jobs.default_run_mode = JobsSection::default().default_run_mode;
+        }
         (cfg, warnings)
     }
     /// Save atomically.
@@ -843,6 +850,24 @@ mod tests {
         assert_eq!(w.len(), 2);
         assert_eq!(c.preset(), Preset::Far);
         assert_eq!(c.typing(), None);
+    }
+
+    #[test]
+    fn unknown_run_mode_warns_and_falls_back() {
+        let d = tempfile::tempdir().unwrap();
+        let p = paths(&d);
+        io::atomic_write(&p.config_file(), "[jobs]\ndefault_run_mode = \"paralel\"\n").unwrap();
+        let (c, w) = Config::load(&p);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].message.contains("paralel"), "{}", w[0].message);
+        assert_eq!(c.jobs.default_run_mode, "queued");
+        for good in ["queued", "parallel"] {
+            let text = format!("[jobs]\ndefault_run_mode = \"{good}\"\n");
+            io::atomic_write(&p.config_file(), &text).unwrap();
+            let (c, w) = Config::load(&p);
+            assert!(w.is_empty(), "{good}");
+            assert_eq!(c.jobs.default_run_mode, good);
+        }
     }
 
     #[test]

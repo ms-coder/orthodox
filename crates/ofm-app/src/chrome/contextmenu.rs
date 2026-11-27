@@ -277,7 +277,9 @@ fn open(ctx: &Rc<AppContext>, list: &FileList, rect: gdk::Rectangle) {
 /// Close the open menu (if any). Closing runs the popover's `closed` handler, which forgets
 /// the menu and unparents the popover.
 fn dismiss(slot: &Rc<MenuSlot>) {
-    if let Some(menu) = slot.open.borrow().clone() {
+    // `current()` drops its borrow before returning: `popdown` runs the `closed` handler,
+    // which borrows the slot mutably.
+    if let Some(menu) = slot.current() {
         menu.popover.popdown();
         *slot.open.borrow_mut() = None;
         menu.popover.unparent();

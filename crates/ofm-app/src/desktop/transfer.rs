@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use ofm_core::Location;
-use ofm_jobs::{ConflictAnswer, CopyOpts, JobSpec, RunMode};
+use ofm_jobs::{ConflictAnswer, CopyOpts, JobSpec};
 
 use crate::context::AppContext;
 use crate::i18n::tr;
@@ -35,10 +35,16 @@ pub fn submit(ctx: &Rc<AppContext>, sources: &[PathBuf], dest: &Path, mv: bool) 
     let Some(controller) = jobs::controller(ctx) else {
         return false;
     };
-    let opts = CopyOpts {
-        on_conflict: (!ctx.config.borrow().general.confirm_overwrite)
-            .then_some(ConflictAnswer::Overwrite),
-        ..CopyOpts::default()
+    // The `[jobs]` defaults of the F5/F6 dialogs apply here too: there is no dialog to ask.
+    let (opts, mode) = {
+        let cfg = ctx.config.borrow();
+        let opts = CopyOpts {
+            rename_mask: None,
+            follow_symlinks: cfg.jobs.follow_symlinks,
+            sync: cfg.jobs.fsync_after_copy,
+            on_conflict: (!cfg.general.confirm_overwrite).then_some(ConflictAnswer::Overwrite),
+        };
+        (opts, jobs::default_run_mode(&cfg))
     };
     let sources: Vec<Location> = sources.into_iter().map(Location::Local).collect();
     let dest_dir = dest.to_owned();
@@ -55,7 +61,7 @@ pub fn submit(ctx: &Rc<AppContext>, sources: &[PathBuf], dest: &Path, mv: bool) 
             opts,
         }
     };
-    controller.submit_with(ctx, spec, RunMode::Queued, SubmitOpts::default());
+    controller.submit_with(ctx, spec, mode, SubmitOpts::default());
     true
 }
 

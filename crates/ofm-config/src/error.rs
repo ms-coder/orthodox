@@ -87,6 +87,13 @@ pub enum ConfigWarning {
         /// The value as written.
         value: String,
     },
+    /// `[jobs] default_run_mode` is neither `queued` nor `parallel`; `queued` is used.
+    UnknownRunMode {
+        /// File concerned.
+        file: PathBuf,
+        /// The value as written.
+        value: String,
+    },
 }
 
 impl ConfigWarning {
@@ -97,7 +104,8 @@ impl ConfigWarning {
             | ConfigWarning::Unreadable { file, .. }
             | ConfigWarning::Invalid { file, .. }
             | ConfigWarning::UnknownPreset { file, .. }
-            | ConfigWarning::UnknownTypingMode { file, .. } => file,
+            | ConfigWarning::UnknownTypingMode { file, .. }
+            | ConfigWarning::UnknownRunMode { file, .. } => file,
         }
     }
     /// Human-readable message.
@@ -114,6 +122,9 @@ impl ConfigWarning {
             }
             ConfigWarning::UnknownTypingMode { value, .. } => {
                 format!("unknown typing mode {value:?}; using preset default")
+            }
+            ConfigWarning::UnknownRunMode { value, .. } => {
+                format!("unknown jobs.default_run_mode {value:?}; using queued")
             }
         }
     }

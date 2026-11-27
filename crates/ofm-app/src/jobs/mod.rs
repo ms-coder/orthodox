@@ -36,6 +36,9 @@ pub use quit::allow_close;
 
 use std::rc::Rc;
 
+use ofm_config::Config;
+use ofm_jobs::RunMode;
+
 use crate::context::AppContext;
 use crate::dispatch::CommandRegistry;
 use crate::window::MainWindow;
@@ -62,6 +65,16 @@ pub fn install_ui(ctx: &Rc<AppContext>, win: &MainWindow) {
     indicator::install_ui(ctx, win);
     // Owner/group names for the panel columns (looked up on a worker).
     idnames::start_global(ctx);
+}
+
+/// `[jobs] default_run_mode`: how a transfer starts unless the user says otherwise (the loader
+/// rejects values other than `queued` and `parallel`).
+pub fn default_run_mode(cfg: &Config) -> RunMode {
+    if cfg.jobs.default_run_mode == "parallel" {
+        RunMode::Parallel
+    } else {
+        RunMode::Queued
+    }
 }
 
 /// The context's [`JobsController`] (`None` only before `install_state` ran).

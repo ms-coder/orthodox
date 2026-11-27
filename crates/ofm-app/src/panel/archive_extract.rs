@@ -46,6 +46,8 @@ pub struct ExtractInput<'a> {
     pub home: &'a Path,
     /// `[general] confirm_overwrite = false`.
     pub overwrite_silently: bool,
+    /// `[jobs] fsync_after_copy`: fsync every extracted file and directory.
+    pub sync: bool,
     /// Passwords shared with browsing.
     pub passwords: &'a PasswordSource,
 }
@@ -73,7 +75,7 @@ pub fn build_extract(input: &ExtractInput<'_>) -> Result<JobSpec, String> {
                 .then_some(ConflictAnswer::Overwrite),
             password: input.passwords.clone(),
             limits: ArchiveLimits::default(),
-            sync: false,
+            sync: input.sync,
         },
     })
 }
@@ -121,6 +123,7 @@ pub fn present(ctx: &Rc<AppContext>, moving: bool) {
     let parallel =
         gtk::CheckButton::with_mnemonic(tr("Run in _parallel (do not wait in the queue)"));
     parallel.set_widget_name("ofm-transfer-parallel");
+    parallel.set_active(jobs::default_run_mode(&ctx.config.borrow()) == RunMode::Parallel);
     column.append(&parallel);
     let error = ui::error_label();
     error.set_widget_name("ofm-transfer-error");
@@ -150,6 +153,7 @@ pub fn present(ctx: &Rc<AppContext>, moving: bool) {
                 dest_origin: origin.as_deref(),
                 home: &home,
                 overwrite_silently: !ctx.config.borrow().general.confirm_overwrite,
+                sync: ctx.config.borrow().jobs.fsync_after_copy,
                 passwords: ctx.services.archives.passwords(),
             };
             match build_extract(&input) {
@@ -635,6 +639,7 @@ mod tests {
             dest_origin: None,
             home: Path::new("/home/u"),
             overwrite_silently: false,
+            sync: false,
             passwords,
         }
     }
@@ -667,7 +672,14 @@ mod tests {
         silent.overwrite_silently = true;
         assert!(matches!(
             build_extract(&silent).unwrap(),
-            JobSpec::Extract { opts, .. } if opts.on_conflict == Some(ConflictAnswer::Overwrite)
+            JobSpec::Extract { opts, .. }
+                if opts.on_conflict == Some(ConflictAnswer::Overwrite) && !opts.sync
+        ));
+        // `[jobs] fsync_after_copy` reaches the extract job.
+        silent.sync = true;
+        assert!(matches!(
+            build_extract(&silent).unwrap(),
+            JobSpec::Extract { opts, .. } if opts.sync
         ));
     }
 
