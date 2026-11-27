@@ -3,7 +3,10 @@
 use std::io::Read;
 use std::path::Path;
 
+use super::backend::stream::{catch_panic, map_io};
+use super::backend::tar::open_tar_stream;
 use super::error::ArchiveError;
+use super::limits::ArchiveLimits;
 
 /// Supported archive formats (F26).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -88,6 +91,14 @@ pub fn detect_magic(head: &[u8]) -> Option<ArchiveFormat> {
 /// decompressed at all is likewise not treated as an archive (the tar backend reports deeper
 /// corruption with `Corrupt` once the format is confirmed).
 pub fn detect_format(path: &Path) -> Result<Option<ArchiveFormat>, ArchiveError> {
+    detect_format_with_limits(path, &ArchiveLimits::default())
+}
+
+/// Detect with the same codec limits and panic isolation as the backend that will read the file.
+pub(crate) fn detect_format_with_limits(
+    path: &Path,
+    limits: &ArchiveLimits,
+) -> Result<Option<ArchiveFormat>, ArchiveError> {
     let mut head = Vec::with_capacity(MAGIC_LEN);
     std::fs::File::open(path)
         .and_then(|f| f.take(MAGIC_LEN as u64).read_to_end(&mut head))
@@ -100,12 +111,14 @@ pub fn detect_format(path: &Path) -> Result<Option<ArchiveFormat>, ArchiveError>
             | ArchiveFormat::TarXz
             | ArchiveFormat::TarZst),
         ) => {
-            let block = first_tar_block(path, f);
+            let block = first_tar_block(path, f, limits);
             match block {
                 Ok(Some(_)) => Ok(Some(f)),
                 // Not a tar inside: a plain compressed file (or a broken stream we cannot
-                // identify) is not an archive we browse.
-                Ok(None) | Err(_) => Ok(None),
+                // identify) is not an archive we browse. Resource limits remain hard errors.
+                Ok(None) => Ok(None),
+                Err(e @ ArchiveError::LimitExceeded { .. }) => Err(e),
+                Err(_) => Ok(None),
             }
         }
         other => Ok(other),
@@ -114,37 +127,29 @@ pub fn detect_format(path: &Path) -> Result<Option<ArchiveFormat>, ArchiveError>
 
 /// Decompress the first 512 bytes of the container at `path` and verify the tar header
 /// checksum (accepts pre-POSIX tars without the `ustar` magic too).
-fn first_tar_block(path: &Path, format: ArchiveFormat) -> std::io::Result<Option<[u8; 512]>> {
-    use std::io::Read as _;
-
-    let file = std::fs::File::open(path)?;
-    let mut reader: Box<dyn Read> = match format {
-        ArchiveFormat::TarGz => Box::new(flate2::read::GzDecoder::new(file)),
-        ArchiveFormat::TarBz2 => Box::new(bzip2::read::BzDecoder::new(file)),
-        ArchiveFormat::TarXz => Box::new(lzma_rust2::XzReader::new(file, false)),
-        ArchiveFormat::TarZst => Box::new(zstd::stream::read::Decoder::new(file)?),
-        other => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("not a compressed tar container: {other:?}"),
-            ));
+fn first_tar_block(
+    path: &Path,
+    format: ArchiveFormat,
+    limits: &ArchiveLimits,
+) -> Result<Option<[u8; 512]>, ArchiveError> {
+    catch_panic(path, || {
+        let mut reader = open_tar_stream(path, format, limits)?;
+        let mut block = [0u8; 512];
+        let mut filled = 0;
+        while filled < 512 {
+            match reader.read(&mut block[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(map_io(path, e)),
+            }
         }
-    };
-    let mut block = [0u8; 512];
-    let mut filled = 0;
-    while filled < 512 {
-        match reader.read(&mut block[filled..]) {
-            Ok(0) => break,
-            Ok(n) => filled += n,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
+        if filled == 512 && tar_header_checksum_ok(&block) {
+            Ok(Some(block))
+        } else {
+            Ok(None)
         }
-    }
-    if filled == 512 && tar_header_checksum_ok(&block) {
-        Ok(Some(block))
-    } else {
-        Ok(None)
-    }
+    })
 }
 
 /// Verify a tar header block by its checksum field (bytes 148..156, space-padded octal).
@@ -196,6 +201,7 @@ fn parse_octal(field: &[u8]) -> Option<u64> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -219,5 +225,35 @@ mod tests {
         assert_eq!(detect_magic(b"hello"), None);
         assert_eq!(detect_magic(b""), None);
         assert!(ArchiveFormat::SevenZ.is_sequential() && !ArchiveFormat::Zip.is_sequential());
+    }
+
+    #[test]
+    fn compressed_tar_probe_honours_codec_memory_limit() {
+        let mut bytes = Vec::new();
+        {
+            let mut tar = tar::Builder::new(&mut bytes);
+            let mut header = tar::Header::new_gnu();
+            header.set_path("f").unwrap();
+            header.set_size(1);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append(&header, &b"x"[..]).unwrap();
+            tar.finish().unwrap();
+        }
+        let compressed = zstd::stream::encode_all(&bytes[..], 1).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.tar.zst");
+        std::fs::write(&path, compressed).unwrap();
+        let limits = ArchiveLimits {
+            max_codec_memory: 1,
+            ..ArchiveLimits::default()
+        };
+        assert!(matches!(
+            detect_format_with_limits(&path, &limits),
+            Err(ArchiveError::LimitExceeded {
+                kind: super::super::LimitKind::CodecMemory,
+                ..
+            })
+        ));
     }
 }
