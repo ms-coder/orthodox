@@ -695,6 +695,9 @@ impl Fs for TrashUnavailableFs {
     fn set_xattr(&self, path: &Path, name: &OsStr, value: &[u8], follow: bool) -> io::Result<()> {
         self.inner.set_xattr(path, name, value, follow)
     }
+    fn pin(&self, path: &std::path::Path, follow: bool) -> std::io::Result<ofm_jobs::FsPin> {
+        self.inner.pin(path, follow)
+    }
     fn trash(&self, _path: &Path) -> Result<(), TrashError> {
         Err(TrashError::Unavailable(
             "torture: trash unavailable by construction".into(),

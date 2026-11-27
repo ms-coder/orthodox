@@ -317,6 +317,9 @@ impl Fs for FatFs {
     fn set_xattr(&self, path: &Path, name: &OsStr, value: &[u8], follow: bool) -> io::Result<()> {
         self.inner.set_xattr(&self.map(path), name, value, follow)
     }
+    fn pin(&self, path: &std::path::Path, follow: bool) -> std::io::Result<ofm_jobs::FsPin> {
+        self.inner.pin(&self.map(path), follow)
+    }
     fn trash(&self, path: &Path) -> Result<(), TrashError> {
         self.inner.trash(&self.map(path))
     }

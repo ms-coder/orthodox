@@ -10,6 +10,9 @@
 //! place (no pointless `ENOTEMPTY` question). A missing top-level path is a warning, not an error;
 //! entries that vanish while deleting are fine (the goal is reached).
 //!
+//! The walk goes through checked directory handles (`fs::walk`, M9): a directory swapped for a
+//! symlink, or moved away, while the job runs is reported and left alone, never followed.
+//!
 //! Progress: the permanent variant scans first (`planning`), then `set_totals(entries, 0)`; every
 //! removed entry (file, link or directory) is one `file_done`.
 
@@ -19,14 +22,15 @@ use std::path::{Path, PathBuf};
 use crate::ctx::{ErrorResolution, JobCtx};
 use crate::error::JobError;
 use crate::event::Operation;
-use crate::fs::TrashError;
+use crate::fs::{CheckedDir, Selection, TrashError};
 
 /// Delete `paths`.
 pub fn run(ctx: &mut JobCtx, paths: &[PathBuf], to_trash: bool) -> Result<(), JobError> {
     if paths.is_empty() {
         return Err(JobError::Invalid("nothing to delete".into()));
     }
-    if let Some(p) = paths.iter().find(|p| p.parent().is_none()) {
+    // "/" and anything ending in ".." name no entry that could be removed on its own.
+    if let Some(p) = paths.iter().find(|p| p.file_name().is_none()) {
         return Err(JobError::Invalid(format!(
             "refusing to delete {}",
             p.display()
@@ -41,15 +45,16 @@ pub fn run(ctx: &mut JobCtx, paths: &[PathBuf], to_trash: bool) -> Result<(), Jo
 
 fn trash_all(ctx: &mut JobCtx, paths: &[PathBuf]) -> Result<(), JobError> {
     ctx.set_totals(paths.len() as u64, 0);
+    let mut selection = Selection::default();
     for path in paths {
         ctx.checkpoint()?;
         ctx.set_current(path);
-        trash_one(ctx, path)?;
+        trash_one(ctx, &mut selection, path)?;
     }
     Ok(())
 }
 
-fn trash_one(ctx: &mut JobCtx, path: &Path) -> Result<(), JobError> {
+fn trash_one(ctx: &mut JobCtx, selection: &mut Selection, path: &Path) -> Result<(), JobError> {
     loop {
         ctx.checkpoint()?;
         match ctx.fs().trash(path) {
@@ -62,7 +67,7 @@ fn trash_one(ctx: &mut JobCtx, path: &Path) -> Result<(), JobError> {
                 if ctx.confirm_permanent_delete(path)? {
                     let n = count_entries(ctx, path)?;
                     ctx.add_total(n.saturating_sub(1), 0);
-                    remove(ctx, path, true)?;
+                    delete_item(ctx, selection, path)?;
                 }
                 return Ok(());
             }
@@ -86,9 +91,10 @@ fn delete_all(ctx: &mut JobCtx, paths: &[PathBuf]) -> Result<(), JobError> {
         total += count_entries(ctx, path)?;
     }
     ctx.set_totals(total, 0);
+    let mut selection = Selection::default();
     for path in paths {
         ctx.checkpoint()?;
-        remove(ctx, path, true)?;
+        delete_item(ctx, &mut selection, path)?;
     }
     Ok(())
 }
@@ -112,16 +118,41 @@ fn count_entries(ctx: &mut JobCtx, path: &Path) -> Result<u64, JobError> {
     Ok(n)
 }
 
-/// Remove `path`. `Ok(true)` = it is gone, `Ok(false)` = something below it was skipped (or
-/// the user skipped it), so it (and its parents) must stay.
-fn remove(ctx: &mut JobCtx, path: &Path, top: bool) -> Result<bool, JobError> {
+/// Permanently delete the selected item `path`.
+fn delete_item(ctx: &mut JobCtx, selection: &mut Selection, path: &Path) -> Result<(), JobError> {
     ctx.checkpoint()?;
-    ctx.set_current(path);
-    let stat = ctx.attempt(path, Operation::Delete, |fs| match fs.lstat(path) {
-        Ok(s) => Ok(Some(s)),
+    let fs = ctx.fs();
+    let opened = ctx.attempt(path, Operation::Delete, |_| {
+        found(selection.open(&fs, path))
+    })?;
+    match opened {
+        None => {} // skipped by the user
+        Some(None) => {
+            ctx.warn(path, "does not exist; skipped");
+            ctx.note_skipped();
+        }
+        Some(Some((dir, item))) => {
+            remove(ctx, &dir, &item, true)?;
+        }
+    }
+    Ok(())
+}
+
+/// `Ok(None)` for something that does not exist.
+fn found<T>(r: io::Result<T>) -> io::Result<Option<T>> {
+    match r {
+        Ok(v) => Ok(Some(v)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
-    })?;
+    }
+}
+
+/// Remove `path`, an entry of `parent`. `Ok(true)` = it is gone, `Ok(false)` = something below
+/// it was skipped (or the user skipped it), so it (and its parents) must stay.
+fn remove(ctx: &mut JobCtx, parent: &CheckedDir, path: &Path, top: bool) -> Result<bool, JobError> {
+    ctx.checkpoint()?;
+    ctx.set_current(path);
+    let stat = ctx.attempt(path, Operation::Delete, |_| found(parent.lstat(path)))?;
     let st = match stat {
         None => return Ok(false),
         Some(None) => {
@@ -135,24 +166,33 @@ fn remove(ctx: &mut JobCtx, path: &Path, top: bool) -> Result<bool, JobError> {
     };
 
     if st.is_dir() {
-        let Some(names) = ctx.attempt(path, Operation::Delete, |fs| fs.read_dir(path))? else {
+        let entered = ctx.attempt(path, Operation::Delete, |_| found(parent.child(path, &st)))?;
+        let dir = match entered {
+            None => return Ok(false),
+            Some(None) => return Ok(true),
+            Some(Some(dir)) => dir,
+        };
+        let Some(names) = ctx.attempt(path, Operation::Delete, |_| dir.list())? else {
             return Ok(false);
         };
         let mut all_gone = true;
         for name in names {
-            all_gone &= remove(ctx, &path.join(name), false)?;
+            all_gone &= remove(ctx, &dir, &path.join(name), false)?;
         }
         if !all_gone {
             return Ok(false);
         }
-        let done = ctx.attempt(path, Operation::Delete, |fs| ignore_missing(fs.rmdir(path)))?;
+        drop(dir);
+        let done = ctx.attempt(path, Operation::Delete, |_| {
+            ignore_missing(parent.entry(path, |fs, p| fs.rmdir(p)))
+        })?;
         if done.is_some() {
             ctx.file_done();
         }
         Ok(done.is_some())
     } else {
-        let done = ctx.attempt(path, Operation::Delete, |fs| {
-            ignore_missing(fs.unlink(path))
+        let done = ctx.attempt(path, Operation::Delete, |_| {
+            ignore_missing(parent.entry(path, |fs, p| fs.unlink(p)))
         })?;
         if done.is_some() {
             ctx.file_done();

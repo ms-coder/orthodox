@@ -292,6 +292,9 @@ impl Fs for HookFs {
         self.pre("set_xattr", path, None)?;
         self.inner.set_xattr(&self.map(path), name, value, follow)
     }
+    fn pin(&self, path: &std::path::Path, follow: bool) -> std::io::Result<ofm_jobs::FsPin> {
+        self.inner.pin(&self.map(path), follow)
+    }
     fn trash(&self, path: &Path) -> Result<(), TrashError> {
         self.pre("trash", path, None)?;
         self.inner.trash(&self.map(path))

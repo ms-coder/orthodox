@@ -6,7 +6,8 @@
 //! (`try_clone_from` = [`FaultOp::TryCloneFrom`], `copy_range_from` = [`FaultOp::CopyRangeFrom`]):
 //! to make a copy fail "at the N-th data write" you may need faults on `FileWrite` AND
 //! `CopyRangeFrom`, depending on which tier the engine picks on that file system. A
-//! `ShortWrite` effect only has a meaning on `FileWrite`; on any other op it is ignored.
+//! `ShortWrite` effect only has a meaning on `FileWrite`, a `LostReply` effect (do the call,
+//! then report an error) only on `HardLink`; on any other op they are ignored.
 //! `FileClose` faults the checked close of a handle (`FsFile::close`); the descriptor is still
 //! released, as with close(2).
 //!
@@ -36,7 +37,7 @@ fn hit(state: &Shared, op: FaultOp) -> Option<FaultEffect> {
         .next(op)
 }
 
-/// Count the call; fail it if the plan says so (`ShortWrite` is ignored here).
+/// Count the call; fail it if the plan says so (`ShortWrite` and `LostReply` are ignored here).
 fn check(state: &Shared, op: FaultOp) -> io::Result<()> {
     match hit(state, op) {
         Some(FaultEffect::Error(e)) => Err(e.to_io_error()),
@@ -107,7 +108,7 @@ impl FsFile for FaultyFile {
                 }
                 self.inner.write(&buf[..n])
             }
-            None => self.inner.write(buf),
+            Some(FaultEffect::LostReply(_)) | None => self.inner.write(buf),
         }
     }
 
@@ -241,8 +242,14 @@ impl Fs for FaultyFs {
     }
 
     fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
-        check(&self.state, FaultOp::HardLink)?;
-        self.inner.hard_link(from, to)
+        match hit(&self.state, FaultOp::HardLink) {
+            Some(FaultEffect::Error(e)) => Err(e.to_io_error()),
+            Some(FaultEffect::LostReply(e)) => {
+                self.inner.hard_link(from, to)?;
+                Err(e.to_io_error())
+            }
+            Some(FaultEffect::ShortWrite { .. }) | None => self.inner.hard_link(from, to),
+        }
     }
 
     fn read_link(&self, path: &Path) -> io::Result<PathBuf> {

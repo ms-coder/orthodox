@@ -387,6 +387,9 @@ impl Fs for Tiers {
     fn set_xattr(&self, p: &Path, n: &OsStr, v: &[u8], f: bool) -> io::Result<()> {
         RealFs.set_xattr(p, n, v, f)
     }
+    fn pin(&self, path: &std::path::Path, follow: bool) -> std::io::Result<ofm_jobs::FsPin> {
+        RealFs.pin(path, follow)
+    }
     fn trash(&self, p: &Path) -> Result<(), TrashError> {
         RealFs.trash(p)
     }
