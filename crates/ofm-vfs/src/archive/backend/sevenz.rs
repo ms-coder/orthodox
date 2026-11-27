@@ -46,6 +46,8 @@ mod blocks;
 
 use blocks::{BlockSource, PasswordCheck, WalkFail, block_is_encrypted, group_by_block};
 
+/// Encrypted blocks a password is tried against before it counts as wrong.
+const MAX_CHECKED_BLOCKS: usize = 3;
 /// Symlink targets longer than this are not read at index time (the entry is flagged unsafe).
 const MAX_SYMLINK_TARGET: u64 = 64 * 1024;
 
@@ -318,9 +320,10 @@ fn map_sevenz_err(path: &Path, e: SzError) -> ArchiveError {
 }
 
 impl SevenzReader<'_> {
-    /// Find a password that decrypts `block`: the known one first, then up to
-    /// [`MAX_PASSWORD_ATTEMPTS`] answers of the provider.
-    fn unlock(&mut self, block: usize, cancel: &CancelToken) -> Result<Password, ArchiveError> {
+    /// Find a password that decrypts one of `blocks` (cheapest first; more than one, so a damaged
+    /// block does not lock the rest): the known one, then up to [`MAX_PASSWORD_ATTEMPTS`] answers
+    /// of the provider.
+    fn unlock(&mut self, blocks: &[usize], cancel: &CancelToken) -> Result<Password, ArchiveError> {
         let path = self.index.archive().to_owned();
         let mut known = self.password.take();
         let (mut asked, mut retry) = (0u32, false);
@@ -344,7 +347,18 @@ impl SevenzReader<'_> {
                 path: &path,
                 cancel,
             };
-            match source.check_password(block, &password)? {
+            let mut outcome = PasswordCheck::Wrong;
+            for block in blocks.iter().take(MAX_CHECKED_BLOCKS) {
+                match source.check_password(*block, &password)? {
+                    PasswordCheck::Verified => {
+                        outcome = PasswordCheck::Verified;
+                        break;
+                    }
+                    PasswordCheck::Unchecked => outcome = PasswordCheck::Unchecked,
+                    PasswordCheck::Wrong => {}
+                }
+            }
+            match outcome {
                 PasswordCheck::Verified => self.passwords.accepted(&path, &text),
                 // No checksum to compare with: use it, but do not let a cache remember it.
                 PasswordCheck::Unchecked => {}
@@ -398,15 +412,17 @@ impl ArchiveReader for SevenzReader<'_> {
         work.retain(|_, positions| positions.iter().any(|p| self.archive.files[*p].has_stream));
 
         // Before anything is delivered: one password that is known to work, checked against the
-        // smallest encrypted block needed.
-        let locked = work
+        // smallest encrypted blocks needed.
+        let mut locked: Vec<usize> = work
             .iter()
             .filter(|(_, positions)| block_is_encrypted(&self.archive, positions))
             .map(|(block, _)| *block)
-            .min_by_key(|block| self.archive.blocks[*block].get_unpack_size());
-        let password = match locked {
-            Some(block) => self.unlock(block, cancel)?,
-            None => Password::empty(),
+            .collect();
+        locked.sort_by_key(|block| self.archive.blocks[*block].get_unpack_size());
+        let password = if locked.is_empty() {
+            Password::empty()
+        } else {
+            self.unlock(&locked, cancel)?
         };
 
         for (block, positions) in &work {

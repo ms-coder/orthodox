@@ -7,8 +7,9 @@
 //! flag; other names are decoded from CP437. Names stored by FAT/NTFS/VFAT/OS2 hosts get `\`
 //! converted to `/` before classification (ADR-0008). `visit` seeks per entry (zip is the one
 //! random-access format) and verifies CRC/MAC by draining each entry to EOF. ZipCrypto and AES
-//! ask the `PasswordProvider` (`retry = true` after a wrong one, at most [`MAX_PASSWORD_ATTEMPTS`]);
-//! a verified password is reported via `accepted`.
+//! ask the `PasswordProvider` (`retry = true` after a wrong one, a bounded number of times); the
+//! password is checked against entry data before anything is delivered (see `password`), and only
+//! then reported via `accepted`.
 //!
 //! The reader borrows the `PasswordProvider` (`Box<dyn ArchiveReader + 'p>`): visit asks for
 //! passwords lazily, so the provider must outlive the reader, which it does in every caller
@@ -29,10 +30,13 @@ use crate::archive::error::ArchiveError;
 use crate::archive::format::ArchiveFormat;
 use crate::archive::index::{ArchiveEntryKind, ArchiveIndex, EntryId, IndexBuilder, RawEntry};
 use crate::archive::limits::ArchiveLimits;
-use crate::archive::password::MAX_PASSWORD_ATTEMPTS;
 use crate::archive::reader::{ArchiveReader, VisitFn};
 
 use super::stream::{EntryStream, catch_panic, drain, map_io};
+
+mod password;
+
+use password::{Candidate, Unlock, unlock};
 
 /// Symlink targets longer than this are not read at index time (the entry is flagged unsafe).
 const MAX_SYMLINK_TARGET: u64 = 64 * 1024;
@@ -44,6 +48,8 @@ struct ZipReader<'p> {
     /// synthetic dirs are beyond `id_to_zip.len()`).
     id_to_zip: Vec<u32>,
     passwords: &'p dyn crate::archive::PasswordProvider,
+    /// The password that last passed the data check.
+    password: Option<String>,
 }
 
 /// Owned metadata of one central-directory entry (frees the archive borrow for phase 2).
@@ -141,6 +147,7 @@ pub fn open<'p>(
         index: Arc::new(index),
         id_to_zip,
         passwords,
+        password: None,
     }))
 }
 
@@ -259,6 +266,12 @@ impl ArchiveReader for ZipReader<'_> {
         let mut wanted = ids.to_vec();
         wanted.sort();
         catch_panic(&archive, || {
+            // Before anything is delivered: a password that is known to work.
+            let mut locked: Vec<Candidate> =
+                wanted.iter().filter_map(|id| self.candidate(*id)).collect();
+            if !locked.is_empty() {
+                self.unlock(&mut locked, &archive, cancel)?;
+            }
             for id in wanted {
                 if cancel.is_cancelled() {
                     return Err(ArchiveError::Cancelled);
@@ -271,11 +284,18 @@ impl ArchiveReader for ZipReader<'_> {
                     f(entry, &mut (&[0u8; 0][..]))?;
                     continue;
                 };
-                let mut zf = self.open_entry(zip_i as usize, entry.encrypted, &archive)?;
+                let locked = self.candidate(id);
+                let mut zf = self.open_entry(zip_i as usize, locked, &archive, cancel)?;
                 let mut stream = EntryStream::new(&mut zf, cancel, &archive, size);
                 f(entry, &mut stream)?;
                 let seen = stream.bytes_read();
-                drain(&mut stream, &archive, cancel)?;
+                // A CRC/MAC mismatch shows up here: damaged data, not an I/O problem.
+                drain(&mut stream, &archive, cancel).map_err(|e| match e {
+                    ArchiveError::Io { source, .. } if source.raw_os_error().is_none() => {
+                        map_io(&archive, source)
+                    }
+                    other => other,
+                })?;
                 let total = seen.max(stream.bytes_read());
                 if total < size {
                     return Err(ArchiveError::Corrupt {
@@ -293,44 +313,63 @@ impl ArchiveReader for ZipReader<'_> {
 }
 
 impl ZipReader<'_> {
-    /// Open one entry's data, asking the password provider for encrypted entries.
+    /// The password check data of `id`, if it is a stored, encrypted entry.
+    fn candidate(&self, id: EntryId) -> Option<Candidate> {
+        let entry = self.index.get(id).filter(|e| e.encrypted)?;
+        Some(Candidate {
+            zip_i: *self.id_to_zip.get(id.0 as usize)? as usize,
+            size: entry.size,
+            packed: entry.packed_size.unwrap_or(entry.size),
+        })
+    }
+
+    /// Set `self.password` to one that opens `candidates`, asking the provider if needed.
+    fn unlock(
+        &mut self,
+        candidates: &mut [Candidate],
+        archive: &Path,
+        cancel: &CancelToken,
+    ) -> Result<(), ArchiveError> {
+        let known = self.password.take();
+        let mut ctx = Unlock {
+            zip: &mut self.archive,
+            passwords: self.passwords,
+            path: archive,
+            cancel,
+        };
+        self.password = Some(unlock(&mut ctx, candidates, known)?);
+        Ok(())
+    }
+
+    /// Open one entry's data; `locked` describes it if it is encrypted.
     fn open_entry(
         &mut self,
         zip_i: usize,
-        encrypted: bool,
+        locked: Option<Candidate>,
         archive: &Path,
+        cancel: &CancelToken,
     ) -> Result<zip::read::ZipFile<'_, std::fs::File>, ArchiveError> {
-        if !encrypted {
+        let Some(candidate) = locked else {
             return self
                 .archive
                 .by_index(zip_i)
                 .map_err(|e| map_zip_err(archive, e));
-        }
-        // Validate the password in the loop (dropping each attempt's file so the
-        // borrow ends within the iteration), then open once more for the caller.
-        let mut attempts = 0;
-        let pw = loop {
-            let Some(pw) = self.passwords.password(archive, attempts > 0) else {
-                return Err(if attempts == 0 {
-                    ArchiveError::NeedsPassword(archive.to_owned())
-                } else {
-                    // The provider declined another attempt after a password was rejected. Preserve
-                    // that rejection: this is not an archive for which no password was supplied.
-                    ArchiveError::WrongPassword(archive.to_owned())
-                });
-            };
-            match self.archive.by_index_decrypt(zip_i, pw.as_bytes()) {
-                Ok(_) => break pw,
-                Err(ZipError::InvalidPassword) => {
-                    attempts += 1;
-                    if attempts >= MAX_PASSWORD_ATTEMPTS {
-                        return Err(ArchiveError::WrongPassword(archive.to_owned()));
-                    }
-                }
-                Err(e) => return Err(map_zip_err(archive, e)),
-            }
         };
-        self.passwords.accepted(archive, &pw);
+        // Entries may carry different passwords: ask again when the verified one is rejected.
+        let accepts = match &self.password {
+            Some(pw) => match self.archive.by_index_decrypt(zip_i, pw.as_bytes()) {
+                Ok(_) => true,
+                Err(ZipError::InvalidPassword) => false,
+                Err(e) => return Err(map_zip_err(archive, e)),
+            },
+            None => false,
+        };
+        if !accepts {
+            self.unlock(&mut [candidate], archive, cancel)?;
+        }
+        let Some(pw) = &self.password else {
+            return Err(ArchiveError::NeedsPassword(archive.to_owned()));
+        };
         self.archive
             .by_index_decrypt(zip_i, pw.as_bytes())
             .map_err(|e| map_zip_err(archive, e))

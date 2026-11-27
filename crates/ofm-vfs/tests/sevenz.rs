@@ -424,3 +424,37 @@ fn encrypted_headers_give_the_password_for_symlink_targets() {
     assert_eq!(seen.len(), 2);
     assert_eq!(passwords.asked(), [false, true], "asked once per password");
 }
+
+#[test]
+fn a_damaged_block_does_not_lock_the_others() {
+    let good = body();
+    let (_tmp, path) = archive(|w| {
+        w.set_content_methods(aes(EncoderMethod::COPY));
+        add(w, file("good"), &good);
+        // The smallest block, so the password is tried on it first.
+        add(w, file("bad"), &[7; 100]);
+    });
+    let first = sevenz_rust2::Archive::open(&path).unwrap().pack_sizes()[0];
+    corrupt_packed_byte(&path, first as usize + 40);
+
+    let passwords = Script::new(&["secret"]);
+    let mut reader = open(&path, &passwords);
+    let (seen, result) = visit(&mut *reader, &["good", "bad"]);
+    assert!(
+        matches!(result, Err(ArchiveError::Corrupt { .. })),
+        "{result:?}"
+    );
+    assert_eq!(seen[0], one("good", &good));
+    assert_eq!(passwords.asked(), [false]);
+
+    // On its own it cannot be told from a wrong password: bounded, then a clear error.
+    let passwords = Script::new(&["secret"; 10]);
+    let mut reader = open(&path, &passwords);
+    let (seen, result) = visit(&mut *reader, &["bad"]);
+    assert!(
+        matches!(result, Err(ArchiveError::WrongPassword(_))),
+        "{result:?}"
+    );
+    assert!(seen.is_empty());
+    assert_eq!(passwords.asked().len(), MAX_PASSWORD_ATTEMPTS as usize);
+}
