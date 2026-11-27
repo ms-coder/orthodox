@@ -258,3 +258,4 @@ Open: #8/#9 half-written in WIP commit on m8/fix-m6m7-review (ofm-jobs tests ext
 - Decision: REVIEW-M6M7 #5 (external symlink swap of an extraction parent dir) deferred to M9 together with M3 finding m1: same class, both need a dirfd-based `Fs` revision. Tell Igor at G3.
 - Disk: removed `target/` in worktrees of already merged branches (~55 GB).
 - Then: merge both, T8.5 adversarial tests (unmerged), full `locked-check.sh`, reconcile docs/G3-CHECKLIST.md, STOP at G3.
+- 2026-11-27 (update, Igor): GLM is still out of quota -> use Kimi; Sonnet may be used more intensively until the weekly reset on Sunday 2026-11-29. So: T8.11 moved from GLM to a Sonnet ui-engineer (same worktree/branch); #5 is NOT deferred after all: Sonnet fileops-engineer on it (../orthodox-wt-fix5, m8/fix-extract-toctou). This replaces the "defer #5" decision above.
