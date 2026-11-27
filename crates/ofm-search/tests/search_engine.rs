@@ -895,6 +895,28 @@ fn archive_content_search() {
     assert!(hit.content.is_some());
 }
 
+#[test]
+fn unreadable_files_outside_the_filter_are_silent_when_probing_archives() {
+    if !locked_files_work() {
+        eprintln!("running as root: skipping");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["locked.txt", "locked.bin"] {
+        let p = dir.path().join(name);
+        std::fs::write(&p, b"needle\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    for content in [None, Some(ContentQuery::text("needle"))] {
+        let mut q = with_name(&query_for(dir.path()), "*.txt");
+        q.search_archives = true;
+        q.content = content;
+        let r = run(q);
+        let warned: Vec<&Path> = r.warnings.iter().map(|w| w.path.as_path()).collect();
+        assert_eq!(warned, [dir.path().join("locked.txt")]);
+    }
+}
+
 // ------------------------------------------------------------------- perf (opt-in)
 
 #[test]

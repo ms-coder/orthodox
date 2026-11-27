@@ -26,6 +26,8 @@ pub(crate) enum ArchiveCheck {
     PlainFile,
     /// The format's backend is not implemented yet (T6.1 stubs).
     StubBackend,
+    /// The file itself could not be read, so it may not be an archive at all.
+    Unreadable(String),
     /// A supported archive we cannot search inside (encrypted, corrupt, limit); the
     /// reason is for the warning.
     Unsearchable(String),
@@ -41,6 +43,7 @@ pub(crate) fn try_open_archive(path: &Path, cancel: &CancelToken) -> ArchiveChec
         Err(ArchiveError::NotAnArchive(_)) => ArchiveCheck::PlainFile,
         Err(ArchiveError::NotImplemented(_)) => ArchiveCheck::StubBackend,
         Err(ArchiveError::Cancelled) => ArchiveCheck::Unsearchable("cancelled".to_owned()),
+        Err(e @ ArchiveError::Io { .. }) => ArchiveCheck::Unreadable(format!("{e}")),
         Err(e) => ArchiveCheck::Unsearchable(format!("{e}")),
     }
 }
