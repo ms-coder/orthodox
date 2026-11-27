@@ -126,13 +126,27 @@ pub fn goto_target(hit: &Hit) -> Option<(Location, OsString)> {
     }
 }
 
-/// Local file F3 / F4 act on, and for a content hit the byte offset of the first match.
-pub fn file_target(hit: &Hit) -> Option<(PathBuf, Option<u64>)> {
-    let path = hit.real_path()?.to_owned();
+/// File F3 / F4 act on, and for a content hit the byte offset of the first match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileTarget {
+    /// A local path (including a panelized hit's real path).
+    Local(PathBuf, Option<u64>),
+    /// An archive path and normalized entry path.
+    Archive(PathBuf, PathBuf, Option<u64>),
+}
+
+/// Resolve a hit without requiring archive entries to have a local `real_path`.
+pub fn file_target(hit: &Hit) -> Option<FileTarget> {
     if is_dir(hit) {
         return None;
     }
-    Some((path, hit.content.as_ref().map(|c| c.first.byte_offset)))
+    let offset = hit.content.as_ref().map(|c| c.first.byte_offset);
+    match &hit.location {
+        Location::Archive { archive, inner } => {
+            Some(FileTarget::Archive(archive.clone(), inner.clone(), offset))
+        }
+        _ => Some(FileTarget::Local(hit.real_path()?.to_owned(), offset)),
+    }
 }
 
 #[cfg(test)]
@@ -206,7 +220,7 @@ mod tests {
         assert_eq!(c.size, "10");
         assert_eq!(
             file_target(&h),
-            Some((PathBuf::from("/srv/a.txt"), Some(1000)))
+            Some(FileTarget::Local(PathBuf::from("/srv/a.txt"), Some(1000)))
         );
     }
 
@@ -242,11 +256,11 @@ mod tests {
         let (loc, name) = goto_target(&h).unwrap();
         assert_eq!(loc, Location::Local("/d".into()));
         assert_eq!(name, raw.file_name().unwrap());
-        assert_eq!(file_target(&h).unwrap().0, raw);
+        assert_eq!(file_target(&h), Some(FileTarget::Local(raw.clone(), None)));
     }
 
     #[test]
-    fn archive_hits_go_to_the_archive_but_cannot_be_viewed() {
+    fn archive_hits_go_to_the_archive_and_can_be_viewed() {
         let h = Hit {
             location: Location::Archive {
                 archive: "/d/x.zip".into(),
@@ -265,6 +279,13 @@ mod tests {
             }
         );
         assert_eq!(name, "readme.txt");
-        assert!(file_target(&h).is_none());
+        assert_eq!(
+            file_target(&h),
+            Some(FileTarget::Archive(
+                PathBuf::from("/d/x.zip"),
+                PathBuf::from("docs/readme.txt"),
+                None,
+            ))
+        );
     }
 }

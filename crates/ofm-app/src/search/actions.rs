@@ -2,15 +2,12 @@
 //! (F4). The Find window calls these; they use the existing panel navigation, viewer and editor
 //! APIs and never touch the file system themselves.
 
-use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
 
-use gtk::glib;
 use gtk::prelude::*;
 use ofm_search::Hit;
 
-use super::rows;
+use super::rows::{self, FileTarget};
 use crate::context::AppContext;
 use crate::i18n::tr;
 use crate::navigation::goto::navigate;
@@ -42,38 +39,36 @@ pub fn raise_main(ctx: &Rc<AppContext>) {
 /// F3 on a hit: the viewer window on its file; for a content hit it scrolls to the first match
 /// once the file is open. `Err` carries a message for hits that cannot be viewed.
 pub fn view(ctx: &Rc<AppContext>, hit: &Hit) -> Result<(), String> {
-    let Some((path, offset)) = rows::file_target(hit) else {
-        return Err(tr("Only local files can be viewed from the results.").to_owned());
+    let Some(target) = rows::file_target(hit) else {
+        return Err(tr("Only files can be viewed from the results.").to_owned());
     };
-    let Some(session) = crate::viewer::window::open(ctx, vec![path], 0) else {
-        return Ok(());
-    };
-    if let Some(off) = offset.filter(|o| *o > 0) {
-        // The viewer opens files on a worker and has no start-offset argument: jump as soon as
-        // the document and the viewport exist (a few ticks), give up after ~3 s.
-        let mut tries = 0u32;
-        glib::timeout_add_local(Duration::from_millis(75), move || {
-            tries += 1;
-            if !session.is_empty() {
-                session.jump_to(off);
-                if session.top() > 0 || tries > 40 {
-                    return glib::ControlFlow::Break;
-                }
+    match target {
+        FileTarget::Local(path, offset) => {
+            let Some(session) = crate::viewer::window::open(ctx, vec![path], 0) else {
+                return Ok(());
+            };
+            if let Some(offset) = offset {
+                crate::viewer::window::jump_to_offset_when_ready(&session, offset);
             }
-            if tries > 40 || !session.window.is_visible() {
-                return glib::ControlFlow::Break;
-            }
-            glib::ControlFlow::Continue
-        });
+        }
+        FileTarget::Archive(archive, inner, offset) => {
+            crate::panel::archive_extract::view_file_at(ctx, archive, inner, offset);
+        }
     }
     Ok(())
 }
 
-/// F4 on a hit: the configured editor on its file.
-pub fn edit(ctx: &Rc<AppContext>, hit: &Hit) -> Result<PathBuf, String> {
-    let Some((path, _)) = rows::file_target(hit) else {
-        return Err(tr("Only local files can be edited from the results.").to_owned());
+/// F4 on a hit: the configured editor on a local file. Archive entries use the archive panel's
+/// read-only temp-extract-and-view path; edits are never presented as archive write-back.
+pub fn edit(ctx: &Rc<AppContext>, hit: &Hit) -> Result<(), String> {
+    let Some(target) = rows::file_target(hit) else {
+        return Err(tr("Only files can be edited from the results.").to_owned());
     };
-    crate::desktop::editor::open_in_editor(ctx, &path);
-    Ok(path)
+    match target {
+        FileTarget::Local(path, _) => crate::desktop::editor::open_in_editor(ctx, &path),
+        FileTarget::Archive(archive, inner, offset) => {
+            crate::panel::archive_extract::view_file_at(ctx, archive, inner, offset);
+        }
+    }
+    Ok(())
 }

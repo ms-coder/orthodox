@@ -421,6 +421,11 @@ pub fn view_cursor(ctx: &Rc<AppContext>) {
 
 /// Extract `inner` of `archive` on the pool and open the viewer on it.
 pub fn view_file(ctx: &Rc<AppContext>, archive: PathBuf, inner: PathBuf) {
+    view_file_at(ctx, archive, inner, None);
+}
+
+/// View an archive entry and scroll to `offset` after its document opens.
+pub fn view_file_at(ctx: &Rc<AppContext>, archive: PathBuf, inner: PathBuf, offset: Option<u64>) {
     let Some(st) = state(ctx) else { return };
     let cancel = CancelToken::new();
     let serial = st.begin(&cancel);
@@ -462,7 +467,7 @@ pub fn view_file(ctx: &Rc<AppContext>, archive: PathBuf, inner: PathBuf) {
                         ),
                     );
                 }
-                Ok(x) if current => open_in_viewer(&ctx, x),
+                Ok(x) if current => open_in_viewer(&ctx, x, offset),
                 Ok(x) => remove_temp_later(&ctx, x.dir), // cancelled meanwhile
                 Err(ExtractFail::Cancelled) => {}
                 Err(e) if current => report_error(&ctx, &e.text()),
@@ -480,7 +485,7 @@ fn remove_temp_later(ctx: &Rc<AppContext>, dir: PathBuf) {
 }
 
 /// Open the extracted file; its directory is deleted when the viewer window closes.
-fn open_in_viewer(ctx: &Rc<AppContext>, x: Extracted) {
+fn open_in_viewer(ctx: &Rc<AppContext>, x: Extracted, offset: Option<u64>) {
     match crate::viewer::window::open(ctx, vec![x.file.clone()], 0) {
         Some(session) => {
             let (service, pool, dir) = (
@@ -492,6 +497,9 @@ fn open_in_viewer(ctx: &Rc<AppContext>, x: Extracted) {
                 let (service, dir) = (service.clone(), dir.clone());
                 pool.spawn(move || service.remove_temp(&dir));
             });
+            if let Some(offset) = offset {
+                crate::viewer::window::jump_to_offset_when_ready(&session, offset);
+            }
         }
         None => remove_temp_later(ctx, x.dir), // no window (headless): nothing to show
     }
