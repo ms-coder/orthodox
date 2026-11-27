@@ -281,3 +281,92 @@ fn esc_stops_a_long_search_then_closes_and_leaves_no_threads() {
         thread_count(pid) <= baseline + 1
     });
 }
+
+/// F3 on archive hits from the Find window: the password prompt and the "too large" message are
+/// shown over the Find window and take its keys; Esc closes the prompt, not the window.
+#[test]
+fn archive_hit_dialogs_belong_to_the_find_window() {
+    if !tools_available() || !engine_available() {
+        return;
+    }
+    let scratch = TreeSpec::new()
+        .file("secret.txt", FileSpec::content(b"top secret"))
+        .build_temp()
+        .unwrap();
+    // One byte over the 64 MiB F3 limit.
+    std::fs::File::create(scratch.path().join("huge.bin"))
+        .unwrap()
+        .set_len((64 << 20) + 1)
+        .unwrap();
+    let zip = |args: &[&str]| {
+        std::process::Command::new("zip")
+            .args(args)
+            .current_dir(scratch.path())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    if !zip(&["-q", "-P", "secret", "enc.zip", "secret.txt"])
+        || !zip(&["-q", "big.zip", "huge.bin"])
+    {
+        eprintln!("skipping: the zip CLI is not installed");
+        return;
+    }
+    let read = |name: &str| std::fs::read(scratch.path().join(name)).unwrap();
+    let search = |archive: &str, mask: &str| {
+        let left = TreeSpec::new().file(archive, FileSpec::content(&read(archive)));
+        let s = Running::launch_with("", &left, &TreeSpec::new());
+        open_find(&s);
+        type_text(&s, mask);
+        // "Search in archives" (mnemonic), then Enter starts the search.
+        s.keys(&["alt+v"]);
+        s.keys(&["Return"]);
+        std::thread::sleep(Duration::from_secs(2));
+        s
+    };
+
+    // Encrypted: Esc closes the prompt only; the next F3 takes the password and views.
+    let s = search("enc.zip", "secret*");
+    let windows = ofm_windows(&s).len();
+    s.keys(&["alt+u"]); // the results list
+    let before = s.shot();
+    s.keys(&["F3"]);
+    wait_until("the password prompt", 15, || {
+        before.diff_pixels(&s.shot()) > 20_000
+    });
+    save(&s, "t811-find-password");
+    s.keys(&["Escape"]);
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(ofm_windows(&s).len(), windows, "Esc closed the Find window");
+    // Cancelling the prompt is reported ("A password is required"), over the Find window too;
+    // Enter closes that message and nothing else.
+    save(&s, "t811-find-password-cancelled");
+    s.keys(&["Return"]);
+    wait_until("the message closed", 15, || {
+        before.diff_pixels(&s.shot()) < 5_000
+    });
+    assert_eq!(ofm_windows(&s).len(), windows);
+    s.keys(&["F3"]);
+    wait_until("the password prompt again", 15, || {
+        before.diff_pixels(&s.shot()) > 20_000
+    });
+    type_text(&s, "secret");
+    s.keys(&["Return"]);
+    wait_until("the viewer", 15, || ofm_windows(&s).len() > windows);
+    drop(s);
+
+    // Too large: the message appears over the Find window and Enter closes just the message.
+    let s = search("big.zip", "huge*");
+    let windows = ofm_windows(&s).len();
+    s.keys(&["alt+u"]); // the results list
+    let before = s.shot();
+    s.keys(&["F3"]);
+    wait_until("the too-large message", 15, || {
+        before.diff_pixels(&s.shot()) > 20_000
+    });
+    save(&s, "t811-find-too-large");
+    s.keys(&["Return"]);
+    wait_until("the message closed", 15, || {
+        before.diff_pixels(&s.shot()) < 5_000
+    });
+    assert_eq!(ofm_windows(&s).len(), windows);
+}

@@ -14,8 +14,8 @@ use ofm_jobs::{ConflictAnswer, ExtractOpts, JobSpec, RunMode};
 use ofm_vfs::archive::{ArchiveEntryKind, ArchiveError, ArchiveLimits, PasswordSource};
 
 use super::archive::{
-    ArchiveService, busy_after, busy_done, default_extract_dir, error_text, report_error, split,
-    state,
+    ArchiveService, ViewOrigin, busy_after, busy_after_in, busy_done, default_extract_dir,
+    error_text, report_error, report_error_over, split, state,
 };
 use crate::chrome::statusline::{SizeFormat, format_size};
 use crate::compare::message;
@@ -461,18 +461,37 @@ pub fn view_cursor(ctx: &Rc<AppContext>) {
 
 /// Extract `inner` of `archive` on the pool and open the viewer on it.
 pub fn view_file(ctx: &Rc<AppContext>, archive: PathBuf, inner: PathBuf) {
-    view_file_at(ctx, archive, inner, None);
+    view_file_at(ctx, archive, inner, None, None);
 }
 
-/// View an archive entry and scroll to `offset` after its document opens.
-pub fn view_file_at(ctx: &Rc<AppContext>, archive: PathBuf, inner: PathBuf, offset: Option<u64>) {
+/// View an archive entry and scroll to `offset` after its document opens. `from`: the window the
+/// view was asked for in, when it is not the main window.
+pub fn view_file_at(
+    ctx: &Rc<AppContext>,
+    archive: PathBuf,
+    inner: PathBuf,
+    offset: Option<u64>,
+    from: Option<ViewOrigin>,
+) {
     let Some(st) = state(ctx) else { return };
     let cancel = CancelToken::new();
     let serial = st.begin(&cancel);
-    busy_after(ctx, serial, tr("Extracting... (Esc cancels)"));
+    let busy = tr("Extracting... (Esc cancels)");
+    let restore_status: Option<Box<dyn Fn()>> = match &from {
+        Some(origin) => {
+            st.set_origin(serial, origin.clone());
+            let status = origin.status.clone();
+            Some(Box::new(busy_after_in(ctx, serial, status, busy)))
+        }
+        None => {
+            busy_after(ctx, serial, busy);
+            None
+        }
+    };
     let service = ctx.services.archives.clone();
     let worker_cancel = cancel.clone();
     let rx = wiring::run_on_pool(&ctx.services.pool, move |tx| {
+        let _view = password::for_view(serial);
         let _ = tx.send_blocking(extract_for_view(
             &service,
             &archive,
@@ -494,13 +513,20 @@ pub fn view_file_at(ctx: &Rc<AppContext>, archive: PathBuf, inner: PathBuf, offs
             let current = st.is_current(serial);
             if current {
                 st.end(serial);
-                busy_done(&ctx);
+            }
+            match &restore_status {
+                Some(restore) => restore(),
+                None if current => busy_done(&ctx),
+                None => {}
             }
             match result {
                 Ok(x) if current => open_in_viewer(&ctx, x, offset),
                 Ok(x) => remove_temp_later(&ctx, x.dir), // cancelled meanwhile
                 Err(ExtractFail::Cancelled) => {}
-                Err(e) if current => report_error(&ctx, &e.text()),
+                Err(e) if current => {
+                    let over = from.as_ref().and_then(|o| o.window.upgrade());
+                    report_error_over(&ctx, over.as_ref(), &e.text());
+                }
                 Err(_) => {}
             }
             std::ops::ControlFlow::Break(())

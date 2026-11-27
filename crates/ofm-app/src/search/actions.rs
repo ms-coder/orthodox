@@ -11,6 +11,8 @@ use super::rows::{self, FileTarget};
 use crate::context::AppContext;
 use crate::i18n::tr;
 use crate::navigation::goto::navigate;
+use crate::panel::archive::ViewOrigin;
+use crate::panel::archive_extract::view_file_at;
 
 /// Open the directory containing `hit` in the active panel with the cursor on it. Returns false
 /// for hits that have no location a panel can show.
@@ -36,9 +38,9 @@ pub fn raise_main(ctx: &Rc<AppContext>) {
     }
 }
 
-/// F3 on a hit: the viewer window on its file; for a content hit it scrolls to the first match
+/// F3 on a hit (`from`: the window asking, for archive hits' dialogs and progress): the viewer window on its file; for a content hit it scrolls to the first match
 /// once the file is open. `Err` carries a message for hits that cannot be viewed.
-pub fn view(ctx: &Rc<AppContext>, hit: &Hit) -> Result<(), String> {
+pub fn view(ctx: &Rc<AppContext>, hit: &Hit, from: Option<ViewOrigin>) -> Result<(), String> {
     let Some(target) = rows::file_target(hit) else {
         return Err(tr("Only files can be viewed from the results.").to_owned());
     };
@@ -52,7 +54,7 @@ pub fn view(ctx: &Rc<AppContext>, hit: &Hit) -> Result<(), String> {
             }
         }
         FileTarget::Archive(archive, inner, offset) => {
-            crate::panel::archive_extract::view_file_at(ctx, archive, inner, offset);
+            view_file_at(ctx, archive, inner, offset, from);
         }
     }
     Ok(())
@@ -60,14 +62,14 @@ pub fn view(ctx: &Rc<AppContext>, hit: &Hit) -> Result<(), String> {
 
 /// F4 on a hit: the configured editor on a local file. Archive entries use the archive panel's
 /// read-only temp-extract-and-view path; edits are never presented as archive write-back.
-pub fn edit(ctx: &Rc<AppContext>, hit: &Hit) -> Result<(), String> {
+pub fn edit(ctx: &Rc<AppContext>, hit: &Hit, from: Option<ViewOrigin>) -> Result<(), String> {
     let Some(target) = rows::file_target(hit) else {
         return Err(tr("Only files can be edited from the results.").to_owned());
     };
     match target {
         FileTarget::Local(path, _) => crate::desktop::editor::open_in_editor(ctx, &path),
         FileTarget::Archive(archive, inner, offset) => {
-            crate::panel::archive_extract::view_file_at(ctx, archive, inner, offset);
+            view_file_at(ctx, archive, inner, offset, from);
         }
     }
     Ok(())

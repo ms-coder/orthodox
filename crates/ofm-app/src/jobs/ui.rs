@@ -88,6 +88,11 @@ pub fn activate_focused_button(ctx: &AppContext) -> bool {
 
 /// Show a plain message dialog with one OK button (Enter or Esc close it).
 pub fn message(ctx: &Rc<AppContext>, title: &str, body: &str) {
+    message_over(ctx, None, title, body);
+}
+
+/// [`message`] over another toplevel than the main window (`None`: the main window).
+pub fn message_over(ctx: &Rc<AppContext>, over: Option<&gtk::Window>, title: &str, body: &str) {
     let dialog = adw::Dialog::new();
     dialog.set_title(title);
     dialog.set_content_width(460);
@@ -105,7 +110,10 @@ pub fn message(ctx: &Rc<AppContext>, title: &str, body: &str) {
     ok.connect_clicked(move |_| {
         d.close();
     });
-    modal::present(ctx, &dialog, || true);
+    match over {
+        Some(window) => modal::present_over(ctx, &dialog, window, || true),
+        None => modal::present(ctx, &dialog, || true),
+    };
 }
 
 /// Home directory for `~` expansion in path fields.

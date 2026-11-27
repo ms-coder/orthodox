@@ -25,7 +25,9 @@ use crate::context::AppContext;
 use crate::dispatch::{self, DialogKeyFallback, WindowKind};
 use crate::i18n::tr;
 use crate::jobs::ui;
+use crate::navigation::modal::ModalStack;
 use crate::navigation::store::HistoryStore;
+use crate::panel::archive::{self, ViewOrigin};
 use crate::search::form::{
     ENCODING_CHOICES, Field, FindForm, LocalClock, ParseCtx, parse_roots, title_for,
 };
@@ -516,6 +518,14 @@ impl FindWindow {
                         st.set_window(None);
                     }
                     DialogKeyFallback::ensure(&ctx).clear();
+                    // An extraction asked for here ends with the window, and so does any
+                    // dialog (password, error) shown over it.
+                    if let Some(st) = archive::state(&ctx) {
+                        st.cancel_view_from(this.window.upcast_ref());
+                    }
+                    if let Some(stack) = ctx.ext.get::<ModalStack>() {
+                        stack.close_over(&this.window);
+                    }
                 }
                 glib::Propagation::Proceed
             });
@@ -785,7 +795,7 @@ impl FindWindow {
         let (Some(ctx), Some(hit)) = (self.ctx.upgrade(), self.current_hit()) else {
             return;
         };
-        if let Err(msg) = actions::view(&ctx, &hit) {
+        if let Err(msg) = actions::view(&ctx, &hit, Some(self.view_origin())) {
             self.notice(&msg);
         }
     }
@@ -795,13 +805,21 @@ impl FindWindow {
         let (Some(ctx), Some(hit)) = (self.ctx.upgrade(), self.current_hit()) else {
             return;
         };
-        if let Err(msg) = actions::edit(&ctx, &hit) {
+        if let Err(msg) = actions::edit(&ctx, &hit, Some(self.view_origin())) {
             self.notice(&msg);
         }
     }
 
     fn notice(&self, text: &str) {
         self.w.status.set_text(text);
+    }
+
+    /// This window stays on top of the main one: what an archive view has to say goes here.
+    fn view_origin(&self) -> ViewOrigin {
+        ViewOrigin {
+            window: self.window.clone().upcast::<gtk::Window>().downgrade(),
+            status: self.w.status.downgrade(),
+        }
     }
 
     /// F10: show the results (the selected ones when several are selected, else all) in the active
@@ -896,9 +914,16 @@ impl FindWindow {
         }
     }
 
-    /// Esc (`dialog.cancel`): close the warnings popup, stop a running search, else close.
+    /// Esc (`dialog.cancel`): cancel an archive extraction started here, close the warnings
+    /// popup, stop a running search, else close.
     pub fn on_cancel(self: &Rc<Self>) {
-        if self.w.warnings_button.is_active() {
+        if self
+            .ctx
+            .upgrade()
+            .and_then(|ctx| archive::state(&ctx))
+            .is_some_and(|st| st.cancel_view_from(self.window.upcast_ref()))
+        {
+        } else if self.w.warnings_button.is_active() {
             self.w.warnings_button.popdown();
         } else if self.run.is_active() {
             self.run.stop();
@@ -942,8 +967,15 @@ fn install_fallback(ctx: &Rc<AppContext>) {
         let Some(w) = state(ctx).and_then(|s| s.window()) else {
             return false;
         };
-        w.window.is_active() && w.on_chord(ctx, chord)
+        w.window.is_active() && !has_dialog(ctx, &w) && w.on_chord(ctx, chord)
     }));
+}
+
+/// Whether a dialog (password, error) is shown over the Find window: it takes the keys then.
+pub(crate) fn has_dialog(ctx: &AppContext, w: &FindWindow) -> bool {
+    ctx.ext
+        .get::<ModalStack>()
+        .is_some_and(|s| s.top_is_over(&w.window))
 }
 
 // ---- result columns ----------------------------------------------------------------------------

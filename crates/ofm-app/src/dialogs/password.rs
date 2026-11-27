@@ -95,6 +95,8 @@ pub struct PasswordRequest {
     pub retry: bool,
     /// Which kind of operation asks.
     pub origin: Origin,
+    /// The view operation that asks (see [`for_view`]): its window takes the dialog.
+    pub view: Option<u64>,
     /// Answer exactly once; dropping it means "cancelled".
     pub responder: Responder<Option<Secret>>,
     /// Set by whoever cancels the operation: the dialog closes itself.
@@ -118,6 +120,26 @@ impl Drop for ScopeGuard {
 /// While the guard lives, password prompts raised on this thread are bound to `cancel`.
 pub fn scope(cancel: &CancelToken) -> ScopeGuard {
     ScopeGuard(SCOPE.with(|s| s.borrow_mut().replace(cancel.clone())))
+}
+
+thread_local! {
+    /// The view operation running on this thread.
+    static VIEW: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Keeps a view operation's serial on this thread (see [`for_view`]).
+pub struct ViewGuard(Option<u64>);
+
+impl Drop for ViewGuard {
+    fn drop(&mut self) {
+        VIEW.with(|v| v.set(self.0));
+    }
+}
+
+/// While the guard lives, prompts raised on this thread belong to the view operation `serial`
+/// (`ArchiveState`), and are shown over the window it was started from.
+pub fn for_view(serial: u64) -> ViewGuard {
+    ViewGuard(VIEW.with(|v| v.replace(Some(serial))))
 }
 
 thread_local! {
@@ -233,6 +255,7 @@ impl PasswordProvider for AppPasswords {
             archive: archive.to_owned(),
             retry,
             origin,
+            view: VIEW.with(std::cell::Cell::get),
             responder,
             abandoned: Arc::clone(&abandoned),
         };
@@ -413,7 +436,14 @@ pub fn present(ctx: &Rc<AppContext>, req: PasswordRequest) {
             true
         }
     };
-    if !modal::present(ctx, &dialog, on_ok) {
+    let over = req
+        .view
+        .and_then(|serial| crate::panel::archive::state(ctx)?.window_of(serial));
+    let shown = match &over {
+        Some(window) => modal::present_over(ctx, &dialog, window, on_ok),
+        None => modal::present(ctx, &dialog, on_ok),
+    };
+    if !shown {
         responder.borrow_mut().take(); // no window: cancel
         return;
     }

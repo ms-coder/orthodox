@@ -57,6 +57,35 @@ impl ModalStack {
     pub fn depth(&self) -> usize {
         self.stack.borrow().len()
     }
+
+    /// Whether the topmost dialog is shown over `window`.
+    pub fn top_is_over(&self, window: &impl IsA<gtk::Widget>) -> bool {
+        self.stack
+            .borrow()
+            .last()
+            .is_some_and(|s| is_over(&s.dialog, window))
+    }
+
+    /// Close every dialog shown over `window` (it is going away).
+    pub fn close_over(&self, window: &impl IsA<gtk::Widget>) {
+        let gone: Vec<adw::Dialog> = self
+            .stack
+            .borrow()
+            .iter()
+            .filter(|s| is_over(&s.dialog, window))
+            .map(|s| s.dialog.clone())
+            .collect();
+        // Outside of the borrow: closing runs `remove`.
+        for dialog in gone {
+            dialog.force_close();
+        }
+    }
+}
+
+fn is_over(dialog: &adw::Dialog, window: &impl IsA<gtk::Widget>) -> bool {
+    dialog
+        .root()
+        .is_some_and(|root| root.upcast_ref::<gtk::Widget>() == window.upcast_ref())
 }
 
 /// Register `dialog.ok` and `dialog.cancel`.
