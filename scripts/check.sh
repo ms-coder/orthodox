@@ -18,6 +18,9 @@ if [[ "${OFM_SKIP_UI:-0}" == "1" ]]; then
   echo "OFM_SKIP_UI=1 -> skipping UI tests"
 elif command -v xvfb-run >/dev/null 2>&1; then
   # GTK must be initialised on one thread only -> run UI tests single-threaded.
+  # Never the real desktop session: no Wayland, no session bus.
+  unset WAYLAND_DISPLAY
+  export DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent
   GDK_BACKEND=x11 GSK_RENDERER=cairo NO_AT_BRIDGE=1 \
     xvfb-run -a -s "-screen 0 1600x1000x24" \
     cargo test -p ofm-app -- --test-threads=1

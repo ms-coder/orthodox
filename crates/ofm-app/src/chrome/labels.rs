@@ -4,7 +4,18 @@
 
 use ofm_core::{CommandId, cmd};
 
+use crate::context::AppContext;
 use crate::i18n::tr;
+
+/// English title of `id` as menus, Help and accessible names show it (pass it to `tr`): the
+/// registry title, except where a setting changes what the command does. With `[jobs] trash =
+/// false`, `file.delete` does not go to the Trash.
+pub fn command_title(ctx: &AppContext, id: CommandId) -> &'static str {
+    if id == cmd::FILE_DELETE && !ctx.config.borrow().jobs.trash {
+        return "Delete (permanently)";
+    }
+    id.info().map_or(id.as_str(), |i| i.title)
+}
 
 /// Short label of `id` for the F-key bar.
 pub fn short_label(id: CommandId) -> String {

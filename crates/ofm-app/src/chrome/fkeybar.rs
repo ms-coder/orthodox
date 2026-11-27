@@ -9,8 +9,9 @@ use gtk::glib;
 use gtk::prelude::*;
 use ofm_core::{CommandId, Key, KeyChord, Mods};
 
-use super::labels::short_label;
+use super::labels::{command_title, short_label};
 use crate::context::AppContext;
+use crate::i18n::tr;
 
 const KEYS: u8 = 10;
 
@@ -135,7 +136,7 @@ impl FKeyBar {
                 cell.button.add_css_class("empty");
             }
             let name = match cmd {
-                Some(c) => format!("F{n}: {}", c.info().map_or(c.as_str(), |i| i.title)),
+                Some(c) => format!("F{n}: {}", tr(command_title(&ctx, c))),
                 None => format!("F{n}"),
             };
             cell.button

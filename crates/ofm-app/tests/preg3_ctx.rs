@@ -9,7 +9,7 @@ mod fileops_support;
 
 use adw::prelude::*;
 use fileops_support::*;
-use ofm_app::chrome::{contextmenu, notice};
+use ofm_app::chrome::{ChromeState, contextmenu, notice};
 use ofm_app::desktop::transfer;
 use ofm_app::dialogs::preferences;
 use ofm_app::jobs::{self, Capture};
@@ -57,6 +57,7 @@ fn preg3_gaps() {
     config_warnings_are_visible(&fx);
     help_and_preferences(&fx);
     context_menu(&fx);
+    delete_titles_follow_the_trash_setting(&fx);
     typing_filters(&fx);
 
     let ctrl = jobs::controller(&fx.ctx).unwrap();
@@ -170,6 +171,50 @@ fn context_menu(fx: &Fixture) {
     pump_for(300);
 }
 
+/// With `[jobs] trash = false` no menu or Help row promises the Trash; with it back on they do.
+fn delete_titles_follow_the_trash_setting(fx: &Fixture) {
+    let menubar = fx
+        .ctx
+        .ext
+        .get::<ChromeState>()
+        .and_then(|s| s.menubar.borrow().clone())
+        .expect("menu bar");
+    let titles = || {
+        fx.cursor_to(0, "a.txt");
+        fx.run(cmd::PANEL_CONTEXT_MENU);
+        pump_for(200);
+        let context = contextmenu::current(&fx.ctx)
+            .and_then(|m| m.title_of(cmd::FILE_DELETE))
+            .expect("context menu row");
+        contextmenu::close(&fx.ctx);
+        pump_for(200);
+        menubar.open(0);
+        pump_for(200);
+        let bar = menubar
+            .row_title(0, cmd::FILE_DELETE)
+            .expect("menu bar row");
+        menubar.close();
+        pump_for(200);
+        [context, bar]
+    };
+    let help_has = |needle: &str| {
+        fx.run(cmd::APP_HELP);
+        pump_for(200);
+        let mut out = Vec::new();
+        label_texts(&fx.find("ofm-help-list"), &mut out);
+        fx.run(cmd::DIALOG_CANCEL);
+        pump_until("help closed", || fx.modal_depth() == 0);
+        pump_for(300);
+        out.iter().any(|(t, _)| t.contains(needle))
+    };
+    assert_eq!(titles(), ["Delete (permanently)", "Delete (permanently)"]);
+    assert!(!help_has("to Trash"), "Help promises the Trash");
+    fx.ctx.config.borrow_mut().jobs.trash = true;
+    assert_eq!(titles(), ["Delete (to Trash)", "Delete (to Trash)"]);
+    assert!(help_has("Delete (to Trash)"));
+    fx.ctx.config.borrow_mut().jobs.trash = false;
+}
+
 /// `[panels] filter_as_you_type`: typing narrows the list instead of jumping.
 fn typing_filters(fx: &Fixture) {
     let ctrl = fx.ctx.active_controller();
@@ -241,6 +286,27 @@ fn job_defaults(fx: &Fixture, capture: &Capture) {
     }
     fx.run(cmd::DIALOG_CANCEL);
     pump_until("copy dialog closed", || fx.modal_depth() == 0);
+    pump_for(300);
+
+    // A move offers neither following links nor fsync: both would do nothing.
+    fx.run(cmd::FILE_MOVE);
+    pump_for(200);
+    let parallel = fx.check("ofm-transfer-parallel");
+    assert!(parallel.is_active());
+    let options = parallel.parent().expect("dialog column");
+    for id in ["ofm-transfer-follow", "ofm-transfer-sync"] {
+        assert!(
+            find_by_name(&options, id).is_none(),
+            "{id} in the move dialog"
+        );
+    }
+    let before = submitted(capture);
+    fx.run(cmd::DIALOG_OK);
+    pump_until("move submitted", || submitted(capture) == before + 1);
+    match last_job(capture).0 {
+        JobSpec::Move { opts, .. } => assert!(!opts.follow_symlinks && !opts.sync),
+        other => panic!("{other:?}"),
+    }
     pump_for(300);
 
     let source = [fx.left.path().join("a.txt")];

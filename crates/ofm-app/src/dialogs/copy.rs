@@ -269,15 +269,21 @@ pub fn present(ctx: &Rc<AppContext>, kind: TransferKind) {
         gtk::CheckButton::with_mnemonic(tr("Run in _parallel (do not wait in the queue)"));
     parallel.set_widget_name("ofm-transfer-parallel");
     // Defaults from [jobs] (F17); the user's last choice is not remembered across dialogs.
+    // Following links and fsync are offered for a copy only: a move never follows links and
+    // always syncs what it copies across devices.
     {
         let cfg = ctx.config.borrow();
-        follow.set_active(cfg.jobs.follow_symlinks);
-        sync.set_active(cfg.jobs.fsync_after_copy);
+        if kind == TransferKind::Copy {
+            follow.set_active(cfg.jobs.follow_symlinks);
+            sync.set_active(cfg.jobs.fsync_after_copy);
+        }
         parallel.set_active(jobs::default_run_mode(&cfg) == RunMode::Parallel);
     }
-    if kind != TransferKind::Rename {
+    if kind == TransferKind::Copy {
         column.append(&follow);
         column.append(&sync);
+    }
+    if kind != TransferKind::Rename {
         column.append(&parallel);
     }
     let error = ui::error_label();

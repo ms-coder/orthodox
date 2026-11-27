@@ -1,5 +1,5 @@
 //! T8.11 real-binary tests (pre-G3 UI gaps): the panel context menu (Shift+F10, Menu key, keys
-//! inside the menu), the Help dialog (F1), F3 on a directory = size calculation (F19) and
+//! inside the menu), the F9 menu bar's own keys, the Help dialog (F1), F3 on a directory = size calculation (F19) and
 //! `[terminal] return_to_panels`, all through the real `ofm` under a private Xvfb with real key events (see `real_support`). Skips
 //! when the harness tools are missing. Screenshots land in `target/screenshots/`.
 #![allow(
@@ -106,6 +106,62 @@ fn context_menu_opens_runs_and_closes_with_real_keys() {
     assert!(
         wait_until(Duration::from_secs(10), || window_count(&s) == 1),
         "Esc did not close the viewer"
+    );
+}
+
+/// F9 menu bar: Right/Left switch menus, Esc closes it and gives the focus back (the screen is
+/// as before and panel keys work), Enter runs the focused entry.
+#[test]
+fn menu_bar_switches_closes_and_runs_with_real_keys() {
+    if !tools_available() {
+        return;
+    }
+    let s = launch("");
+    s.keys(&["Down", "Down"]); // `..` -> sub -> a.txt
+    std::thread::sleep(Duration::from_millis(500));
+    let plain = s.shot();
+    s.keys(&["F9"]);
+    assert!(
+        wait_until(Duration::from_secs(10), || diff(&plain, &s.shot()) > 2000),
+        "F9 did not open the menu"
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    let files = s.shot();
+    s.keys(&["Right"]);
+    assert!(
+        wait_until(Duration::from_secs(10), || diff(&files, &s.shot()) > 2000),
+        "Right did not switch to the next menu"
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    save(&s, "preg3-menubar-right");
+    s.keys(&["Left"]);
+    assert!(
+        wait_until(Duration::from_secs(10), || diff(&files, &s.shot()) < 50),
+        "Left did not switch back to the first menu"
+    );
+    s.keys(&["Right", "Escape"]);
+    assert!(
+        wait_until(Duration::from_secs(10), || diff(&plain, &s.shot()) < 50),
+        "Esc did not close the menu and restore the panel"
+    );
+    // The panel has the keys again: Down/Up move its cursor.
+    s.keys(&["Down"]);
+    assert!(
+        wait_until(Duration::from_secs(10), || diff(&plain, &s.shot()) > 100),
+        "Down did not reach the panel after the menu closed"
+    );
+    s.keys(&["Up"]);
+    assert!(
+        wait_until(Duration::from_secs(10), || diff(&plain, &s.shot()) < 50),
+        "Up did not move the cursor back"
+    );
+    // First entry of the first menu is View: it opens the viewer on a.txt.
+    s.keys(&["F9"]);
+    std::thread::sleep(Duration::from_millis(500));
+    s.keys(&["Return"]);
+    assert!(
+        wait_until(Duration::from_secs(10), || window_count(&s) >= 2),
+        "Enter did not run the focused menu entry"
     );
 }
 
