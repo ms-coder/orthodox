@@ -53,6 +53,11 @@ impl ModalStack {
         drop(gone); // releases the modal guard outside of the borrow
     }
 
+    /// Focused widget of the topmost dialog, including dialogs shown over a viewer or Find window.
+    pub fn focus_widget(&self) -> Option<gtk::Widget> {
+        self.stack.borrow().last().and_then(|s| s.dialog.focus())
+    }
+
     /// Number of open dialogs.
     pub fn depth(&self) -> usize {
         self.stack.borrow().len()

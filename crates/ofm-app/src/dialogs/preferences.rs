@@ -161,7 +161,8 @@ pub fn present(ctx: &Rc<AppContext>) {
         });
     }
     dialog.set_focus(Some(&edit));
-    modal::present(ctx, &dialog, || true);
+    let ctx_ok = Rc::clone(ctx);
+    modal::present(ctx, &dialog, move || !ui::activate_focused_button(&ctx_ok));
 }
 
 /// Run `then` once the config directory exists: on a first run there is none, so the editor

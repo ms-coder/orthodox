@@ -75,6 +75,25 @@ fn keymap(preset: Preset) -> Keymap {
     Keymap::load(&paths, preset, None).0
 }
 
+/// Find a button by its visible (mnemonic-free) label, including inside an Adwaita dialog.
+fn find_button(root: &gtk::Widget, label: &str) -> Option<gtk::Button> {
+    if let Some(button) = root.downcast_ref::<gtk::Button>()
+        && button
+            .label()
+            .is_some_and(|text| text.replace('_', "") == label)
+    {
+        return Some(button.clone());
+    }
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if let Some(button) = find_button(&widget, label) {
+            return Some(button);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
 #[test]
 fn t23_commands_have_handlers_and_keys_in_far_and_tc() {
     let mut reg = CommandRegistry::new();
@@ -441,8 +460,22 @@ fn navigation_scenario() {
     settle(&ctx);
     assert!(!ctx.modal_open());
     assert_eq!(loc(&ctx, LEFT), local(&left.path().join("a")));
-    hotlist::edit(&ctx);
+    // Enter activates the focused dialog button instead of picking a row / saving and closing.
+    ctx.execute(cmd::PANEL_HOTLIST);
     assert!(ctx.modal_open());
+    let edit = find_button(win.window.upcast_ref(), "Edit...").unwrap();
+    edit.grab_focus();
+    assert_eq!(stack.focus_widget(), Some(edit.clone().upcast()));
+    ctx.execute(cmd::DIALOG_OK);
+    assert!(ctx.modal_open(), "Edit opened the hotlist editor");
+    assert_eq!(loc(&ctx, LEFT), local(&left.path().join("a")));
+    let remove = find_button(win.window.upcast_ref(), "Remove").unwrap();
+    remove.grab_focus();
+    ctx.execute(cmd::DIALOG_OK);
+    assert!(
+        ctx.modal_open(),
+        "Remove acted without treating Enter as Save and Close"
+    );
     ctx.execute(cmd::DIALOG_CANCEL);
     assert!(!ctx.modal_open());
 
