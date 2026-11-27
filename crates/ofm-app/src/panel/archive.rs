@@ -57,6 +57,7 @@ pub struct ArchiveService {
     passwords: PasswordSource,
     prompts: Arc<AppPasswords>,
     temps: Arc<Mutex<Vec<PathBuf>>>,
+    created: Arc<AtomicU64>,
 }
 
 impl ArchiveService {
@@ -70,6 +71,7 @@ impl ArchiveService {
             passwords,
             prompts,
             temps: Arc::default(),
+            created: Arc::default(),
         }
     }
 
@@ -121,6 +123,7 @@ impl ArchiveService {
             ));
             match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
                 Ok(()) => {
+                    self.created.fetch_add(1, Ordering::Relaxed);
                     self.temps().push(dir.clone());
                     return Ok(dir);
                 }
@@ -147,6 +150,11 @@ impl ArchiveService {
         for d in dirs {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    /// Number of temp directories ever created (tests).
+    pub fn temps_created(&self) -> u64 {
+        self.created.load(Ordering::Relaxed)
     }
 
     /// Number of temp directories still alive (tests).
