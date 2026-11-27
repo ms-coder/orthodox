@@ -10,7 +10,12 @@ next to each line; report anything odd per "How to report" at the bottom.
 2. **Never test on the only copy of anything.** Scratch area:
    `mkdir -p ~/ofm-g3/{a,b}` and fill `a/` with *copies* of real data (a photo
    folder, some code, documents).
-3. Sample files to create in `~/ofm-g3/a`:
+   **Already prepared for you** (made-up data, 2026-11-27): `~/ofm-g3/a` has odd names, 200 random
+   `.jpg` files, a 1 GiB sparse file, a CP1251 text, a script, a symlink and hardlink, `project.zip`,
+   `project.tar.gz`, `encrypted-password-is-ofm.zip` (password `ofm`) and `broken.zip`.
+   No 7z tool is installed here: make a 7z yourself if you can (`sudo apt install 7zip`), ideally
+   one with a password.
+3. The list of sample files, if you want to recreate them in `~/ofm-g3/a`:
    - Odd names: `a b.txt`, `-rf`, `new␊line` (`touch "$(printf 'new\nline')"`), a
      non-UTF-8 name (`touch "$(printf 'x\xff.txt')"`), a very long name.
    - `truncate -s 1G sparse.bin` (sparse file)

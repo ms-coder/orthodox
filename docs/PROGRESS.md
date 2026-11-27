@@ -4,8 +4,21 @@ The lead keeps this file current after every task. A fresh session must be able 
 
 ## Current state
 
-- Milestone: M5 done (tag m5-done); next M6 archives (not started - Igor stopped the session here to continue later). M4 done (m4-done). M3 (File operations) — **waiting for Igor at gate G2** (tag m3-done). All of T3.0–T3.7 merged, check.sh green. Reviews: T3.5 BLOCK -> T3.6 fixes -> re-review SIGN OFF WITH CONDITIONS -> T3.7 (N1 default ACL, N2 FAT unstable inodes, N3 chmod restore) merged and verified by the lead (reviewer's N1 repro now clean).
-- Next step: read Igor's G2 feedback into the "Gate feedback log", fix what he finds, then M4 (command line & terminal; T4.0 architect design first). GLM quota resets 2026-11-16 09:31 (server time); until then use Sonnet sparingly (Igor: save tokens), no Opus unless extremely important.
+- **Waiting for Igor at gate G3** (2026-11-27). M6 and M7 done (tags m6-done, m7-done); M8 merged, `m8-done` not tagged until G3 feedback is handled. Full `./scripts/locked-check.sh` green on main: 1507 passed, 0 failed, 12 ignored.
+- Next step: read Igor's G3 feedback into the "Gate feedback log", fix what they find, tag m8-done, then M9. Do not start M9 before they answer.
+- G2 is still partly unanswered (see "Still open from earlier gates" in docs/G3-CHECKLIST.md).
+
+## G3: please try this
+
+Follow **docs/G3-CHECKLIST.md** (one line per feature, then "Try to break it" and three questions).
+Start with: `cargo run -p ofm-app -- ~/ofm-g3/a ~/ofm-g3/b` (made-up test data is already there).
+Rule zero: only copies of real data, never your only copy.
+
+Things worth knowing first:
+- F3/F4 on a file inside an archive stops at 64 MiB (extract with F5 instead).
+- Cancelling an archive password prompt extracts nothing, not even unencrypted files.
+- Extraction needs `/proc` mounted.
+- Missing spec item: file highlighting has colours but no icons yet (F30).
 
 ### G2: trust the copy engine — please try this (ONLY ON COPIES OF YOUR DATA)
 
@@ -34,12 +47,12 @@ Tell me anything odd: slowness, wrong dialog wording (own-output collisions say 
 | M0 | Bootstrap | done | m0-done | |
 | M1 | Core foundations | done | m1-done | |
 | M2 | UI shell (G1) | done | m2-done | | |
-| M3 | File operations (G2) | waiting for Igor | m3-done | | |
+| M3 | File operations (G2) | waiting for Igor (partly) | m3-done | | |
 | M4 | Command line & terminal | done | m4-done | review BLOCK -> T4.5 fixes, verified by lead |
 | M5 | Viewer & quick view | done | m5-done | review SIGN OFF WITH CONDITIONS -> T5.5a/b fixes, verified by lead |
-| M6 | Archives | not started | | |
-| M7 | Search & panelize | not started | | |
-| M8 | Power features & desktop (G3) | not started | | |
+| M6 | Archives | done | m6-done | security review + two re-reviews, all findings fixed |
+| M7 | Search & panelize | done | m7-done | reviewed together with M6 |
+| M8 | Power features & desktop (G3) | waiting for Igor | | F30 icons missing |
 | M9 | Hardening | not started | | |
 | M10 | Release (G4) | not started | | |
 
@@ -266,3 +279,7 @@ Open: #8/#9 half-written in WIP commit on m8/fix-m6m7-review (ofm-jobs tests ext
 - For G3 notes: F3/F4 on an archive entry refuses entries over 64 MiB; extraction now needs /proc; declining a password prompt extracts nothing; verified encrypted data is decoded twice (accepted). Open: panelize stdout channel bound has no test.
 - 2026-11-27 T8.11 merged (291b376). Review of b19948c + 622589d: SIGN OFF WITH CONDITIONS: (1) extraction selection still quadratic in ofm-jobs/extract.rs -> fileops agent (m8/fix-extract-selection); (2) Find-window F3/F4 prompts hidden behind it, (3) LimitExceeded on Enter opens default app -> ui agent (m8/T8.11-followup, with F9 menu Left/Right, no-op F6 boxes, "to Trash" texts with trash=false, test scripts isolated from real D-Bus/Wayland). Full check on main running.
 - M9 backlog from that review: password verification decodes whole entry before preview caps; ZipArchive::new parses full central directory before entry cap; damaged entry makes PasswordSource forget a good password; F4 on archive hit shows no read-only notice.
+
+## 2026-11-27 — G3 reached
+- Merged after the last note: extraction selection fix (b25e13f), interface follow-up (677451f: F9 Left/Right, no-op F6 boxes hidden, "permanently" texts with trash=false, test scripts cut off from the real D-Bus/Wayland session, codec-limit message, 64 MiB refusal up front, Find-window prompts). The last small merge (677451f) was verified by its tests and the full check, not by a separate review.
+- M9 backlog additions: F30 highlight icons; tc/mc preset depth; themes dir created later not watched; cancelling a password prompt reports "A password is required"; F4 editor-launch errors from Find go to the main window.
