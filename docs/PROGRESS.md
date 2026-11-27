@@ -292,3 +292,5 @@ Open: #8/#9 half-written in WIP commit on m8/fix-m6m7-review (ofm-jobs tests ext
 5. Deferred data-safety items (M3 m1, m7, N4, N5) are fixed in M9.
 6. Release stops at tag v1.0.0-rc.1; nothing is pushed by Claude (denied by settings).
 - Wave 1: icons (Sonnet ui), data-safety backlog (Sonnet fileops), fuzz T9.3 (Sonnet test), presets + themes watch (Kimi, ../orthodox-wt-presets).
+- 2026-11-27 14:45 (after a 5-hour-limit pause): merged icons (9c3a0a5, F30) and presets + themes watch (17b7565); tagged m8-done. Running: M9-datasafety (Sonnet, m9/datasafety), T9.3 fuzz (Sonnet, m9/T9.3-robustness), T10.1/T10.2 packaging+docs (Kimi, ../orthodox-wt-pkg), T9.4 polish (Kimi k3.1-pro, ../orthodox-wt-polish). Installing cargo-deb into ~/.cargo/bin. Still to do: T9.1/T9.2 performance, T9.5 spec coverage, T10.3 rc.1.
+- Backlog from icons: type markers (/ * @) shown beside icons (kept); live theme reload only logs unknown icons.
