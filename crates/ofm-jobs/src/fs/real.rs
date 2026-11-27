@@ -14,7 +14,7 @@ use rustix::fs::{
 };
 use rustix::io::Errno;
 
-use super::{FileType, Fs, FsFile, FsStat, TrashError};
+use super::{FileType, Fs, FsFile, FsPin, FsStat, TrashError};
 
 /// Real implementation backed by `rustix`.
 #[derive(Debug, Default, Clone, Copy)]
@@ -53,7 +53,7 @@ fn ts_ns(sec: i128, nsec: i128) -> i128 {
 }
 
 #[allow(clippy::useless_conversion, reason = "field widths differ per target")]
-fn convert(st: &rustix::fs::Stat) -> FsStat {
+pub(super) fn convert(st: &rustix::fs::Stat) -> FsStat {
     FsStat {
         dev: u64::try_from(st.st_dev).unwrap_or(0),
         ino: u64::try_from(st.st_ino).unwrap_or(0),
@@ -396,6 +396,15 @@ impl Fs for RealFs {
             rustix::fs::lremovexattr(path, name)
         };
         Ok(res?)
+    }
+
+    fn pin(&self, path: &Path, follow: bool) -> io::Result<FsPin> {
+        let mut flags = OFlags::PATH | OFlags::CLOEXEC;
+        if !follow {
+            flags |= OFlags::NOFOLLOW;
+        }
+        let fd = retry(|| rustix::fs::openat(CWD, path, flags, Mode::empty()))?;
+        Ok(FsPin::new(fd))
     }
 
     fn trash(&self, path: &Path) -> Result<(), TrashError> {

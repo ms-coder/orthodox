@@ -43,7 +43,7 @@ pub use event::{
     Answer, ConflictAnswer, ConflictKind, ErrorAction, ItemInfo, ItemKind, JobEvent, JobState,
     Operation, Outcome, Progress, Question, Report, SizeTotals, Warning,
 };
-pub use fs::{FileType, Fs, FsFile, FsStat, RealFs, TrashError};
+pub use fs::{FileType, Fs, FsFile, FsPin, FsStat, RealFs, TrashError};
 pub use progress::{Clock, ManualClock, ProgressTracker, SystemClock};
 pub use rename_batch::{FileId, RenameBatchSpec, RollbackSpec, load_log, snapshot_identities};
 pub use runner::{run_job, run_sync};

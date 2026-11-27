@@ -16,7 +16,7 @@ use crate::copy::{CHUNK, Target, resolve_target};
 use crate::ctx::JobCtx;
 use crate::error::JobError;
 use crate::event::Operation;
-use crate::fs::{FileType, Fs, FsFile, FsStat};
+use crate::fs::{FileType, Fs, FsFile, FsPin, FsStat};
 use crate::plan::NAME_MAX;
 
 use super::safe;
@@ -152,6 +152,9 @@ struct Prepared {
     path: PathBuf,
     /// The user chose overwrite: publish with `rename_replace`.
     replace: bool,
+    /// Pins `parent` until the item is done: temp file, publish and cleanup all go to the
+    /// directory that was checked.
+    _hold: Arc<FsPin>,
 }
 
 impl Extractor {
@@ -197,6 +200,10 @@ impl Extractor {
         };
         let dest = parent.join(name);
         ctx.set_current(&dest);
+        let hold = self
+            .anchor
+            .hold(&parent)
+            .map_err(|err| dest_fail(&dest, err))?;
         let st = self.fake_stat(ft, e.mode, size, e.mtime_ns);
         let src = self.archive.join(&e.path);
         let target = resolve_target(
@@ -218,6 +225,7 @@ impl Extractor {
             name: name.to_os_string(),
             path,
             replace,
+            _hold: hold,
         }))
     }
 

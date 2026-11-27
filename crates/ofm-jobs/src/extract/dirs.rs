@@ -1,8 +1,10 @@
 //! The directory tree of the output: creating the chain of parents of every entry (a parent is
 //! always checked with `lstat` and created by this job, never followed through a symlink) and the
-//! final mode/mtime of the directories the job created.
+//! final mode/mtime of the directories the job created. All paths here are nominal ones; the
+//! extractor's anchored file system keeps them from being re-resolved through a swapped parent.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use ofm_vfs::archive::ArchiveEntry;
 
@@ -89,6 +91,11 @@ impl Extractor {
     ) -> Result<Option<(PathBuf, bool)>, Fail> {
         let st = self.fake_stat(FileType::Dir, 0o755, 0, 0);
         let src = self.archive.join(rel);
+        // One handle of the parent for the probe, the question and the mkdir.
+        let _parent = match nominal.parent() {
+            Some(p) => Some(self.anchor.hold(p).map_err(|e| dest_fail(nominal, e))?),
+            None => None,
+        };
         loop {
             let target = resolve_target(
                 ctx,
@@ -177,8 +184,16 @@ impl Extractor {
             })
             .collect();
         list.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-        let fs = ctx.fs();
+        let fs = Arc::clone(&self.fs);
         for (_, path, mode, mtime_ns) in list {
+            // One handle for all three steps, and only ever a directory.
+            let _dir = match self.anchor.hold(&path) {
+                Ok(d) => d,
+                Err(e) => {
+                    self.meta_warn(ctx, &path, "permissions not set", &e);
+                    continue;
+                }
+            };
             // Sync first: after the final mode the directory may no longer be openable.
             if self.sync
                 && let Err(e) = fs.sync_dir(&path)

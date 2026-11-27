@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use ofm_testkit::fault::{FaultEffect, FaultOp, FaultPlan, FaultState};
 
-use super::{Fs, FsFile, FsStat, RealFs, TrashError};
+use super::{Fs, FsFile, FsPin, FsStat, RealFs, TrashError};
 
 type Shared = Arc<Mutex<FaultState>>;
 
@@ -300,6 +300,11 @@ impl Fs for FaultyFs {
     fn remove_xattr(&self, path: &Path, name: &OsStr, follow: bool) -> io::Result<()> {
         check(&self.state, FaultOp::RemoveXattr)?;
         self.inner.remove_xattr(path, name, follow)
+    }
+
+    fn pin(&self, path: &Path, follow: bool) -> io::Result<FsPin> {
+        check(&self.state, FaultOp::Pin)?;
+        self.inner.pin(path, follow)
     }
 
     fn trash(&self, path: &Path) -> Result<(), TrashError> {

@@ -88,3 +88,21 @@ Findings of the T3.5 review, fixed in T3.6a (regression tests: `crates/ofm-jobs/
   `copy_file_range` fall back to the next tier also on `EPERM`, `ETXTBSY` and on `EIO` before the
   tier copied a byte, like coreutils (m6).
 - Still open (M9): openat/unlinkat-based delete/chmod (m1), cleanup of stale `.ofm-part-*` (m7).
+
+## Anchored access (FIX-M6M7 #5, 2026-11-27)
+
+A checked parent directory could be replaced with a symlink before the next path-based call, which
+then wrote outside the destination. Additive change to the seam: `Fs::pin(path, follow) -> FsPin`
+(an `O_PATH` handle, `O_NOFOLLOW` unless `follow`; default `Unsupported`; faultable as
+`FaultOp::Pin`). `fs/anchored.rs` builds `AnchoredFs` on it: an `Fs` that opens every directory below
+one root component by component without following symlinks and performs each call on
+`/proc/self/fd/<handle>/<name>`. The root itself is opened once, following symlinks. Handles are an
+LRU of 32; the parent of the item in progress is held. Only extraction uses it (ADR-0008); copy and
+move are unchanged. Delete/chmod (m1) can reuse it. Needs `/proc` (checked: the job fails otherwise).
+
+Remaining windows (all need write access inside the destination, none follows a symlink): the
+destination path itself is resolved by name until it is pinned; a pinned directory that is moved
+elsewhere still receives the output; a directory handle dropped from the cache is reopened by name,
+so another real directory put there meanwhile is used; a name inside a pinned directory can still be
+replaced between its probe and the write (never followed; publishing stays no-replace unless the
+user chose overwrite).
