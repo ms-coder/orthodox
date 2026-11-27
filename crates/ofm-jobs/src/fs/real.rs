@@ -189,12 +189,17 @@ impl FsFile for RealFile {
         let raw = self.fd.into_raw_fd();
         // SAFETY: `raw` was just released from the `OwnedFd` this handle owned exclusively, so it
         // is open and nothing else uses or closes it; `try_close` consumes it (also on error).
-        match unsafe { rustix::io::try_close(raw) } {
-            // Linux has released the descriptor; EINTR does not report lost data.
-            Ok(()) | Err(Errno::INTR) => Ok(()),
-            Err(e) => Err(e.into()),
-        }
+        close_result(unsafe { rustix::io::try_close(raw) })
     }
+}
+
+/// What the checked close reports. `EINTR` is a FAILURE (M9): Linux has released the descriptor
+/// all the same, so `close` is never called again, but the file system's flush (FUSE, CIFS, NFS)
+/// was interrupted before it could say whether the data arrived. Not even an earlier `fsync`
+/// settles that where a FUSE server stores the data on flush. The temp file is therefore not
+/// published (and a move keeps its source); retrying the item writes a new one.
+fn close_result(r: Result<(), Errno>) -> io::Result<()> {
+    r.map_err(io::Error::from)
 }
 
 /// Open a copy source without blocking: `O_NONBLOCK` makes opening a FIFO (swapped in after the
@@ -441,6 +446,16 @@ mod tests {
             }
             out.extend_from_slice(&buf[..n]);
         }
+    }
+
+    #[test]
+    fn an_interrupted_close_is_not_a_success() {
+        assert_eq!(
+            close_result(Err(Errno::INTR)).unwrap_err().kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert!(close_result(Err(Errno::IO)).is_err());
+        assert!(close_result(Ok(())).is_ok());
     }
 
     #[test]

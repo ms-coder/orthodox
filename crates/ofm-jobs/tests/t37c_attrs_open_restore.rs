@@ -164,6 +164,15 @@ struct ForeignDirFs {
     chmod_attempts: AtomicUsize,
 }
 
+impl ForeignDirFs {
+    /// Whether `st` is the directory, however the path to it is spelled.
+    fn is_dir_object(&self, st: &FsStat) -> bool {
+        self.inner
+            .lstat(&self.dir)
+            .is_ok_and(|d| (d.dev, d.ino) == (st.dev, st.ino))
+    }
+}
+
 impl Fs for ForeignDirFs {
     fn open_read(&self, path: &Path) -> io::Result<Box<dyn FsFile>> {
         self.inner.open_read(path)
@@ -179,7 +188,7 @@ impl Fs for ForeignDirFs {
     }
     fn lstat(&self, path: &Path) -> io::Result<FsStat> {
         let mut st = self.inner.lstat(path)?;
-        if path == self.dir {
+        if self.is_dir_object(&st) {
             st.uid = foreign_uid();
             st.mode = (st.mode & !0o777) | 0o070;
         }
@@ -213,7 +222,11 @@ impl Fs for ForeignDirFs {
         self.inner.read_link(path)
     }
     fn set_mode(&self, path: &Path, mode: u32) -> io::Result<()> {
-        if path == self.dir {
+        if self
+            .inner
+            .stat(path)
+            .is_ok_and(|st| self.is_dir_object(&st))
+        {
             self.chmod_attempts.fetch_add(1, Ordering::SeqCst);
             return Err(io::Error::from_raw_os_error(1)); // EPERM: not our directory
         }
@@ -242,6 +255,9 @@ impl Fs for ForeignDirFs {
     }
     fn set_xattr(&self, path: &Path, name: &OsStr, value: &[u8], follow: bool) -> io::Result<()> {
         self.inner.set_xattr(path, name, value, follow)
+    }
+    fn pin(&self, path: &std::path::Path, follow: bool) -> std::io::Result<ofm_jobs::FsPin> {
+        self.inner.pin(path, follow)
     }
     fn trash(&self, path: &Path) -> Result<(), TrashError> {
         self.inner.trash(path)

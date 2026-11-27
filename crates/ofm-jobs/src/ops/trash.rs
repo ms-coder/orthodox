@@ -3,7 +3,9 @@
 //! it impossible to test against a temporary trash, and the spec is small).
 //!
 //! Called only through `Fs::trash` (so `FaultyFs` can intercept it); therefore the syscalls here
-//! are not routed through `Fs` themselves.
+//! are not routed through `Fs` themselves, except the move of the item itself: it uses the shared
+//! no-replace rename of `copy::noreplace` (NFS and many FUSE file systems have no
+//! `RENAME_NOREPLACE`), over the `Fs` given to [`trash_path_with_fs`].
 //!
 //! - Same file system as the home trash (`$XDG_DATA_HOME/Trash`, default `~/.local/share/Trash`):
 //!   move there, `Path=` in the `.trashinfo` is absolute.
@@ -14,7 +16,8 @@
 //! - Nothing usable (cannot create a trash directory, no home, item is already inside a trash):
 //!   [`TrashError::Unavailable`], so the engine asks before deleting permanently.
 //! - Names are claimed race-free by creating `info/<name>.trashinfo` with `O_EXCL` first, then the
-//!   item is moved with `RENAME_NOREPLACE`. A failed move removes the claimed info file again.
+//!   item is moved without replacing (`RENAME_NOREPLACE`, or its fallbacks). A failed move removes
+//!   the claimed info file again.
 //! - Names too long for `<name>.trashinfo` (`NAME_MAX`) are stored under a bytewise-truncated name
 //!   (hash of the full name + extension kept); `Path=` in the `.trashinfo` still records the full
 //!   original name, so restoring (GNOME Files & co.) is unaffected.
@@ -26,9 +29,11 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use rustix::fs::{CWD, RenameFlags};
+use crate::copy::noreplace;
+use crate::fs::{Fs, RealFs, TrashError};
 
-use crate::fs::TrashError;
+/// `EXDEV`: the trash directory is on another file system than the item.
+const EXDEV: i32 = 18;
 
 /// Where the home trash lives and who the user is. [`TrashEnv::from_process`] reads the process
 /// environment; tests build one explicitly (never touching the real trash).
@@ -72,6 +77,12 @@ struct Target {
 
 /// Move `path` to the trash described by `env`.
 pub fn trash_path_with(env: &TrashEnv, path: &Path) -> Result<(), TrashError> {
+    trash_path_with_fs(&RealFs, env, path)
+}
+
+/// [`trash_path_with`], moving the item through `mover` (so tests can stand in for a file system
+/// without `RENAME_NOREPLACE`).
+pub fn trash_path_with_fs(mover: &dyn Fs, env: &TrashEnv, path: &Path) -> Result<(), TrashError> {
     let abs = std::path::absolute(path)?;
     let name = abs
         .file_name()
@@ -93,7 +104,7 @@ pub fn trash_path_with(env: &TrashEnv, path: &Path) -> Result<(), TrashError> {
 
     let mut reasons = Vec::new();
     for target in candidates(env, &parent, &meta) {
-        match try_target(&target, &full, &name) {
+        match try_target(mover, &target, &full, &name, meta.is_dir()) {
             Ok(()) => return Ok(()),
             Err(Failure::Unusable(why)) => reasons.push(why),
             Err(Failure::Io(e)) => return Err(TrashError::Io(e)),
@@ -165,7 +176,13 @@ fn ensure_dir(dir: &Path) -> io::Result<()> {
         .create(dir)
 }
 
-fn try_target(target: &Target, full: &Path, name: &OsStr) -> Result<(), Failure> {
+fn try_target(
+    mover: &dyn Fs,
+    target: &Target,
+    full: &Path,
+    name: &OsStr,
+    is_dir: bool,
+) -> Result<(), Failure> {
     let unusable = |e: io::Error| Failure::Unusable(format!("{}: {e}", target.dir.display()));
     let files = target.dir.join("files");
     let info = target.dir.join("info");
@@ -206,12 +223,11 @@ fn try_target(target: &Target, full: &Path, name: &OsStr) -> Result<(), Failure>
             return Err(Failure::Io(e));
         }
         drop(f);
-        return match rustix::fs::renameat_with(CWD, full, CWD, &dest, RenameFlags::NOREPLACE) {
+        return match noreplace::rename_noreplace(mover, full, &dest, is_dir) {
             Ok(()) => Ok(()),
-            Err(errno) => {
+            Err(e) => {
                 let _ = fs::remove_file(&info_path);
-                let e = io::Error::from(errno);
-                if errno == rustix::io::Errno::XDEV {
+                if e.raw_os_error() == Some(EXDEV) {
                     Err(Failure::Unusable(format!("{}: {e}", target.dir.display())))
                 } else {
                     Err(Failure::Io(e))
