@@ -45,7 +45,7 @@ use ofm_core::Location;
 use crate::ctx::{ErrorResolution, JobCtx, Resolution};
 use crate::error::JobError;
 use crate::event::{ConflictKind, ItemInfo, Operation};
-use crate::fs::{CheckedDir, FileType, Fs, FsStat, within};
+use crate::fs::{CheckedDir, FileType, Fs, FsStat};
 use crate::plan;
 use crate::spec::CopyOpts;
 
@@ -310,21 +310,36 @@ fn unique_target(ctx: &mut JobCtx, dest: &Path, op: Operation) -> Result<Target,
     )
 }
 
-/// The checked handle of the source directory `dir` (`st`) of a move: below `parent`, or, for a
-/// selected directory, below the folder that holds it.
+/// The checked handles of a source directory of a move.
+#[derive(Clone)]
+pub(crate) struct Entered {
+    /// The folder holding the directory: it is removed from there.
+    holder: CheckedDir,
+    /// The directory itself: its entries are reached through it.
+    pub(crate) dir: CheckedDir,
+}
+
+impl Entered {
+    /// `rmdir` the directory, found as `path`, in its checked holder.
+    pub(crate) fn remove_dir(&self, path: &Path) -> io::Result<()> {
+        self.holder.entry(path, |fs, p| fs.rmdir(p))
+    }
+}
+
+/// Enter the source directory `dir` (`st`) of a move: below `parent`, or, for a selected
+/// directory, below the folder that holds it.
 pub(crate) fn enter(
     fs: &Arc<dyn Fs>,
     parent: Option<&CheckedDir>,
     dir: &Path,
     st: &FsStat,
-) -> io::Result<CheckedDir> {
-    match parent {
-        Some(parent) => parent.child(dir, st),
-        None => {
-            let (holder, item) = CheckedDir::holding(fs, dir)?;
-            holder.child(&item, st)
-        }
-    }
+) -> io::Result<Entered> {
+    let (holder, item) = match parent {
+        Some(parent) => (parent.clone(), dir.to_path_buf()),
+        None => CheckedDir::holding(fs, dir)?,
+    };
+    let dir = holder.child(&item, st)?;
+    Ok(Entered { holder, dir })
 }
 
 /// Result of processing one tree node.
@@ -340,7 +355,7 @@ enum Node {
 /// A source directory that has been listed.
 struct SourceDir {
     /// Move mode: see [`Frame::held`].
-    held: Option<CheckedDir>,
+    held: Option<Entered>,
     names: Vec<OsString>,
 }
 
@@ -353,8 +368,8 @@ struct Frame {
     next: usize,
     /// Created by this job (gets final metadata) rather than merged into.
     created: bool,
-    /// Move mode: the checked source directory, through which its entries are reached.
-    held: Option<CheckedDir>,
+    /// Move mode: the checked handles of the source directory.
+    held: Option<Entered>,
 }
 
 impl Frame {
@@ -454,7 +469,7 @@ impl Copier {
                 if top {
                     ctx.note_created(frame.dest.clone());
                 }
-                self.walk(ctx, *frame, parent)?;
+                self.walk(ctx, *frame)?;
             }
         }
         Ok(())
@@ -562,7 +577,7 @@ impl Copier {
             None
         };
         let names = ctx.attempt(dir, self.op(), |fs| match &held {
-            Some(held) => held.list(),
+            Some(held) => held.dir.list(),
             None => fs.read_dir(dir),
         })?;
         Ok(names.map(|mut names| {
@@ -625,15 +640,10 @@ impl Copier {
     /// Copy the children of `root` depth-first with an explicit stack; post-order metadata and
     /// (move) source directory removal. On error/cancel the directories still on the stack get
     /// their final metadata (best effort) before the error propagates.
-    fn walk(
-        &mut self,
-        ctx: &mut JobCtx,
-        root: Frame,
-        parent: Option<&CheckedDir>,
-    ) -> Result<(), JobError> {
+    fn walk(&mut self, ctx: &mut JobCtx, root: Frame) -> Result<(), JobError> {
         self.active.insert(root.id());
         let mut stack = vec![root];
-        let result = self.walk_stack(ctx, &mut stack, parent);
+        let result = self.walk_stack(ctx, &mut stack);
         if result.is_err() {
             while let Some(f) = stack.pop() {
                 self.active.remove(&f.id());
@@ -645,12 +655,7 @@ impl Copier {
         result
     }
 
-    fn walk_stack(
-        &mut self,
-        ctx: &mut JobCtx,
-        stack: &mut Vec<Frame>,
-        parent: Option<&CheckedDir>,
-    ) -> Result<(), JobError> {
+    fn walk_stack(&mut self, ctx: &mut JobCtx, stack: &mut Vec<Frame>) -> Result<(), JobError> {
         loop {
             let Some(top) = stack.last_mut() else {
                 return Ok(());
@@ -658,7 +663,7 @@ impl Copier {
             if let Some(name) = top.names.get(top.next).cloned() {
                 top.next += 1;
                 let (s, d) = (top.src.join(&name), top.dest.join(&name));
-                let held = top.held.clone();
+                let held = top.held.as_ref().map(|h| h.dir.clone());
                 ctx.checkpoint()?;
                 if let Node::Dir(f) = self.node(ctx, &s, &d, held.as_ref())? {
                     self.active.insert(f.id());
@@ -666,29 +671,23 @@ impl Copier {
                 }
             } else if let Some(f) = stack.pop() {
                 self.active.remove(&f.id());
-                let up = stack.last().and_then(|up| up.held.clone());
-                self.finish_dir(ctx, &f, up.as_ref().or(parent))?;
+                self.finish_dir(ctx, &f)?;
             }
         }
     }
 
     /// Post-order step of a directory: final metadata; in move mode remove the (now empty) source.
-    fn finish_dir(
-        &mut self,
-        ctx: &mut JobCtx,
-        f: &Frame,
-        parent: Option<&CheckedDir>,
-    ) -> Result<(), JobError> {
+    fn finish_dir(&mut self, ctx: &mut JobCtx, f: &Frame) -> Result<(), JobError> {
         if f.created {
             self.dir_meta(ctx, f);
         }
-        if self.mode != Mode::Move {
+        // Only a move has handles, and only a move removes the source.
+        let Some(held) = f.held.as_ref().filter(|_| self.mode == Mode::Move) else {
             return Ok(());
-        }
-        let fs = ctx.fs();
+        };
         loop {
             ctx.checkpoint()?;
-            match within(&*fs, parent, &f.src, |fs, p| fs.rmdir(p)) {
+            match held.remove_dir(&f.src) {
                 Ok(()) => return Ok(()),
                 // Some children were skipped or not copied: they stay where they are.
                 Err(e)

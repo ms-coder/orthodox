@@ -168,15 +168,40 @@ fn delete_does_not_follow_the_selected_directory_swapped() {
 }
 
 /// Not a symlink: the directory is moved out of the selection while it is being emptied. What
-/// has left the selected tree is not deleted.
+/// has left the selected tree is not deleted, and the job says so.
 #[test]
 fn delete_stops_at_a_directory_that_was_moved_away() {
     let w = World::new();
     let (from, to) = (w.p("tree/d"), w.p("aside"));
     let fs_ = racing("unlink", 1, move || fs::rename(&from, &to).unwrap());
-    let (out, _) = run(&delete(w.p("tree")), fs_);
-    assert!(matches!(out, Outcome::Ok(_)), "{out:?}");
+    let (out, asked) = run(&delete(w.p("tree")), fs_);
+    assert!(asked > 0, "the move must be reported");
+    assert!(report(&out).skipped > 0, "{out:?}");
     assert_eq!(fs::read_dir(w.p("aside")).unwrap().count(), 1);
+    assert!(w.p("tree").is_dir(), "its parent is not removed");
+}
+
+/// Moved away before any of its entries was looked at: all files survive, so no clean "Ok".
+#[test]
+fn delete_reports_a_directory_moved_away_before_its_entries() {
+    let w = World::new();
+    let (from, to) = (w.p("tree/d"), w.p("aside"));
+    let fs_ = racing("read_dir", 4, move || fs::rename(&from, &to).unwrap());
+    let (out, asked) = run(&delete(w.p("tree")), fs_);
+    assert!(asked > 0, "{out:?}");
+    assert!(report(&out).skipped > 0, "{out:?}");
+    assert_eq!(fs::read_dir(w.p("aside")).unwrap().count(), 2);
+}
+
+/// `set_mode` #1 is `tree`, #2 `tree/d`, #3 its first file.
+#[test]
+fn recursive_chmod_reports_a_directory_that_was_moved_away() {
+    let w = World::new();
+    let (from, to) = (w.p("tree/d"), w.p("aside"));
+    let fs_ = racing("set_mode", 3, move || fs::rename(&from, &to).unwrap());
+    let (out, asked) = run(&chmod_r(w.p("tree")), fs_);
+    assert!(asked > 0, "{out:?}");
+    assert!(report(&out).skipped > 0, "{out:?}");
 }
 
 /// The folder holding the selected items is swapped between two of them.
@@ -320,9 +345,7 @@ fn recursive_chown_changes_the_tree_and_no_link_target() {
     symlink(w.p("outside/a"), w.p("tree/link")).unwrap();
     let gid_of = |rel: &str| fs::symlink_metadata(w.p(rel)).unwrap().gid();
     let before = gid_of("tree");
-    let groups = rustix::process::getgroups().unwrap();
-    let Some(group) = groups.iter().map(|g| g.as_raw()).find(|&g| g != before) else {
-        eprintln!("SKIP: no supplementary group");
+    let Some(group) = other_group(before) else {
         return;
     };
     let spec = JobSpec::SetAttrs {
@@ -342,4 +365,80 @@ fn recursive_chown_changes_the_tree_and_no_link_target() {
         assert_eq!(gid_of(rel), group, "{rel}");
     }
     assert_eq!(gid_of("outside/a"), before);
+}
+
+/// A group of ours other than `not`, to `chgrp` to without privilege.
+fn other_group(not: u32) -> Option<u32> {
+    let groups = rustix::process::getgroups().unwrap();
+    let group = groups.iter().map(|g| g.as_raw()).find(|&g| g != not);
+    if group.is_none() {
+        eprintln!("SKIP: no supplementary group");
+    }
+    group
+}
+
+/// A symlink replaced (here by a hard link to somebody else's file) just before its `chown`.
+#[test]
+fn chown_of_a_symlink_changes_the_checked_link_not_the_name() {
+    let w = World::new();
+    symlink(w.p("outside/b"), w.p("tree/link")).unwrap();
+    let before = fs::symlink_metadata(w.p("outside/a")).unwrap().gid();
+    let Some(group) = other_group(before) else {
+        return;
+    };
+    let (link, aside, victim) = (w.p("tree/link"), w.p("aside"), w.p("outside/a"));
+    let fs_ = racing("set_owner", 1, move || {
+        fs::rename(&link, &aside).unwrap();
+        fs::hard_link(&victim, &link).unwrap();
+    });
+    let spec = JobSpec::SetAttrs {
+        paths: vec![w.p("tree/link")],
+        mode: None,
+        owner: Some(OwnerChange {
+            uid: None,
+            gid: Some(group),
+        }),
+        recursive: false,
+    };
+    let (out, _) = run(&spec, fs_);
+    assert!(matches!(out, Outcome::Ok(_)), "{out:?}");
+    for rel in ["outside/a", "outside/b", "tree/link"] {
+        let gid = fs::symlink_metadata(w.p(rel)).unwrap().gid();
+        assert_eq!(gid, before, "{rel}");
+    }
+    assert_eq!(fs::symlink_metadata(w.p("aside")).unwrap().gid(), group);
+}
+
+/// The folder holding the selected `tree/d` is swapped just before the emptied `d` is removed:
+/// an empty `d` found through the new path stays.
+fn remove_selected_top_dir_after_swap(merge: bool) {
+    let w = World::new();
+    fs::create_dir(w.p("outside/d")).unwrap();
+    if merge {
+        fs::create_dir(w.p("dest/d")).unwrap();
+    }
+    let fs_ = racing("rmdir", 1, w.swap("tree", "outside"));
+    // Without a merge the first rename answers `EXDEV`: a cross-device move.
+    let plan = if merge {
+        FaultPlan::new()
+    } else {
+        FaultPlan::new().fail_nth(FaultOp::RenameNoreplace, 1, FaultErrno::Raw(EXDEV))
+    };
+    let (out, _) = run(
+        &move_into(w.p("tree/d"), w.p("dest")),
+        FaultyFs::new(Arc::new(fs_), plan),
+    );
+    assert!(w.p("outside/d").is_dir(), "{out:?}");
+    assert_eq!(fs::read(w.p("dest/d/a")).unwrap(), b"mine a");
+    assert_eq!(fs::read(w.p("dest/d/b")).unwrap(), b"mine b");
+}
+
+#[test]
+fn merging_move_removes_the_selected_directory_only_in_its_checked_folder() {
+    remove_selected_top_dir_after_swap(true);
+}
+
+#[test]
+fn cross_device_move_removes_the_selected_directory_only_in_its_checked_folder() {
+    remove_selected_top_dir_after_swap(false);
 }

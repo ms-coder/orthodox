@@ -95,7 +95,9 @@ impl CheckedDir {
         Ok((Self::root(fs, root)?, item))
     }
 
-    /// The handle of this directory, checked.
+    /// The handle of this directory, checked. A directory that is no longer found is never
+    /// `NotFound` to the caller: that would read as "the entry vanished, nothing left to do",
+    /// while the directory and its files may only have been moved elsewhere.
     fn pin(&self) -> io::Result<Arc<FsPin>> {
         let checked = self.tree.anchored.hold(&self.path).and_then(|pin| {
             let held = pin.stat()?;
@@ -111,11 +113,15 @@ impl CheckedDir {
                 Err(replaced(&self.path))
             }
         });
-        if checked.is_err() {
+        checked.map_err(|e| {
             // Open it afresh next time (the user may retry).
             self.tree.anchored.forget(&self.path);
-        }
-        checked
+            if e.kind() == io::ErrorKind::NotFound {
+                replaced(&self.path)
+            } else {
+                e
+            }
+        })
     }
 
     /// Enter the subdirectory `path` (an entry of this one) which `lstat` reported as `st`.
@@ -162,13 +168,14 @@ impl CheckedDir {
         self.entry(path, |fs, p| fs.lstat(p))
     }
 
-    /// A handle on the very object `lstat` reported as `st` under `path` (not a symlink), for
-    /// calls that would follow one: use [`FsPin::path`] with a following call.
+    /// A handle on the very object `lstat` reported as `st` under `path`, for calls by path that
+    /// follow symlinks: use [`FsPin::path`] with a following call. For a symlink `st` the handle
+    /// is the link itself, and following the handle's path ends there.
     pub(crate) fn pin_entry(&self, path: &Path, st: &FsStat) -> io::Result<FsPin> {
         self.entry(path, |fs, p| {
             let pin = fs.pin(p, false)?;
             let now = pin.stat()?;
-            if (now.dev, now.ino) == (st.dev, st.ino) && !now.is_symlink() {
+            if (now.dev, now.ino) == (st.dev, st.ino) && now.file_type() == st.file_type() {
                 Ok(pin)
             } else {
                 Err(replaced(path))

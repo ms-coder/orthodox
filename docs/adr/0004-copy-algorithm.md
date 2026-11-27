@@ -148,7 +148,9 @@ Permanent delete, recursive chmod/chown and the source side of a move (cross-dev
 same-device merge) no longer act on re-resolved paths below a selected item. `fs/walk.rs`
 (`CheckedDir`, on top of `AnchoredFs`) keeps each directory with the `(dev, ino)` the walk saw; every
 operation takes a no-follow handle, checks that it is that directory and that its path still leads
-there, then acts on `/proc/self/fd/<handle>/<name>`. `chmod`/`chown` act on a handle of the very
+there, then acts on `/proc/self/fd/<handle>/<name>`. A walked directory that is no longer found is
+reported as moved or replaced, never taken as a vanished entry. A move removes a selected directory
+from the holding folder it entered it through. `chmod`/`chown` (symlinks too) act on a handle of the very
 object that was `lstat`ed. A mismatch is the usual retry/skip/abort question. These jobs now need
 `Fs::pin` and `/proc` and fail closed without them. Delete and chmod refuse a path ending in `..`.
 

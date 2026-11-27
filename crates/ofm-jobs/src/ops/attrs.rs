@@ -131,12 +131,9 @@ fn grant_mode(parent: &CheckedDir, path: &Path, st: &FsStat, perm: u32) -> io::R
 
 /// `lchown` semantics for the object that `st` describes.
 fn chown(parent: &CheckedDir, path: &Path, st: &FsStat, o: OwnerChange) -> io::Result<()> {
-    if st.is_symlink() {
-        // By name: the owner of a link changes nothing but the link.
-        return parent.entry(path, |fs, p| fs.set_owner(p, o.uid, o.gid, false));
-    }
     let object = parent.pin_entry(path, st)?;
-    // Following the handle's path ends at the pinned object itself.
+    // Following the handle's path ends at the pinned object itself, also when that is a symlink
+    // (its target is not touched).
     parent.fs().set_owner(object.path(), o.uid, o.gid, true)
 }
 
