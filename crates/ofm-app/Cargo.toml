@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
+description = "Keyboard-first two-panel file manager"
 
 [lib]
 name = "ofm_app"
@@ -42,3 +43,34 @@ vte4 = { version = "0.10", features = ["v0_76"] }
 [dev-dependencies]
 ofm-testkit = { path = "../ofm-testkit" }
 ofm-jobs = { path = "../ofm-jobs", features = ["testing"] }
+
+# `cargo deb -p ofm-app` (T10.1). Asset paths are relative to this directory.
+[package.metadata.deb]
+name = "ofm"
+maintainer = "mscoder <mscoder@users.noreply.github.com>"
+license-file = ["../../packaging/copyright", "0"]
+extended-description = """\
+OFM (Orthodox File Manager) is a keyboard-first, two-panel file manager for GNOME \
+with a command line, an embedded terminal, background file operations, a viewer, \
+file search, read-only archive browsing, a user menu and themes."""
+section = "utils"
+priority = "optional"
+# `$auto` (dpkg-shlibdeps) only sees the symbols used, so the supported minimums of the three
+# UI libraries (CLAUDE.md Stack) are stated as well.
+depends = "$auto, libgtk-4-1 (>= 4.14), libadwaita-1-0 (>= 1.5~), libvte-2.91-gtk4-0 (>= 0.76)"
+# F4 falls back to GNOME Text Editor; themed file and drive icons come from Adwaita.
+recommends = "gnome-text-editor, adwaita-icon-theme"
+suggests = "gvfs-backends"
+assets = [
+    ["target/release/ofm", "usr/bin/", "755"],
+    ["../../packaging/io.github.mscoder.Ofm.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/io.github.mscoder.Ofm.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["../../packaging/icons/io.github.mscoder.Ofm.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["../../packaging/icons/io.github.mscoder.Ofm-symbolic.svg", "usr/share/icons/hicolor/symbolic/apps/", "644"],
+    ["../../packaging/ofm.1", "usr/share/man/man1/", "644"],
+    ["../../README.md", "usr/share/doc/ofm/", "644"],
+    ["../../CHANGELOG.md", "usr/share/doc/ofm/", "644"],
+    ["../../docs/USER-GUIDE.md", "usr/share/doc/ofm/", "644"],
+    ["../ofm-config/defaults/themes/*.toml", "usr/share/doc/ofm/examples/themes/", "644"],
+    ["../ofm-config/defaults/*.toml", "usr/share/doc/ofm/examples/", "644"],
+]

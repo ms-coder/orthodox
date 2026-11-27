@@ -5,6 +5,7 @@
 //! positional panel path and starts the GUI (handled by [`crate::app`]).
 
 use std::ffi::OsString;
+use std::io::Write;
 use std::process::ExitCode;
 
 use ofm_config::keymap::{Keymap, Preset, TypingMode};
@@ -67,21 +68,26 @@ pub fn parse(args: &[OsString]) -> Result<Action, String> {
 pub fn run(args: &[OsString]) -> Option<ExitCode> {
     match parse(args) {
         Ok(Action::Gui) => None,
-        Ok(Action::Help) => {
-            print!("{}", render_help());
-            Some(ExitCode::SUCCESS)
-        }
-        Ok(Action::Version) => {
-            println!("ofm {}", env!("CARGO_PKG_VERSION"));
-            Some(ExitCode::SUCCESS)
-        }
-        Ok(Action::DumpKeys(preset)) => {
-            print!("{}", render_keys(preset));
-            Some(ExitCode::SUCCESS)
-        }
+        Ok(Action::Help) => Some(emit(&render_help())),
+        Ok(Action::Version) => Some(emit(&format!("ofm {}\n", env!("CARGO_PKG_VERSION")))),
+        Ok(Action::DumpKeys(preset)) => Some(emit(&render_keys(preset))),
         Err(message) => {
             eprintln!("ofm: {message}");
             Some(ExitCode::from(2))
+        }
+    }
+}
+
+/// Write to stdout. A closed pipe (`ofm --dump-keys far | head`) is not an error and must not
+/// panic, as `print!` would.
+fn emit(text: &str) -> ExitCode {
+    let mut out = std::io::stdout().lock();
+    match out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("ofm: cannot write to stdout: {e}");
+            ExitCode::FAILURE
         }
     }
 }
@@ -99,7 +105,7 @@ pub fn render_help() -> String {
          \n\
          Options:\n\
          \x20 -h, --help              Print this help and exit\n\
-         \x20 -V, --version          Print the version and exit\n\
+         \x20 -V, --version           Print the version and exit\n\
          \x20     --dump-keys PRESET  Print the key reference of a keymap preset\n\
          \x20                         (far, tc or mc) as Markdown and exit\n\
          \n\
@@ -236,22 +242,30 @@ mod tests {
     #[test]
     fn help_mentions_everything() {
         let h = render_help();
-        for needle in ["Usage:", "--version", "--dump-keys", "LEFT_DIR", "RIGHT_DIR"] {
+        for needle in [
+            "Usage:",
+            "--version",
+            "--dump-keys",
+            "LEFT_DIR",
+            "RIGHT_DIR",
+        ] {
             assert!(h.contains(needle), "help is missing {needle:?}");
         }
     }
 
     #[test]
     fn dump_keys_covers_all_sections_and_commands() {
-        for (preset, name) in [
-            (Preset::Far, "far"),
-            (Preset::Tc, "tc"),
-            (Preset::Mc, "mc"),
-        ] {
+        for (preset, name) in [(Preset::Far, "far"), (Preset::Tc, "tc"), (Preset::Mc, "mc")] {
             let md = render_keys(preset);
             assert!(md.starts_with("# OFM key reference"), "{name}");
             assert!(md.contains(&format!("--dump-keys {name}`")));
-            for section in ["## global", "## panels", "## cmdline", "## viewer", "## dialog"] {
+            for section in [
+                "## global",
+                "## panels",
+                "## cmdline",
+                "## viewer",
+                "## dialog",
+            ] {
                 assert!(md.contains(section), "{name} is missing {section}");
             }
             // Every command of the registry appears at least once (the presets bind
@@ -259,10 +273,7 @@ mod tests {
             // be bound to the same command (e.g. Backspace and Ctrl+PgUp).
             for info in commands::ALL {
                 let id = info.id.as_str();
-                assert!(
-                    md.contains(&format!("`{id}`")),
-                    "{name}: {id} missing"
-                );
+                assert!(md.contains(&format!("`{id}`")), "{name}: {id} missing");
             }
             // No chord is dropped silently: the table row count equals the binding count.
             let keymap = Keymap::preset(preset);
@@ -270,7 +281,10 @@ mod tests {
                 .iter()
                 .map(|i| keymap.chords_for(i.id).len())
                 .sum();
-            assert_eq!(md.lines().filter(|l| l.starts_with("| ")).count() - 5, bindings);
+            assert_eq!(
+                md.lines().filter(|l| l.starts_with("| ")).count() - 5,
+                bindings
+            );
         }
         // Spot-check the canonical Far chords users know from the original.
         let far = render_keys(Preset::Far);

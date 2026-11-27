@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=OFM
+GenericName=File Manager
+Comment=Keyboard-first two-panel file manager
+Exec=ofm
+Icon=io.github.mscoder.Ofm
+Terminal=false
+StartupNotify=true
+StartupWMClass=io.github.mscoder.Ofm
+Categories=System;FileTools;FileManager;
+Keywords=file;manager;commander;panel;orthodox;copy;

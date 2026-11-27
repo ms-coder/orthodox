@@ -22,7 +22,10 @@ fn version_prints_without_a_display() {
     assert!(out.status.success(), "{out:?}");
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.starts_with("ofm "), "{stdout}");
-    assert!(stdout.trim().ends_with(env!("CARGO_PKG_VERSION")), "{stdout}");
+    assert!(
+        stdout.trim().ends_with(env!("CARGO_PKG_VERSION")),
+        "{stdout}"
+    );
 }
 
 #[test]
