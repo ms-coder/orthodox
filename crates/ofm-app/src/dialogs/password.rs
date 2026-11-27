@@ -273,8 +273,8 @@ impl PasswordProvider for AppPasswords {
                 Wait::Dropped => {
                     // The user dismissed the prompt. Browse/view workers have a scope token:
                     // cancel it so the archive backend returns Cancelled rather than claiming
-                    // afterwards that a password is required. Extract jobs have no scope here;
-                    // their missing-password error is worded truthfully by archive::error_text.
+                    // afterwards that a password is required. Extract jobs have no scope; the
+                    // job UI words their error (`jobs::fmt::password_not_entered`).
                     if let Some(cancel) = scope {
                         cancel.cancel();
                     }

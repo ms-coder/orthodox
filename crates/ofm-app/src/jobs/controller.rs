@@ -19,6 +19,7 @@ use ofm_jobs::{
     Answer, JobEngine, JobEvent, JobId, JobSpec, JobState, Outcome, Progress, Question, RunMode,
 };
 
+use super::fmt;
 use super::targets::focus_target;
 use super::ui;
 use crate::context::AppContext;
@@ -506,6 +507,8 @@ fn refresh_panels(ctx: &Rc<AppContext>, created: &[PathBuf]) {
 /// Failures and warnings are shown once, when the job ends.
 fn report_problems(ctx: &Rc<AppContext>, title: &str, outcome: &Outcome) {
     match outcome {
+        // The user closed the password prompt: the jobs view says so, no error dialog.
+        Outcome::Failed { error, .. } if fmt::password_not_entered(error) => {}
         Outcome::Failed { error, .. } => {
             ui::message(ctx, tr("Operation failed"), &format!("{title}\n\n{error}"));
         }
