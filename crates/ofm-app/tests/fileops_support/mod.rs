@@ -81,17 +81,24 @@ pub fn settle(ctx: &AppContext) {
 impl Fixture {
     /// `left` / `right` build the two panel directories; `theme` is a theme id.
     pub fn new(app_id: &str, left: TreeSpec, right: TreeSpec, theme: Option<&str>) -> Fixture {
+        let config = theme.map(|t| format!("[theme]\nname = \"{t}\"\n"));
+        Self::with_config(app_id, left, right, config.as_deref())
+    }
+
+    /// Like [`Fixture::new`] with the whole text of `config.toml` (`None`: no file).
+    pub fn with_config(
+        app_id: &str,
+        left: TreeSpec,
+        right: TreeSpec,
+        config: Option<&str>,
+    ) -> Fixture {
         let left = left.build_temp().unwrap();
         let right = right.build_temp().unwrap();
         let cfg = TreeSpec::new().build_temp().unwrap();
         let config_dir = cfg.path().join("config");
-        if let Some(t) = theme {
+        if let Some(text) = config {
             std::fs::create_dir_all(&config_dir).unwrap();
-            std::fs::write(
-                config_dir.join("config.toml"),
-                format!("[theme]\nname = \"{t}\"\n"),
-            )
-            .unwrap();
+            std::fs::write(config_dir.join("config.toml"), text).unwrap();
         }
         let paths = ConfigPaths::with_dirs(config_dir, cfg.path().join("state"));
         let ctx = build_context(AppInit {

@@ -127,6 +127,16 @@ impl MenuBar {
             .map(|r| r.accel.text().to_string())
     }
 
+    /// Whether the row of `cmd` in menu `i` can be clicked: the command has a handler (tests).
+    pub fn row_enabled(&self, i: usize, cmd: CommandId) -> Option<bool> {
+        self.menus
+            .get(i)?
+            .rows
+            .iter()
+            .find(|r| r.cmd == cmd)
+            .map(|r| r.button.is_sensitive())
+    }
+
     /// Re-read the key hints of menu `i` from the current keymap.
     fn refresh_accels(&self, i: usize) {
         let (Some(menu), Some(ctx)) = (self.menus.get(i), self.ctx.upgrade()) else {
@@ -292,6 +302,8 @@ fn build_row(ctx: &Rc<AppContext>, popover: &gtk::Popover, cmd: CommandId) -> Ro
     button.set_child(Some(&content));
     button.set_has_frame(false);
     button.add_css_class("ofm-menu-item");
+    // A command without a handler (not implemented yet) is greyed out, not silently dead.
+    button.set_sensitive(ctx.command_available(cmd));
     button.update_property(&[gtk::accessible::Property::Label(title)]);
     {
         let popover = popover.clone();

@@ -39,6 +39,7 @@ mod complete;
 mod exec;
 mod history_nav;
 mod prompt;
+mod return_panel;
 mod typing;
 mod ui;
 

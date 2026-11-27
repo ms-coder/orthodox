@@ -14,11 +14,13 @@ pub mod conflict;
 pub mod copy;
 pub mod delete;
 pub mod find;
+pub mod help;
 pub mod hotlist;
 pub mod link;
 pub mod mask;
 pub mod mkdir;
 pub mod password;
+pub mod preferences;
 pub mod properties;
 pub mod usermenu_input;
 pub mod usermenu_menu;
@@ -35,8 +37,9 @@ pub fn install_commands(reg: &mut CommandRegistry) {
     hotlist::install_commands(reg);
 }
 
-/// Create dialog state (mask history, hotlist) in `ctx.ext`.
+/// Create dialog state (mask history, hotlist, config warnings) in `ctx.ext`.
 pub fn install_state(ctx: &Rc<AppContext>) {
     mask::install_state(ctx);
     hotlist::install_state(ctx);
+    preferences::install_state(ctx);
 }

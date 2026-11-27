@@ -2,7 +2,8 @@
 //! permanently" (`permanent == true` for Shift+Del). Submits `JobSpec::Delete`. A trash that is
 //! unavailable for an item is asked about by the engine (`Question::TrashUnavailable`, see
 //! `dialogs::conflict`). `[general] confirm_delete = false` skips this dialog for trashing
-//! (permanent deletion is always confirmed).
+//! (permanent deletion is always confirmed). `[jobs] trash = false` turns F8 into a permanent
+//! delete, so it is confirmed like Shift+Del.
 
 use std::rc::Rc;
 
@@ -69,6 +70,8 @@ pub fn present(ctx: &Rc<AppContext>, permanent: bool) {
     let Some(controller) = jobs::controller(ctx) else {
         return;
     };
+    // [jobs] trash = false: F8 deletes permanently, with the permanent texts and confirmation.
+    let permanent = permanent || !ctx.config.borrow().jobs.trash;
     let submit = {
         let (ctx, controller, origin) = (
             Rc::clone(ctx),

@@ -59,6 +59,11 @@ impl ConfigPaths {
     pub fn themes_dir(&self) -> PathBuf {
         self.config_dir.join("themes")
     }
+    /// Create the config directory if it is missing (before the user is sent there to edit or
+    /// browse it). Blocking: not for the UI thread.
+    pub fn ensure_config_dir(&self) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.config_dir)
+    }
     /// `session.toml`.
     pub fn session_file(&self) -> PathBuf {
         self.state_dir.join("session.toml")

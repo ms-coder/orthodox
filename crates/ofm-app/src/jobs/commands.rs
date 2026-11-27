@@ -52,11 +52,19 @@ pub fn install(reg: &mut CommandRegistry) {
 }
 
 /// `file.calc_size`: size of the selected folders (or the one under the cursor), shown in the
-/// panel's size column when each calculation finishes.
+/// panel's size column when each calculation finishes. With only files selected the folder under
+/// the cursor is measured, so F3 on a folder (F19) always does something.
 fn calc_size(ctx: &Rc<AppContext>) {
-    let Some(targets) = Targets::from_active(ctx) else {
+    let Some(mut targets) = Targets::from_active(ctx) else {
         return;
     };
+    if targets.from_selection && !targets.has_dirs() {
+        let cursor = targets.controller.model().cursor_entry().cloned();
+        if let Some(dir) = cursor.filter(|e| e.kind == EntryKind::Dir && e.name != "..") {
+            targets.entries = vec![dir];
+            targets.from_selection = false;
+        }
+    }
     let Some(controller) = super::controller(ctx) else {
         return;
     };
@@ -146,6 +154,7 @@ fn show_dir_size(
             cache.store(panel, location, entry.name.clone(), entry.mtime_ns, bytes);
         }
         entry.size = bytes;
+        entry.size_known = true;
         panel.mutate_view(|m| m.apply_update(vec![entry], &[]));
     }
 }

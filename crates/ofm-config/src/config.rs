@@ -23,7 +23,6 @@ const KNOWN_KEYS: &[(&str, &[&str])] = &[
             "confirm_quit_with_jobs",
             "confirm_delete",
             "confirm_overwrite",
-            "one_panel_mode",
             "inhibit_system_shortcuts",
         ],
     ),
@@ -155,8 +154,6 @@ pub struct General {
     pub confirm_delete: bool,
     /// Ask on overwrite.
     pub confirm_overwrite: bool,
-    /// One-panel mode.
-    pub one_panel_mode: bool,
     /// Ask the desktop to hand its shortcuts (GNOME: Alt+F2 run dialog, Alt+F7/F8/F10 window
     /// management, ...) to OFM while its window has the focus. The compositor may ask the user
     /// once; Super+Esc gives the shortcuts back. Needed for the Alt+Fn keys of the far/tc/mc
@@ -298,7 +295,6 @@ impl Default for General {
             confirm_delete: true,
             confirm_overwrite: true,
             inhibit_system_shortcuts: true,
-            one_panel_mode: false,
         }
     }
 }
@@ -436,6 +432,13 @@ impl Config {
                 value: cfg.keymap.typing.clone(),
             });
             cfg.keymap.typing.clear();
+        }
+        if !matches!(cfg.jobs.default_run_mode.as_str(), "queued" | "parallel") {
+            warnings.push(ConfigWarning::UnknownRunMode {
+                file: file.clone(),
+                value: cfg.jobs.default_run_mode.clone(),
+            });
+            cfg.jobs.default_run_mode = JobsSection::default().default_run_mode;
         }
         (cfg, warnings)
     }
@@ -847,6 +850,24 @@ mod tests {
         assert_eq!(w.len(), 2);
         assert_eq!(c.preset(), Preset::Far);
         assert_eq!(c.typing(), None);
+    }
+
+    #[test]
+    fn unknown_run_mode_warns_and_falls_back() {
+        let d = tempfile::tempdir().unwrap();
+        let p = paths(&d);
+        io::atomic_write(&p.config_file(), "[jobs]\ndefault_run_mode = \"paralel\"\n").unwrap();
+        let (c, w) = Config::load(&p);
+        assert_eq!(w.len(), 1);
+        assert!(w[0].message.contains("paralel"), "{}", w[0].message);
+        assert_eq!(c.jobs.default_run_mode, "queued");
+        for good in ["queued", "parallel"] {
+            let text = format!("[jobs]\ndefault_run_mode = \"{good}\"\n");
+            io::atomic_write(&p.config_file(), &text).unwrap();
+            let (c, w) = Config::load(&p);
+            assert!(w.is_empty(), "{good}");
+            assert_eq!(c.jobs.default_run_mode, good);
+        }
     }
 
     #[test]

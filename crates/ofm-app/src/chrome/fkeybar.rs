@@ -125,7 +125,10 @@ impl FKeyBar {
             cell.command.set(cmd);
             let text = cmd.map(short_label).unwrap_or_default();
             cell.label.set_text(&text);
-            cell.button.set_sensitive(cmd.is_some());
+            // A key without a command, or a command without a handler (not implemented yet),
+            // shows an empty, insensitive cell instead of silently doing nothing.
+            let available = cmd.is_some_and(|c| ctx.command_available(c));
+            cell.button.set_sensitive(available);
             if cmd.is_some() {
                 cell.button.remove_css_class("empty");
             } else {
@@ -138,6 +141,13 @@ impl FKeyBar {
             cell.button
                 .update_property(&[gtk::accessible::Property::Label(&name)]);
         }
+    }
+
+    /// Whether cell `n` (1..=10) takes clicks: it shows a command that has a handler (tests).
+    pub fn is_enabled(&self, n: usize) -> bool {
+        n.checked_sub(1)
+            .and_then(|i| self.cells.get(i))
+            .is_some_and(|c| c.button.is_sensitive())
     }
 
     /// Texts of the ten labels (tests).

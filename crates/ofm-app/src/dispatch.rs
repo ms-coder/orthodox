@@ -6,8 +6,9 @@
 //! F-key bar, mouse actions and tests call `AppContext::execute(cmd)` directly.
 //!
 //! Handlers are registered by each module's `install_commands` hook (see `hooks.rs`); no module
-//! edits this file. A command without a handler returns [`ExecResult::NotImplemented`] (and is
-//! logged at debug level), so keymap presets can bind everything from day one.
+//! edits this file. A command without a handler returns [`ExecResult::NotImplemented`] (logged at
+//! debug level and reported in the status line via [`crate::chrome::notice`]), so keymap presets
+//! can bind everything from day one.
 
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
@@ -115,6 +116,9 @@ impl CommandDispatcher {
             }
             None => {
                 tracing::debug!(command = %cmd, "command not implemented");
+                // Visible feedback instead of silence: the user pressed a key or clicked a menu
+                // entry whose command is not implemented yet.
+                crate::chrome::notice::show(ctx, crate::i18n::tr("Not available yet"));
                 ExecResult::NotImplemented
             }
         }

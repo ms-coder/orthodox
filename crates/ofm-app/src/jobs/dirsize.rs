@@ -22,7 +22,8 @@ pub struct DirSizeCache {
 }
 
 /// Entries of a listing whose folder size should be restored: directories whose mtime matches
-/// the cached one but whose size differs. Returns copies carrying the cached size.
+/// the cached one but whose size differs (or whose "size known" mark was lost). Returns copies
+/// carrying the cached size.
 pub fn restorable<'a>(
     cached: &HashMap<OsString, (i128, u64)>,
     entries: impl Iterator<Item = &'a Entry>,
@@ -31,9 +32,10 @@ pub fn restorable<'a>(
         .filter(|e| e.kind == EntryKind::Dir)
         .filter_map(|e| {
             let (mtime, bytes) = cached.get(&e.name)?;
-            (*mtime == e.mtime_ns && *bytes != e.size).then(|| {
+            (*mtime == e.mtime_ns && (*bytes != e.size || !e.size_known)).then(|| {
                 let mut e = e.clone();
                 e.size = *bytes;
+                e.size_known = true;
                 e
             })
         })
@@ -134,16 +136,31 @@ mod tests {
         cached.insert(OsString::from("a"), (100, 5000));
         cached.insert(OsString::from("b"), (100, 7000));
         cached.insert(OsString::from("c"), (100, 9000));
+        let mut restored = dir("c", 100, 9000); // already restored
+        restored.size_known = true;
         let listing = [
             dir("a", 100, 4096), // re-stat returned the fs size: restore
             dir("b", 200, 4096), // content changed (new mtime): keep the fresh stat
-            dir("c", 100, 9000), // already restored
+            restored,
             dir("d", 100, 4096), // never calculated
         ];
         let out = restorable(&cached, listing.iter());
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].name, "a");
         assert_eq!(out[0].size, 5000);
+        assert!(out[0].size_known);
+    }
+
+    #[test]
+    fn restores_the_mark_when_the_size_happens_to_match() {
+        // The recursive total equals the fs size (rare): the number stays, only the mark
+        // comes back.
+        let mut cached = HashMap::new();
+        cached.insert(OsString::from("a"), (100, 4096));
+        let out = restorable(&cached, [dir("a", 100, 4096)].iter());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].size, 4096);
+        assert!(out[0].size_known);
     }
 
     #[test]

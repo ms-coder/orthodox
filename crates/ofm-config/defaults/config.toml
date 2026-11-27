@@ -6,7 +6,6 @@ version = 1
 confirm_quit_with_jobs = true
 confirm_delete = true
 confirm_overwrite = true
-one_panel_mode = false          # F01; remembered across restarts via session.toml
 inhibit_system_shortcuts = true # let OFM get Alt+F1..F12 etc. from GNOME while focused (Super+Esc gives them back)
 
 [keymap]
@@ -28,10 +27,10 @@ time_format = "%Y-%m-%d %H:%M"
 filter_as_you_type = false      # F06 optional mode
 
 [jobs]
-default_run_mode = "queued"     # queued | parallel
-fsync_after_copy = false        # always on for cross-device move regardless of this setting
-follow_symlinks = false         # copy symlinks as links by default (F17)
-trash = true                    # F14: F8 moves to Trash
+default_run_mode = "queued"     # queued | parallel (copy, move, extract, paste, drag and drop)
+fsync_after_copy = false        # copy and extract: fsync every file (a cross-device move always does)
+follow_symlinks = false         # copies: false = copy symlinks as links (F17); a move never follows
+trash = true                    # F14: F8 moves to Trash; false = F8 deletes permanently (asks first)
 
 [editor]
 # F23: command template; %f = file. Empty = $VISUAL, then $EDITOR, then GNOME Text Editor.
@@ -47,7 +46,7 @@ command = ""
 shell = ""                      # empty = $SHELL
 font = ""                       # empty = theme font
 scrollback = 10000
-return_to_panels = false         # show the panels again when a command from the command line ends
+return_to_panels = false        # panels return when a command line command ends (bash, zsh, fish)
 
 [viewer]
 default_encoding = "auto"       # auto | utf-8 | utf-16le | utf-16be | windows-1251 | ibm866 | koi8-r | iso-8859-1

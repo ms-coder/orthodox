@@ -85,8 +85,9 @@ fn lists_switches_and_moves() {
     ctx.execute(cmd::PANEL_SWITCH);
     assert_eq!(ctx.active_side(), LEFT);
 
-    // Commands nobody implemented yet are reported, not crashed on.
-    assert_eq!(ctx.execute(cmd::APP_HELP), ExecResult::NotImplemented);
+    // Every command id now has a handler (T8.11 filled the last gaps: help, preferences,
+    // context menu); dispatching an unknown one is impossible by construction.
+    assert_eq!(ctx.execute(cmd::APP_HELP), ExecResult::Handled);
 }
 
 // The former placeholders `file_list_brief_mode_columns` (T2.1) and `navigation_commands` (T2.3) were

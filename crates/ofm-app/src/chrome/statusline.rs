@@ -100,6 +100,7 @@ pub fn cursor_info(entry: &Entry, fmt: &StatusFormat) -> String {
         return tr("Up one level").to_owned();
     }
     let what = match &entry.kind {
+        EntryKind::Dir if entry.size_known => format_size(entry.size, fmt.size),
         EntryKind::Dir => "<DIR>".to_owned(),
         EntryKind::Symlink { .. } => "<LNK>".to_owned(),
         EntryKind::Other => "<SPECIAL>".to_owned(),
@@ -191,6 +192,11 @@ mod tests {
         assert!(text.starts_with("a.txt   2.0 KiB   "), "{text}");
         let d = Entry::new("sub", EntryKind::Dir);
         assert!(cursor_info(&d, &fmt).contains("<DIR>"));
+        // A calculated folder size is shown instead of the marker (F19).
+        let mut sized = Entry::new("sub", EntryKind::Dir);
+        sized.size = 2048;
+        sized.size_known = true;
+        assert!(cursor_info(&sized, &fmt).contains("2.0 KiB"));
     }
 
     #[test]
